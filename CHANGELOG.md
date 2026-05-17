@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Viewer embeds a Claude Code (or any configurable subprocess) terminal pane via xterm.js + a stdlib-only WebSocket/pty bridge at `/ws/terminal`. Toggleable bottom drawer in `frame.html`; configurable via `.review-config.toml` (`terminal_command`, `terminal_enabled`). Lets the reviewer hold a SURFACE-intent conversation without alt-tabbing out of the viewer (rev-dyn).
 - Engine scaffolding (`src/review_pdf_to_latex/`) with the 14-subcommand `review-pdf` CLI.
 - `extract` subcommand: pdfannots + rapidfuzz fuzzy mapping + pdftoppm page rendering.
 - `apply` / `revert` / `set-status` / `append-chat` / `record-proposal` / `override-mapping` mutators with atomic `state.json` writes.
