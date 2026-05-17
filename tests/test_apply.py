@@ -452,3 +452,54 @@ def test_set_status_no_reason_does_not_set_field(tmp_path: Path) -> None:
     assert entry["status"] == "accepted"
     # When no reason is supplied, field is omitted or None — accept either.
     assert entry.get("last_status_reason") in (None,)
+
+
+from review_pdf_to_latex.apply import append_chat_turn
+
+
+def test_append_chat_first_turn_initializes_log(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    append_chat_turn(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        role="user",
+        text="Why is this passage flagged?",
+    )
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    log = state["annotations"]["ann-001"]["surface_chat_log"]
+    assert isinstance(log, list)
+    assert len(log) == 1
+    assert log[0]["role"] == "user"
+    assert log[0]["text"] == "Why is this passage flagged?"
+    assert "ts" in log[0]
+
+
+def test_append_chat_second_turn_appends(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    append_chat_turn(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        role="user",
+        text="One",
+    )
+    append_chat_turn(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        role="claude",
+        text="Two",
+    )
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    log = state["annotations"]["ann-001"]["surface_chat_log"]
+    assert [t["role"] for t in log] == ["user", "claude"]
+    assert [t["text"] for t in log] == ["One", "Two"]
+
+
+def test_append_chat_invalid_role_raises(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    with pytest.raises(ValueError):
+        append_chat_turn(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            role="assistant",  # only "user" or "claude" allowed
+            text="hi",
+        )

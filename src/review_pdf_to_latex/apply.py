@@ -599,3 +599,44 @@ def set_annotation_status(
         entry["last_status_reason"] = reason
 
     atomic_write_json(state_path, state)
+
+
+_CHAT_ROLES: frozenset[str] = frozenset({"user", "claude"})
+
+
+def append_chat_turn(
+    state_dir: Path,
+    annotation_id: str,
+    role: str,
+    text: str,
+) -> None:
+    """Append one {role, text, ts} entry to surface_chat_log.
+
+    Spec §8 append-chat row + §7.3 (chat-log shape: list of {role, text, ts}).
+    Initializes the list if it was previously None.
+
+    Raises:
+        ValueError: role not in {"user", "claude"}.
+        AnnotationNotFoundError: annotation_id not present.
+    """
+    if role not in _CHAT_ROLES:
+        raise ValueError(
+            f"role must be one of {sorted(_CHAT_ROLES)}; got {role!r}"
+        )
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)  # spec §14 risk 9
+    state_path = state_dir / "state.json"
+    if not state_path.exists():
+        raise FileMutationError(f"state.json not found at {state_path}")
+    state = _read_json(state_path)
+    if annotation_id not in state.get("annotations", {}):
+        raise AnnotationNotFoundError(annotation_id)
+
+    entry = state["annotations"][annotation_id]
+    log = entry.get("surface_chat_log")
+    if log is None:
+        log = []
+    log.append({"role": role, "text": text, "ts": _now_iso()})
+    entry["surface_chat_log"] = log
+
+    atomic_write_json(state_path, state)
