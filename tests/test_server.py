@@ -704,3 +704,137 @@ def test_install_wait_event_signal_handlers_sigint_raises_sentinel() -> None:
     finally:
         _signal.signal(_signal.SIGTERM, prev_term)
         _signal.signal(_signal.SIGINT, prev_int)
+
+
+# ---- Task 8.3: serve CLI lifecycle ------------------------------------------
+
+import subprocess
+import sys
+
+
+def _run_cli_in_background(args: list[str], **kwargs) -> subprocess.Popen:
+    """Spawn the CLI via ``python -m review_pdf_to_latex``."""
+    return subprocess.Popen(
+        [sys.executable, "-m", "review_pdf_to_latex", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **kwargs,
+    )
+
+
+def _wait_for_url(url: str, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=0.5)
+            return True
+        except Exception:
+            time.sleep(0.05)
+    return False
+
+
+def test_pick_free_port_returns_usable_port() -> None:
+    port = server_mod.pick_free_port()
+    assert 1024 <= port <= 65535
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+    finally:
+        s.close()
+
+
+def test_handle_serve_exits_6_when_state_missing(tmp_path: Path) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    rc = server_mod.handle_serve(
+        project_dir=bare,
+        port=0,
+        order="mechanical-first",
+        mapping_mode=False,
+    )
+    assert rc == 6
+
+
+def test_handle_serve_exits_5_when_lock_held(
+    minimal_project: Path, tmp_path: Path
+) -> None:
+    """A second serve invocation must exit 5 while the first holds the lock."""
+    proc = _run_cli_in_background(
+        ["--project-dir", str(minimal_project), "serve", "--port", "0"],
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        lock = minimal_project / ".review-state" / "serve.lock"
+        while time.monotonic() < deadline and not lock.exists():
+            time.sleep(0.05)
+        assert lock.exists(), "first serve instance never acquired the lock"
+
+        rc = server_mod.handle_serve(
+            project_dir=minimal_project,
+            port=0,
+            order="mechanical-first",
+            mapping_mode=False,
+        )
+        assert rc == 5
+    finally:
+        proc.send_signal(_signal.SIGINT)
+        proc.wait(timeout=5)
+
+
+def test_serve_subcommand_starts_and_stops_cleanly(minimal_project: Path) -> None:
+    proc = _run_cli_in_background(
+        ["--project-dir", str(minimal_project), "serve", "--port", "0"],
+    )
+    try:
+        url = None
+        deadline = time.monotonic() + 5.0
+        buf = ""
+        while time.monotonic() < deadline:
+            line = proc.stderr.readline()
+            if not line:
+                time.sleep(0.02)
+                continue
+            buf += line
+            if "Viewer:" in line:
+                url = line.split("Viewer:", 1)[1].strip()
+                break
+        assert url is not None, f"viewer URL never announced; stderr={buf!r}"
+        assert _wait_for_url(
+            url + "api/state" if url.endswith("/") else url + "/api/state"
+        )
+    finally:
+        proc.send_signal(_signal.SIGINT)
+        rc = proc.wait(timeout=5)
+        assert rc == 0, f"serve did not exit cleanly: rc={rc}"
+        assert not (minimal_project / ".review-state" / "serve.lock").exists()
+
+
+def test_serve_subcommand_records_order_in_state(minimal_project: Path) -> None:
+    proc = _run_cli_in_background(
+        [
+            "--project-dir",
+            str(minimal_project),
+            "serve",
+            "--port",
+            "0",
+            "--order",
+            "surface-first",
+        ],
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        url = None
+        while time.monotonic() < deadline:
+            line = proc.stderr.readline()
+            if line and "Viewer:" in line:
+                url = line.split("Viewer:", 1)[1].strip()
+                break
+        assert url is not None
+        state = json.loads(
+            (minimal_project / ".review-state" / "state.json").read_text()
+        )
+        assert state["order"] == "surface-first"
+    finally:
+        proc.send_signal(_signal.SIGINT)
+        proc.wait(timeout=5)

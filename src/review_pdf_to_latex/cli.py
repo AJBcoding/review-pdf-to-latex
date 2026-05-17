@@ -210,6 +210,18 @@ def _handle_build(args: argparse.Namespace) -> int:
     )
 
 
+def _handle_serve(args: argparse.Namespace) -> int:
+    """Start the local HTTP viewer (spec §8 serve row)."""
+    from review_pdf_to_latex.server import handle_serve
+
+    return handle_serve(
+        project_dir=Path(args.project_dir),
+        port=args.port,
+        order=args.order,
+        mapping_mode=args.mapping_mode,
+    )
+
+
 # String fallback for subcommands without a wired handler: the value is the
 # name passed to `_stub`, which raises NotImplementedError. Real handlers
 # registered in `_HANDLERS_TABLE` shadow these entries.
@@ -234,6 +246,7 @@ _HANDLERS: dict[str, str] = {
 _HANDLERS_TABLE: dict[str, "callable"] = {
     "extract": _handle_extract,
     "build": _handle_build,
+    "serve": _handle_serve,
 }
 
 

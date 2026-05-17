@@ -595,6 +595,132 @@ def _make_watcher(path: Path):  # noqa: ANN201 (returns watcher or None)
 # to pick up any concurrent event from the file without false positives.
 
 
+# ---- Task 8.3: serve CLI helpers + handler ---------------------------------
+
+import socket
+import sys
+import threading
+
+
+def pick_free_port() -> int:
+    """Bind to port 0, read the assigned port, close. Caller binds again immediately."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def acquire_serve_lock(lock_path: Path) -> int:
+    """Open ``lock_path`` and acquire an exclusive non-blocking flock.
+
+    Returns the open file descriptor (caller keeps it for the process lifetime).
+    Raises ``BlockingIOError`` if another process holds the lock.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise
+    # Record PID for debuggability; not used for locking semantics.
+    os.write(fd, f"{os.getpid()}\n".encode())
+    return fd
+
+
+def _atomic_write_state(path: Path, data: dict[str, Any]) -> None:
+    """Local atomic write — mirrors state.atomic_write_json from chunk A."""
+    import tempfile
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".tmp.{path.name}.",
+        suffix=".json",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def handle_serve(
+    *,
+    project_dir: Path,
+    port: int,
+    order: str,
+    mapping_mode: bool,
+) -> int:
+    """Implement ``review-pdf serve``. Returns the process exit code (0/5/6).
+
+    Blocks on serve_forever until SIGINT/SIGTERM or another shutdown trigger.
+    """
+    project_dir = Path(project_dir).resolve()
+    state_path = project_dir / STATE_DIR_NAME / "state.json"
+    if not state_path.exists():
+        sys.stderr.write("state missing; run 'review-pdf extract' first\n")
+        return 6
+
+    lock_path = project_dir / STATE_DIR_NAME / "serve.lock"
+    try:
+        lock_fd = acquire_serve_lock(lock_path)
+    except BlockingIOError:
+        sys.stderr.write("another serve instance is running (lock held)\n")
+        return 5
+
+    # Persist --order into state.json if it differs.
+    try:
+        current = json.loads(state_path.read_text())
+        if current.get("order") != order:
+            current["order"] = order
+            _atomic_write_state(state_path, current)
+    except (OSError, json.JSONDecodeError) as e:
+        sys.stderr.write(f"state.json read failed: {e}\n")
+        os.close(lock_fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+        return 6
+
+    if port == 0:
+        port = pick_free_port()
+    mode = "mapping" if mapping_mode else "normal"
+    httpd = build_server(project_dir, port, mode=mode)
+    sys.stderr.write(f"Viewer: http://127.0.0.1:{port}/\n")
+    sys.stderr.flush()
+
+    def _shutdown_handler(signum: int, frame: Any) -> None:
+        # Run shutdown from a separate thread because HTTPServer.shutdown()
+        # blocks until serve_forever() returns, and serve_forever() drives
+        # the main thread here.
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    try:
+        httpd.serve_forever()
+    finally:
+        httpd.server_close()
+        os.close(lock_fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+    return 0
+
+
 class _SigTermExit(BaseException):
     """Raised internally when SIGTERM arrives during wait-event."""
 
