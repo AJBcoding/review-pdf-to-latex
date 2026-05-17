@@ -57,3 +57,10 @@ htmlcov/
 # (paths configurable; default conventions ignored to keep repo clean)
 pages/
 .review-state/
+
+# Gas Town (added by gt)
+.runtime/
+.logs/
+state.json
+CLAUDE.md
+CLAUDE.local.md
