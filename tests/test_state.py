@@ -294,3 +294,98 @@ def test_status_is_terminal_rejects_unknown_status():
     """An unknown status raises ValueError (defensive — schema violation)."""
     with pytest.raises(ValueError, match="unknown status"):
         state.status_is_terminal("invalid-status")
+
+
+@pytest.mark.parametrize(
+    "from_status,to_status,action",
+    [
+        # Apply: any non-terminal → applied (engine-internal action used by
+        # `review-pdf apply` from Phase 1 batch apply and Phase 2a/2b re-apply).
+        ("pending", "applied", "apply"),
+        ("applied", "applied", "apply"),
+        ("rejected", "applied", "apply"),
+        ("redrafted", "applied", "apply"),
+        ("needs_review", "applied", "apply"),
+        ("surfaced_pending", "applied", "apply"),
+        # Approve: applied → accepted; redrafted → accepted (spec §10.3)
+        ("applied", "accepted", "approve"),
+        ("redrafted", "accepted", "approve"),
+        # Reject: applied → rejected; redrafted → rejected (spec §10.3)
+        ("applied", "rejected", "reject"),
+        ("redrafted", "rejected", "reject"),
+        # Redraft: applied → redrafted; rejected → redrafted;
+        # redrafted → redrafted (spec §10.3 — successive redrafts allowed)
+        ("applied", "redrafted", "redraft"),
+        ("rejected", "redrafted", "redraft"),
+        ("redrafted", "redrafted", "redraft"),
+        # Skip: pending|applied|redrafted|rejected|needs_review|surfaced_pending → deferred
+        ("pending", "deferred", "skip"),
+        ("applied", "deferred", "skip"),
+        ("redrafted", "deferred", "skip"),
+        ("rejected", "deferred", "skip"),
+        ("needs_review", "deferred", "skip"),
+        ("surfaced_pending", "deferred", "skip"),
+        # Surface: pending|applied|deferred|needs_review → surfaced_pending (spec §10.3)
+        ("pending", "surfaced_pending", "surface"),
+        ("applied", "surfaced_pending", "surface"),
+        ("deferred", "surfaced_pending", "surface"),
+        ("needs_review", "surfaced_pending", "surface"),
+        # Phase 1 failure recovery: applied → needs_review via revert --failure-log
+        # (spec §9.2, §12.2)
+        ("applied", "needs_review", "redraft"),
+        # Phase 2b resolution: surfaced_pending → surfaced_resolved (spec §9.4)
+        ("surfaced_pending", "surfaced_resolved", "resolve-surface"),
+    ],
+)
+def test_validate_status_transition_legal(
+    from_status: str, to_status: str, action: str
+):
+    """Every legal transition documented in spec §10.3 returns True."""
+    assert state.validate_status_transition(from_status, to_status, action) is True
+
+
+@pytest.mark.parametrize(
+    "from_status,to_status,action",
+    [
+        # Cannot approve from pending — must apply first
+        ("pending", "accepted", "approve"),
+        # Cannot reject something that was never applied
+        ("pending", "rejected", "reject"),
+        # Cannot un-defer back to pending
+        ("deferred", "pending", "skip"),
+        # Cannot surface a terminal accepted annotation (spec §10.3 — Surface
+        # column shows pending|applied|deferred|needs_review only)
+        ("accepted", "surfaced_pending", "surface"),
+        ("rejected", "surfaced_pending", "surface"),
+        # Cannot resolve-surface from a non-surface status
+        ("applied", "surfaced_resolved", "resolve-surface"),
+        # Approve does not lead to redrafted
+        ("applied", "redrafted", "approve"),
+    ],
+)
+def test_validate_status_transition_illegal_raises(
+    from_status: str, to_status: str, action: str
+):
+    """Illegal transitions raise IllegalTransitionError."""
+    with pytest.raises(state.IllegalTransitionError):
+        state.validate_status_transition(from_status, to_status, action)
+
+
+def test_validate_status_transition_override_mapping_is_status_neutral():
+    """override-mapping does not transition annotation status (it edits mapping.json).
+
+    The action is included in the action enum (spec §10.6) but every call
+    with this action must be a no-op transition (from == to).
+    """
+    assert (
+        state.validate_status_transition("needs_review", "needs_review", "override-mapping")
+        is True
+    )
+    with pytest.raises(state.IllegalTransitionError):
+        state.validate_status_transition("needs_review", "applied", "override-mapping")
+
+
+def test_validate_status_transition_unknown_action_raises():
+    """An unrecognized action raises IllegalTransitionError."""
+    with pytest.raises(state.IllegalTransitionError, match="unknown action"):
+        state.validate_status_transition("applied", "accepted", "explode")

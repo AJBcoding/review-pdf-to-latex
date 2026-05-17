@@ -456,3 +456,143 @@ def status_is_terminal(status: str) -> bool:
             f"unknown status: {status!r} (expected one of {sorted(_ALL_STATUSES)})"
         )
     return status in _TERMINAL_STATUSES
+
+
+Action = Literal[
+    "apply",
+    "approve",
+    "reject",
+    "redraft",
+    "skip",
+    "surface",
+    "override-mapping",
+    "resolve-surface",
+]
+
+
+class IllegalTransitionError(ValueError):
+    """Raised by ``validate_status_transition`` for any disallowed move.
+
+    Captures the (from_status, to_status, action) triple in the message
+    so the CLI can surface it verbatim. The CLI subcommand ``set-status``
+    converts this to exit code 18 per spec §8.
+
+    Extends ``ValueError`` so ``except ValueError`` clauses in chunk C's
+    `apply_edit`, `revert_edit`, and `set_annotation_status` catch it as
+    intended (those clauses wrap it in ``IllegalStatusTransitionError`` for
+    exit-code mapping).
+    """
+
+
+# (from_status, action) → set of allowed to_status values.
+# Derived from spec §10.3 "Allowed source → target statuses" column,
+# plus the Phase 1 failure recovery in §9.2 (applied → needs_review via
+# `revert --failure-log`) and the Phase 2b resolution in §9.4
+# (surfaced_pending → surfaced_resolved via `set-status`).
+_LEGAL_TRANSITIONS: dict[tuple[str, str], frozenset[str]] = {
+    # Apply action — used by `review-pdf apply` (engine-internal label for the
+    # text-mutating apply path, covering Phase-1 batch apply and Phase-2a/2b
+    # re-apply from any non-terminal status). Always targets `applied`.
+    ("pending", "apply"): frozenset({"applied"}),
+    ("applied", "apply"): frozenset({"applied"}),
+    ("rejected", "apply"): frozenset({"applied"}),
+    ("redrafted", "apply"): frozenset({"applied"}),
+    ("needs_review", "apply"): frozenset({"applied"}),
+    ("surfaced_pending", "apply"): frozenset({"applied"}),
+    # Approve button — no .tex mutation, status only.
+    ("applied", "approve"): frozenset({"accepted"}),
+    ("redrafted", "approve"): frozenset({"accepted"}),
+    # Reject button — engine reverts the file, then sets status.
+    ("applied", "reject"): frozenset({"rejected"}),
+    ("redrafted", "reject"): frozenset({"rejected"}),
+    # Redraft button — engine reverts, applies new draft, builds, sets status.
+    # Spec §10.3 allows applied|rejected|redrafted as source. Also covers the
+    # Phase 1 failure flow where `revert --status needs_review` flips an
+    # `applied` annotation to needs_review (encoded under `redraft` action;
+    # see finding-8 note below).
+    ("applied", "redraft"): frozenset({"redrafted", "needs_review"}),
+    ("rejected", "redraft"): frozenset({"redrafted"}),
+    ("redrafted", "redraft"): frozenset({"redrafted"}),
+    # Skip button — defers any non-resolved status.
+    ("pending", "skip"): frozenset({"deferred"}),
+    ("applied", "skip"): frozenset({"deferred"}),
+    ("redrafted", "skip"): frozenset({"deferred"}),
+    ("rejected", "skip"): frozenset({"deferred"}),
+    ("needs_review", "skip"): frozenset({"deferred"}),
+    ("surfaced_pending", "skip"): frozenset({"deferred"}),
+    # Surface button — sends to Phase 2b.
+    ("pending", "surface"): frozenset({"surfaced_pending"}),
+    ("applied", "surface"): frozenset({"surfaced_pending"}),
+    ("deferred", "surface"): frozenset({"surfaced_pending"}),
+    ("needs_review", "surface"): frozenset({"surfaced_pending"}),
+    # Phase 2b resolution — marked by the skill via `set-status` once
+    # the surface conversation concludes (spec §9.4).
+    ("surfaced_pending", "resolve-surface"): frozenset({"surfaced_resolved"}),
+    # override-mapping is status-neutral but is in the action enum.
+    # Every source status maps to itself (no-op transition).
+    ("pending", "override-mapping"): frozenset({"pending"}),
+    ("applied", "override-mapping"): frozenset({"applied"}),
+    ("accepted", "override-mapping"): frozenset({"accepted"}),
+    ("rejected", "override-mapping"): frozenset({"rejected"}),
+    ("redrafted", "override-mapping"): frozenset({"redrafted"}),
+    ("deferred", "override-mapping"): frozenset({"deferred"}),
+    ("surfaced_pending", "override-mapping"): frozenset({"surfaced_pending"}),
+    ("surfaced_resolved", "override-mapping"): frozenset({"surfaced_resolved"}),
+    ("needs_review", "override-mapping"): frozenset({"needs_review"}),
+}
+
+# Engine-internal action enum used by `validate_status_transition`. Diverges
+# from spec §7.4's viewer-event action enum in two ways: (1) `preview` is
+# omitted because it never transitions status (it is a speculative-compile
+# affordance); (2) `apply` and `resolve-surface` are added as engine-internal
+# labels covering, respectively, the `review-pdf apply` text-mutating call
+# path and the Phase-2b conclusion. The viewer never POSTs these two values.
+_KNOWN_ACTIONS: frozenset[str] = frozenset(
+    {
+        "apply",
+        "approve",
+        "reject",
+        "redraft",
+        "skip",
+        "surface",
+        "override-mapping",
+        "resolve-surface",
+    }
+)
+
+
+def validate_status_transition(from_status: str, to_status: str, action: str) -> bool:
+    """Return True if (from_status → to_status) under ``action`` is allowed.
+
+    The legal transition table mirrors spec §10.3's button table plus the
+    Phase 1 failure recovery (§9.2) and Phase 2b resolve (§9.4).
+
+    The ``action`` enum used here is engine-internal and diverges from spec
+    §7.4's viewer-event action enum in two ways (see ``_KNOWN_ACTIONS``
+    docstring): ``preview`` is omitted (it never transitions status), and
+    ``apply`` plus ``resolve-surface`` are added.
+
+    Raises
+    ------
+    IllegalTransitionError
+        - ``action`` is not in the engine-internal action enum, OR
+        - the (from_status, action) pair has no entry, OR
+        - ``to_status`` is not in the allowed-target set for the pair.
+    """
+    if action not in _KNOWN_ACTIONS:
+        raise IllegalTransitionError(
+            f"unknown action: {action!r} (expected one of {sorted(_KNOWN_ACTIONS)})"
+        )
+    key = (from_status, action)
+    if key not in _LEGAL_TRANSITIONS:
+        raise IllegalTransitionError(
+            f"no transition defined for from_status={from_status!r}, "
+            f"action={action!r}"
+        )
+    allowed = _LEGAL_TRANSITIONS[key]
+    if to_status not in allowed:
+        raise IllegalTransitionError(
+            f"illegal transition: {from_status!r} --{action}--> {to_status!r} "
+            f"(allowed targets: {sorted(allowed)})"
+        )
+    return True
