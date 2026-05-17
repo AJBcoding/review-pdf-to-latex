@@ -233,6 +233,54 @@ def _handle_wait_event(args: argparse.Namespace) -> int:
     )
 
 
+def _format_status_human(report: "_status.StatusReport") -> str:
+    """Render a :class:`StatusReport` as a multi-line human summary."""
+    lines: list[str] = []
+    lines.append(f"Phase: {report.phase}  (order: {report.order})")
+    cur = report.current_annotation_id or "(none)"
+    lines.append(f"Current annotation: {cur}")
+    lines.append(
+        f"Annotations: {report.total} total "
+        f"({report.terminal_count} terminal, {report.non_terminal_count} non-terminal)"
+    )
+    for status_name, count in report.counts.items():
+        if count > 0:
+            lines.append(f"    {status_name}: {count}")
+    if report.most_recent_build is not None:
+        b = report.most_recent_build
+        ok_str = "ok" if b.get("ok") else "FAILED"
+        lines.append(
+            f"Last build: {b.get('id')} — {ok_str}, "
+            f"{b.get('page_count')} pages (compiled {b.get('compiled_at')})"
+        )
+    else:
+        lines.append("Last build: (none)")
+    if report.unresolved_needs_review > 0:
+        lines.append(
+            f"Unresolved needs_review: {report.unresolved_needs_review}"
+        )
+    return "\n".join(lines)
+
+
+def _handle_status(args: argparse.Namespace) -> int:
+    """``status`` subcommand handler (spec §8 exit codes 0, 6)."""
+    from review_pdf_to_latex import state as _state
+    from review_pdf_to_latex import status as _status
+
+    state_dir = _state.StateDir(args.project_dir)
+    try:
+        report = _status.compute_status_report(state_dir)
+    except _status.StateMissingError as e:
+        print(f"state missing: {e}", file=sys.stderr)
+        return EXIT_STATE_MISSING
+
+    if args.json_output:
+        print_json(report.to_dict())
+    else:
+        print(_format_status_human(report))
+    return EXIT_OK
+
+
 # String fallback for subcommands without a wired handler: the value is the
 # name passed to `_stub`, which raises NotImplementedError. Real handlers
 # registered in `_HANDLERS_TABLE` shadow these entries.
@@ -259,6 +307,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "build": _handle_build,
     "serve": _handle_serve,
     "wait-event": _handle_wait_event,
+    "status": _handle_status,
 }
 
 

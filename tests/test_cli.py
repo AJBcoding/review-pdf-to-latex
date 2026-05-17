@@ -223,6 +223,125 @@ hi
     assert state["builds"][0]["ok"] is True
 
 
+# ---- Task 11.2: status subcommand ------------------------------------------
+
+import json as _json_mod
+
+
+def _seed_state_for_cli(tmp_project: Path, phase: str = "0-setup") -> None:
+    """Seed a minimal state.json so status can read it."""
+    state_mod_path = tmp_project / ".review-state" / "state.json"
+    state_mod_path.parent.mkdir(parents=True, exist_ok=True)
+    state_mod_path.write_text(
+        _json_mod.dumps(
+            {
+                "schema_version": 1,
+                "phase": phase,
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {
+                    "ann-001": {
+                        "status": "applied",
+                        "before_text": None,
+                        "proposed_text": None,
+                        "applied_text": None,
+                        "applied_at": None,
+                        "last_build_id": None,
+                        "surface_chat_log": None,
+                        "failure_log_path": None,
+                        "failure_edit_text": None,
+                    },
+                    "ann-002": {
+                        "status": "accepted",
+                        "before_text": None,
+                        "proposed_text": None,
+                        "applied_text": None,
+                        "applied_at": None,
+                        "last_build_id": None,
+                        "surface_chat_log": None,
+                        "failure_log_path": None,
+                        "failure_edit_text": None,
+                    },
+                },
+                "builds": [],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_cli_status_json_output(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """`review-pdf --json status` prints a JSON object with the expected keys."""
+    _seed_state_for_cli(tmp_project)
+    rc = cli.main(["--project-dir", str(tmp_project), "--json", "status"])
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    parsed = _json_mod.loads(out)
+    assert parsed["phase"] == "0-setup"
+    assert parsed["total"] == 2
+    assert parsed["counts"]["applied"] == 1
+    assert parsed["counts"]["accepted"] == 1
+    assert parsed["non_terminal_count"] == 1
+    assert parsed["terminal_count"] == 1
+
+
+def test_cli_status_human_output(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """Without --json, status prints a human-readable summary to stdout."""
+    _seed_state_for_cli(tmp_project, phase="2a-ratify")
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "2a-ratify" in out
+    assert "applied" in out
+    assert "accepted" in out
+    assert "1" in out
+
+
+def test_cli_status_human_output_includes_build_info_when_present(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """When builds[] has entries, the summary mentions the last build."""
+    _seed_state_for_cli(tmp_project)
+    state_path = tmp_project / ".review-state" / "state.json"
+    payload = _json_mod.loads(state_path.read_text(encoding="utf-8"))
+    payload["builds"].append(
+        {
+            "id": "build-001",
+            "pdf_path": ".review-state/builds/build-001.pdf",
+            "page_count": 24,
+            "compiled_at": "2026-05-16T20:00:00Z",
+            "log_path": ".review-state/builds/build-001.log",
+            "ok": True,
+            "page_md5": ["a"] * 24,
+        }
+    )
+    state_path.write_text(
+        _json_mod.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "build-001" in out
+    assert "24" in out
+
+
+def test_cli_status_exits_6_when_state_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """No state.json → exit code 6 and error on stderr."""
+    rc = cli.main(["--project-dir", str(tmp_path), "status"])
+    assert rc == cli.EXIT_STATE_MISSING == 6
+    err = capsys.readouterr().err
+    assert "state.json" in err
+
+
 @pdflatex
 @pdftoppm
 def test_cli_build_benchmark_emits_timing(tmp_path: Path) -> None:
