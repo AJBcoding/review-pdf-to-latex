@@ -596,3 +596,67 @@ def validate_status_transition(from_status: str, to_status: str, action: str) ->
             f"(allowed targets: {sorted(allowed)})"
         )
     return True
+
+
+import hashlib
+
+
+class SourcePdfChangedError(Exception):
+    """Raised when the source PDF's MD5 differs from annotations.json.source_pdf_md5.
+
+    Mapped to exit code 21 by the CLI. User must run `review-pdf extract --force`
+    to refresh annotations against the current PDF (spec §14 risk 9).
+    """
+
+
+class LegacyStateError(Exception):
+    """Raised when annotations.json lacks the source_pdf_md5 field.
+
+    Pre-guard state. Mapped to exit code 22. User must run
+    `review-pdf extract --force` to record the MD5.
+    """
+
+
+def _file_md5(path: Path) -> str:
+    h = hashlib.md5()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def assert_source_pdf_unchanged(state_dir: "StateDir") -> None:
+    """Verify the source PDF MD5 still matches annotations.json.source_pdf_md5.
+
+    Called by every state mutator (apply, revert, set-status, append-chat,
+    record-proposal, override-mapping, preview, commit-phase, migrate-state)
+    at the top of its handler, before reading state.json. Spec §14 risk 9.
+
+    Raises:
+        SourcePdfChangedError: MD5 differs, OR the source PDF file is gone.
+        LegacyStateError: annotations.json predates the guard (no md5 field).
+        FileNotFoundError: annotations.json itself is missing.
+    """
+    ann_path = state_dir.dir / "annotations.json"
+    if not ann_path.exists():
+        raise FileNotFoundError(f"annotations.json not found at {ann_path}")
+    with ann_path.open("r", encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if "source_pdf_md5" not in doc:
+        raise LegacyStateError(
+            "annotations.json has no source_pdf_md5 field; "
+            "run `review-pdf extract --force` to refresh"
+        )
+    pdf_path = Path(doc["source_pdf"])
+    if not pdf_path.exists():
+        raise SourcePdfChangedError(
+            f"source PDF not found at {pdf_path}; "
+            f"run `review-pdf extract --force` if the path moved"
+        )
+    actual = _file_md5(pdf_path)
+    expected = doc["source_pdf_md5"]
+    if actual != expected:
+        raise SourcePdfChangedError(
+            f"source PDF changed since extract: expected md5={expected}, "
+            f"got {actual}; run `review-pdf extract --force` to refresh"
+        )

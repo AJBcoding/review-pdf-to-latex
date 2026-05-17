@@ -389,3 +389,65 @@ def test_validate_status_transition_unknown_action_raises():
     """An unrecognized action raises IllegalTransitionError."""
     with pytest.raises(state.IllegalTransitionError, match="unknown action"):
         state.validate_status_transition("applied", "accepted", "explode")
+
+
+import hashlib
+
+from review_pdf_to_latex import state
+
+
+def _write_annotations_doc(state_dir: Path, source_pdf: Path, md5: str | None) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "schema_version": 1,
+        "source_pdf": str(source_pdf.resolve()),
+        "extracted_at": "2026-05-16T00:00:00Z",
+        "extractor": "pdfannots-0.4.1",
+        "annotations": [],
+    }
+    if md5 is not None:
+        doc["source_pdf_md5"] = md5
+    (state_dir / "annotations.json").write_text(
+        json.dumps(doc), encoding="utf-8",
+    )
+
+
+def test_assert_source_pdf_unchanged_passes_when_md5_matches(tmp_path: Path) -> None:
+    pdf = tmp_path / "comments.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake content")
+    md5 = hashlib.md5(pdf.read_bytes()).hexdigest()
+    sd = state.StateDir(tmp_path)
+    sd.dir.mkdir()
+    _write_annotations_doc(sd.dir, pdf, md5)
+    # Should not raise.
+    state.assert_source_pdf_unchanged(sd)
+
+
+def test_assert_source_pdf_unchanged_raises_when_md5_differs(tmp_path: Path) -> None:
+    pdf = tmp_path / "comments.pdf"
+    pdf.write_bytes(b"%PDF-1.4 original")
+    sd = state.StateDir(tmp_path)
+    sd.dir.mkdir()
+    _write_annotations_doc(sd.dir, pdf, "deadbeef" * 4)  # 32-char garbage hash
+    with pytest.raises(state.SourcePdfChangedError, match="source PDF changed"):
+        state.assert_source_pdf_unchanged(sd)
+
+
+def test_assert_source_pdf_unchanged_raises_when_pdf_missing(tmp_path: Path) -> None:
+    pdf = tmp_path / "comments.pdf"
+    sd = state.StateDir(tmp_path)
+    sd.dir.mkdir()
+    _write_annotations_doc(sd.dir, pdf, "deadbeef" * 4)
+    # PDF was deleted between extract and apply.
+    with pytest.raises(state.SourcePdfChangedError, match="not found"):
+        state.assert_source_pdf_unchanged(sd)
+
+
+def test_assert_source_pdf_unchanged_legacy_state_raises(tmp_path: Path) -> None:
+    pdf = tmp_path / "comments.pdf"
+    pdf.write_bytes(b"%PDF-1.4 content")
+    sd = state.StateDir(tmp_path)
+    sd.dir.mkdir()
+    _write_annotations_doc(sd.dir, pdf, md5=None)  # No source_pdf_md5 field
+    with pytest.raises(state.LegacyStateError, match="extract --force"):
+        state.assert_source_pdf_unchanged(sd)
