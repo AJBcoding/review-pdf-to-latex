@@ -657,3 +657,93 @@ def test_phase_1_build_failure_reverts_and_flags(project_copy: Path, tmp_path: P
     )
     assert "\\unbalanced" not in conclusion
     assert "mid-semester checkpoint program" in conclusion
+
+
+def test_source_pdf_mutated_mid_review_blocks_apply_with_exit_21(
+    project_copy: Path, tmp_path: Path
+):
+    """Mutating the source PDF after extract must block subsequent apply (spec §14 risk 9)."""
+    sd = _phase_0_setup(project_copy)
+    _override_ann_004_mapping(project_copy, sd)
+
+    # Sanity: annotations.json carries the source_pdf_md5 field after extract.
+    ann_doc = state_mod.read_json(sd.annotations_path)
+    assert ann_doc.get("source_pdf_md5"), "extract must record source_pdf_md5 (spec §7.1)"
+    original_md5 = ann_doc["source_pdf_md5"]
+
+    # Capture a pre-mutation .tex file's content for the no-side-effects assertion.
+    target_tex = project_copy / "templates" / "intro.tex"
+    pre_apply_body = target_tex.read_text(encoding="utf-8")
+
+    # Mutate the source PDF on disk. The exact mutation does not matter -- only
+    # that the bytes differ so the MD5 changes. We append a trailing byte
+    # outside the trailer so most PDF readers would still open the file, but
+    # the MD5 is guaranteed to differ from `original_md5`.
+    pdf_path = Path(ann_doc["source_pdf"])
+    assert pdf_path.exists(), "source_pdf path in annotations.json must resolve"
+    with pdf_path.open("ab") as f:
+        f.write(b"\n% mutated-after-extract\n")
+
+    # Sanity: the MD5 actually changed.
+    import hashlib
+    new_md5 = hashlib.md5(pdf_path.read_bytes()).hexdigest()
+    assert new_md5 != original_md5
+
+    # Now attempt apply on ann-001. The mutator must refuse with exit 21
+    # before mutating any .tex file (per spec §14 risk 9).
+    proposal = tmp_path / "proposal-ann-001.tex"
+    proposal.write_text(
+        "studio enrollment grew 14% year over year, with the largest gains "
+        "in transfer-student cohorts.\n",
+        encoding="utf-8",
+    )
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(proposal),
+        ]
+    )
+    assert rc == cli.EXIT_SOURCE_PDF_CHANGED == 21, (
+        f"expected exit 21 (SourcePdfChangedError); got {rc}"
+    )
+
+    # No .tex mutation occurred: intro.tex is byte-identical to its pre-apply state.
+    assert target_tex.read_text(encoding="utf-8") == pre_apply_body, (
+        "apply must not have mutated intro.tex after raising SourcePdfChangedError"
+    )
+
+    # state.json is unchanged for ann-001 (still pending).
+    st = state_mod.read_json(sd.state_path)
+    assert st["annotations"]["ann-001"]["status"] == "pending"
+
+
+def test_legacy_annotations_without_md5_blocks_apply_with_exit_22(
+    project_copy: Path, tmp_path: Path
+):
+    """Annotations.json predating the source_pdf_md5 guard must block apply (spec §14 risk 9)."""
+    sd = _phase_0_setup(project_copy)
+    _override_ann_004_mapping(project_copy, sd)
+
+    # Strip source_pdf_md5 from annotations.json to simulate a pre-guard
+    # extract output. We write back via raw json.dumps (not atomic_write_json)
+    # because we're deliberately producing a malformed/legacy file for the
+    # test; production code never writes annotations.json after extract.
+    ann_doc = state_mod.read_json(sd.annotations_path)
+    ann_doc.pop("source_pdf_md5", None)
+    sd.annotations_path.write_text(json.dumps(ann_doc), encoding="utf-8")
+
+    proposal = tmp_path / "proposal-ann-001.tex"
+    proposal.write_text("legacy-state probe.\n", encoding="utf-8")
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(proposal),
+        ]
+    )
+    assert rc == cli.EXIT_LEGACY_STATE == 22, (
+        f"expected exit 22 (LegacyStateError); got {rc}"
+    )
