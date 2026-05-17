@@ -156,6 +156,97 @@ def _bbox_recover_text(
         return ""
 
 
+_STICKY_ASSOC_DISTANCE_PT = 72.0
+"""Max bbox-center distance (PDF points, ~1 inch) for sticky→highlight association.
+
+Acrobat's sticky-note glyph is ~16pt and reviewers click slightly off the
+highlighted text, so 72pt (≈1in, ~4 lines at 12pt) is generous enough to
+catch typical free-floating notes without bleeding across paragraphs. See
+rev-9m5.
+"""
+
+_STICKY_ASSOC_RUNNER_UP_RATIO = 1.5
+"""Nearest highlight wins only if runner-up is at least this many times as far.
+
+Keeps the merge unambiguous: if two highlights are roughly equidistant from
+the sticky, we leave it alone and let the manual-mapping UI resolve it.
+"""
+
+
+def _associate_sticky_notes(
+    annotations: list[Annotation],
+    subtypes_by_id: dict[str, str],
+    *,
+    distance_threshold_pt: float = _STICKY_ASSOC_DISTANCE_PT,
+    runner_up_ratio: float = _STICKY_ASSOC_RUNNER_UP_RATIO,
+) -> None:
+    """Copy ``highlighted_text`` from the nearest Highlight onto each free-floating sticky.
+
+    A sticky note (subtype ``Text``) without ``highlighted_text`` carries the
+    reviewer's comment but no anchor text — :func:`fuzzy_map` has nothing to
+    match against and the annotation drops into ``needs_review``. When Acrobat
+    is used in "highlight then comment" mode the comment lands on a separate
+    Text annotation right next to the Highlight, so we can recover the lost
+    anchor by spatial proximity.
+
+    For each Text annotation with empty ``highlighted_text``:
+
+    1. Find Highlight annotations on the same page with non-empty
+       ``highlighted_text`` (the standalone-Highlight side of the pair).
+    2. Compute bbox-center Euclidean distance to each candidate.
+    3. If the nearest is within ``distance_threshold_pt`` AND the runner-up
+       is at least ``runner_up_ratio`` times farther (or there is no runner-up),
+       copy the winner's ``highlighted_text`` onto the sticky.
+    4. Otherwise leave the sticky untouched (the manual-mapping UI handles
+       ambiguous cases).
+
+    Mutates ``annotations`` in place. The Highlight annotation is left
+    untouched — both annotations remain in the list with their original
+    bboxes; only the sticky gains an anchor. See rev-9m5.
+
+    Args:
+        annotations: The list returned by :func:`read_annotations`.
+        subtypes_by_id: Map of annotation id → pdfannots subtype name
+            (``"Text"`` / ``"Highlight"`` / ``...``). Captured during the
+            read loop because :class:`Annotation` does not carry subtype.
+    """
+    highlights_by_page: dict[int, list[Annotation]] = {}
+    for ann in annotations:
+        if subtypes_by_id.get(ann.id) == "Highlight" and ann.highlighted_text:
+            highlights_by_page.setdefault(ann.page, []).append(ann)
+
+    for sticky in annotations:
+        if subtypes_by_id.get(sticky.id) != "Text":
+            continue
+        if sticky.highlighted_text:
+            continue
+        candidates = highlights_by_page.get(sticky.page)
+        if not candidates:
+            continue
+
+        sticky_cx = (sticky.bbox[0] + sticky.bbox[2]) / 2
+        sticky_cy = (sticky.bbox[1] + sticky.bbox[3]) / 2
+        distances: list[tuple[float, Annotation]] = []
+        for hl in candidates:
+            hl_cx = (hl.bbox[0] + hl.bbox[2]) / 2
+            hl_cy = (hl.bbox[1] + hl.bbox[3]) / 2
+            d = ((sticky_cx - hl_cx) ** 2 + (sticky_cy - hl_cy) ** 2) ** 0.5
+            distances.append((d, hl))
+        distances.sort(key=lambda t: t[0])
+
+        nearest_d, nearest = distances[0]
+        if nearest_d > distance_threshold_pt:
+            continue
+        if len(distances) >= 2:
+            runner_up_d = distances[1][0]
+            # Guard nearest_d == 0 (sticky exactly on a highlight center):
+            # treat as unambiguous winner regardless of runner-up.
+            if nearest_d > 0 and runner_up_d < runner_up_ratio * nearest_d:
+                continue
+
+        sticky.highlighted_text = nearest.highlighted_text
+
+
 def read_annotations(
     pdf_path: Path,
     trigger_phrase: str = DEFAULT_SURFACE_TRIGGER,
@@ -170,9 +261,13 @@ def read_annotations(
     When ``pdfannots.gettext()`` returns empty for a Highlight (e.g. a
     "RESTORED" PDF where re-injected annotation quad points no longer align
     with the page's text run), this function falls back to a bbox-region
-    crop via pdfplumber so the highlighted text is preserved. Sticky-note
-    annotations with no underlying highlight remain ``highlighted_text == ""``
-    — there is no text to recover. See rev-fv6.
+    crop via pdfplumber so the highlighted text is preserved. See rev-fv6.
+
+    After the per-annotation loop, runs a spatial-association pass
+    (:func:`_associate_sticky_notes`) so a sticky-note Text annotation that
+    sits next to a standalone Highlight inherits the Highlight's anchor text.
+    This recovers the reviewer's intent when Acrobat splits "highlight a
+    region" and "write a comment" into two separate annotations. See rev-9m5.
 
     Args:
         pdf_path: Absolute or relative path to an annotated PDF.
@@ -210,6 +305,7 @@ def read_annotations(
             raise RuntimeError(_corrupt_pdf_message(pdf_path, exc)) from exc
 
         annotations: list[Annotation] = []
+        subtypes_by_id: dict[str, str] = {}
         counter = 0
         # Open the PDF once for the lifetime of the loop so we don't pay the
         # pdfplumber open cost per annotation.
@@ -222,6 +318,7 @@ def read_annotations(
                         highlighted_text = (raw.gettext() or "").strip()
                         comment = (raw.contents or "").strip()
                         author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
+                        subtype_name = getattr(getattr(raw, "subtype", None), "name", "") or ""
                         if raw.boxes:
                             xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
                             ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
@@ -239,15 +336,25 @@ def read_annotations(
                         ) from exc
 
                     # Bbox fallback for Highlight annotations whose quad points
-                    # no longer link to the page text run.
-                    if not highlighted_text and bbox != (0.0, 0.0, 0.0, 0.0):
+                    # no longer link to the page text run. Skip for Text/sticky
+                    # subtypes: their bbox is a tiny click-point icon, not a
+                    # region of source text, so any chars cropped from it would
+                    # be stray neighbors that block the spatial-association
+                    # pass below from firing.
+                    if (
+                        not highlighted_text
+                        and bbox != (0.0, 0.0, 0.0, 0.0)
+                        and subtype_name != "Text"
+                    ):
                         highlighted_text = _bbox_recover_text(
                             plumb, page.pageno, bbox
                         )
 
+                    ann_id = f"ann-{counter:03d}"
+                    subtypes_by_id[ann_id] = subtype_name
                     annotations.append(
                         Annotation(
-                            id=f"ann-{counter:03d}",
+                            id=ann_id,
                             page=page_number,
                             bbox=bbox,
                             highlighted_text=highlighted_text,
@@ -260,6 +367,7 @@ def read_annotations(
     finally:
         pdfannots_logger.removeFilter(dedupe_filter)
 
+    _associate_sticky_notes(annotations, subtypes_by_id)
     return annotations
 
 

@@ -934,3 +934,229 @@ def test_read_annotations_attaches_then_removes_dedupe_filter() -> None:
         f"dedupe filter leaked onto pdfannots logger: "
         f"before={len(before)} after={len(after)}"
     )
+
+
+# ---- rev-9m5: spatial association of free-floating sticky notes ----
+
+from review_pdf_to_latex.extract import _associate_sticky_notes
+
+
+def _sticky_ann(
+    ann_id: str,
+    *,
+    page: int = 1,
+    bbox: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+    highlighted_text: str = "",
+    comment: str = "",
+) -> Annotation:
+    """Compact Annotation factory for the sticky-association tests."""
+    return Annotation(
+        id=ann_id,
+        page=page,
+        bbox=bbox,
+        highlighted_text=highlighted_text,
+        author="reviewer",
+        comment=comment,
+        created=None,
+        trigger_match=False,
+    )
+
+
+def test_associate_sticky_notes_copies_text_from_unique_nearby_highlight() -> None:
+    """Sticky within 72pt of exactly one highlight inherits its anchor text."""
+    # Highlight at center (100, 100), sticky 20pt to the right.
+    hl = _sticky_ann(
+        "ann-001",
+        bbox=(90.0, 95.0, 110.0, 105.0),
+        highlighted_text="the important phrase",
+    )
+    sticky = _sticky_ann(
+        "ann-002",
+        bbox=(125.0, 95.0, 135.0, 105.0),  # center at (130, 100), 30pt from hl
+        comment="this needs work",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Text"}
+
+    _associate_sticky_notes([hl, sticky], subtypes)
+
+    assert sticky.highlighted_text == "the important phrase"
+    # Comment preserved; the Highlight is left intact.
+    assert sticky.comment == "this needs work"
+    assert hl.highlighted_text == "the important phrase"
+
+
+def test_associate_sticky_notes_skips_when_nearest_beyond_threshold() -> None:
+    """Sticky > 72pt from any highlight stays unanchored."""
+    hl = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 0.0, 10.0, 10.0),
+        highlighted_text="anchor",
+    )
+    sticky = _sticky_ann(
+        "ann-002",
+        bbox=(200.0, 200.0, 210.0, 210.0),  # ~290pt away
+        comment="far away note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Text"}
+
+    _associate_sticky_notes([hl, sticky], subtypes)
+
+    assert sticky.highlighted_text == ""
+
+
+def test_associate_sticky_notes_skips_when_ambiguous_runner_up() -> None:
+    """Two equidistant highlights → no copy (runner-up < 1.5× as far)."""
+    hl_left = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 100.0, 20.0, 110.0),  # center (10, 105)
+        highlighted_text="left text",
+    )
+    hl_right = _sticky_ann(
+        "ann-002",
+        bbox=(80.0, 100.0, 100.0, 110.0),  # center (90, 105)
+        highlighted_text="right text",
+    )
+    sticky = _sticky_ann(
+        "ann-003",
+        bbox=(45.0, 100.0, 55.0, 110.0),  # center (50, 105) — 40pt from each
+        comment="ambiguous note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Highlight", "ann-003": "Text"}
+
+    _associate_sticky_notes([hl_left, hl_right, sticky], subtypes)
+
+    assert sticky.highlighted_text == "", (
+        "ambiguous match must leave the sticky for manual mapping, "
+        f"got {sticky.highlighted_text!r}"
+    )
+
+
+def test_associate_sticky_notes_runner_up_just_outside_ratio_picks_nearest() -> None:
+    """Nearest 10pt away, runner-up 16pt away → 16 >= 1.5*10, unique winner."""
+    hl_near = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 0.0, 0.0, 0.0),  # center (0, 0)
+        highlighted_text="near text",
+    )
+    hl_far = _sticky_ann(
+        "ann-002",
+        bbox=(16.0, 0.0, 16.0, 0.0),  # center (16, 0)
+        highlighted_text="far text",
+    )
+    sticky = _sticky_ann(
+        "ann-003",
+        bbox=(-10.0, 0.0, -10.0, 0.0),  # center (-10, 0) — 10pt from near, 26pt from far
+        comment="note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Highlight", "ann-003": "Text"}
+
+    _associate_sticky_notes([hl_near, hl_far, sticky], subtypes)
+
+    assert sticky.highlighted_text == "near text"
+
+
+def test_associate_sticky_notes_runner_up_just_inside_ratio_skips() -> None:
+    """Nearest 10pt, runner-up 14pt → 14 < 1.5*10=15, ambiguous, skip."""
+    hl_near = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 0.0, 0.0, 0.0),
+        highlighted_text="near text",
+    )
+    hl_close = _sticky_ann(
+        "ann-002",
+        bbox=(4.0, 0.0, 4.0, 0.0),
+        highlighted_text="close text",
+    )
+    sticky = _sticky_ann(
+        "ann-003",
+        bbox=(-10.0, 0.0, -10.0, 0.0),  # 10pt from near, 14pt from close
+        comment="note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Highlight", "ann-003": "Text"}
+
+    _associate_sticky_notes([hl_near, hl_close, sticky], subtypes)
+
+    assert sticky.highlighted_text == ""
+
+
+def test_associate_sticky_notes_ignores_highlight_on_other_page() -> None:
+    """A highlight on page 2 must not anchor a sticky on page 1."""
+    hl = _sticky_ann(
+        "ann-001",
+        page=2,
+        bbox=(0.0, 0.0, 10.0, 10.0),
+        highlighted_text="page-2 text",
+    )
+    sticky = _sticky_ann(
+        "ann-002",
+        page=1,
+        bbox=(0.0, 0.0, 10.0, 10.0),  # would match if same page
+        comment="page-1 note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Text"}
+
+    _associate_sticky_notes([hl, sticky], subtypes)
+
+    assert sticky.highlighted_text == ""
+
+
+def test_associate_sticky_notes_leaves_stickies_that_already_have_text() -> None:
+    """A sticky with highlighted_text already populated is not modified."""
+    hl = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 0.0, 10.0, 10.0),
+        highlighted_text="ignored anchor",
+    )
+    sticky = _sticky_ann(
+        "ann-002",
+        bbox=(15.0, 0.0, 25.0, 10.0),  # near enough to match if eligible
+        highlighted_text="pre-existing text",
+        comment="note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Text"}
+
+    _associate_sticky_notes([hl, sticky], subtypes)
+
+    assert sticky.highlighted_text == "pre-existing text"
+
+
+def test_associate_sticky_notes_ignores_highlights_with_empty_text() -> None:
+    """A Highlight that itself has no extractable text can't anchor anything."""
+    empty_hl = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 0.0, 10.0, 10.0),
+        highlighted_text="",
+    )
+    sticky = _sticky_ann(
+        "ann-002",
+        bbox=(15.0, 0.0, 25.0, 10.0),
+        comment="note",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Text"}
+
+    _associate_sticky_notes([empty_hl, sticky], subtypes)
+
+    assert sticky.highlighted_text == ""
+
+
+def test_associate_sticky_notes_does_not_touch_highlights() -> None:
+    """The standalone Highlight is left intact even when its text is copied."""
+    hl = _sticky_ann(
+        "ann-001",
+        bbox=(0.0, 0.0, 10.0, 10.0),
+        highlighted_text="the anchor",
+        comment="",
+    )
+    sticky = _sticky_ann(
+        "ann-002",
+        bbox=(15.0, 0.0, 25.0, 10.0),
+        comment="reviewer comment",
+    )
+    subtypes = {"ann-001": "Highlight", "ann-002": "Text"}
+
+    _associate_sticky_notes([hl, sticky], subtypes)
+
+    # Highlight unchanged: same text, same empty comment, same bbox.
+    assert hl.highlighted_text == "the anchor"
+    assert hl.comment == ""
+    assert hl.bbox == (0.0, 0.0, 10.0, 10.0)
