@@ -404,3 +404,69 @@ def test_bootstrap_state_handles_empty_annotation_list() -> None:
     assert state.phase == "0-setup"
     assert state.annotations == {}
     assert state.builds == []
+
+
+import os
+import time
+
+from review_pdf_to_latex.extract import ensure_gitignore_entry
+
+
+def test_ensure_gitignore_entry_creates_file_when_absent(tmp_path: Path) -> None:
+    """No .gitignore yet -> file created with the entry and a header comment."""
+    ensure_gitignore_entry(tmp_path, entry=".review-state/")
+
+    gi = tmp_path / ".gitignore"
+    assert gi.exists()
+    content = gi.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    assert ".review-state/" in lines, f".gitignore missing entry: {content!r}"
+    # Header comment present.
+    assert any(line.startswith("#") for line in lines), (
+        f"expected a leading comment in fresh .gitignore: {content!r}"
+    )
+
+
+def test_ensure_gitignore_entry_appends_when_missing(tmp_path: Path) -> None:
+    """Existing .gitignore without the entry -> entry appended on its own line."""
+    gi = tmp_path / ".gitignore"
+    original = "*.pyc\nbuild/\n"
+    gi.write_text(original, encoding="utf-8")
+
+    ensure_gitignore_entry(tmp_path, entry=".review-state/")
+
+    new_content = gi.read_text(encoding="utf-8")
+    lines = new_content.splitlines()
+    assert ".review-state/" in lines
+    # Preexisting lines preserved.
+    assert "*.pyc" in lines
+    assert "build/" in lines
+
+
+def test_ensure_gitignore_entry_idempotent_when_present(tmp_path: Path) -> None:
+    """Entry already present -> file is not rewritten (mtime unchanged)."""
+    gi = tmp_path / ".gitignore"
+    gi.write_text("*.pyc\n.review-state/\nbuild/\n", encoding="utf-8")
+    # Backdate mtime so we can detect any rewrite.
+    old_time = time.time() - 3600
+    os.utime(gi, (old_time, old_time))
+    original_mtime = gi.stat().st_mtime
+    original_content = gi.read_text(encoding="utf-8")
+
+    ensure_gitignore_entry(tmp_path, entry=".review-state/")
+
+    assert gi.read_text(encoding="utf-8") == original_content
+    assert gi.stat().st_mtime == original_mtime, (
+        "ensure_gitignore_entry rewrote the file even though entry was present"
+    )
+
+
+def test_ensure_gitignore_entry_treats_substring_as_distinct(tmp_path: Path) -> None:
+    """A line like '# .review-state/ disabled' does not count as the entry."""
+    gi = tmp_path / ".gitignore"
+    gi.write_text("# .review-state/ disabled for now\n", encoding="utf-8")
+
+    ensure_gitignore_entry(tmp_path, entry=".review-state/")
+
+    lines = gi.read_text(encoding="utf-8").splitlines()
+    assert ".review-state/" in lines, "literal entry must be appended"

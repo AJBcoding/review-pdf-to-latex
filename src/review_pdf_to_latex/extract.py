@@ -437,3 +437,44 @@ def bootstrap_state(
         annotations=ann_states,
         builds=[],
     )
+
+
+def ensure_gitignore_entry(
+    project_root: Path,
+    entry: str = ".review-state/",
+) -> None:
+    """Idempotently ensure `entry` is on its own line in `project_root/.gitignore`.
+
+    Behavior:
+        - No .gitignore exists: create one with a one-line header comment and
+          the entry.
+        - .gitignore exists, entry not present (line-exact, ignoring surrounding
+          whitespace): append the entry on a new line.
+        - .gitignore exists and entry is already present: do nothing (mtime
+          preserved).
+
+    Substring matches do not count — a commented-out line containing the entry
+    does not block appending the literal entry.
+    """
+    project_root = Path(project_root)
+    gi = project_root / ".gitignore"
+
+    if not gi.exists():
+        header = "# Local review-pdf-to-latex working state; do not commit.\n"
+        gi.write_text(f"{header}{entry}\n", encoding="utf-8")
+        return
+
+    existing = gi.read_text(encoding="utf-8")
+    lines = existing.splitlines()
+    for line in lines:
+        if line.strip() == entry:
+            return  # already present, leave file (and mtime) untouched
+
+    # Append. Preserve trailing-newline convention: if file ends with \n,
+    # append "entry\n"; otherwise prepend a newline so the new entry stands
+    # on its own line.
+    if existing and not existing.endswith("\n"):
+        new_text = existing + "\n" + entry + "\n"
+    else:
+        new_text = existing + entry + "\n"
+    gi.write_text(new_text, encoding="utf-8")
