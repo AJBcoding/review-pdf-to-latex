@@ -56,6 +56,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "append-chat",
         "record-proposal",
         "override-mapping",
+        "commit-phase",
     }
 )
 
@@ -470,6 +471,115 @@ def test_cli_override_mapping_subcommand_bad_lines_exits_13(tmp_path: Path) -> N
         ]
     )
     assert r.returncode == 13, r.stderr
+
+
+def test_cli_commit_phase_subcommand(tmp_path: Path) -> None:
+    """End-to-end: init a repo, seed a phase-1 snapshot, invoke commit-phase,
+    assert state.phase advanced and a commit landed."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(project), check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=str(project), check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=str(project), check=True,
+    )
+    (project / "templates").mkdir()
+    tex = project / "templates" / "section.tex"
+    tex.write_text("orig\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "templates/section.tex"], cwd=str(project), check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "init"], cwd=str(project), check=True,
+    )
+
+    # Simulate a phase-1 apply: mutate the file, set up state.
+    tex.write_text("APPLIED\n", encoding="utf-8")
+    state_dir = project / ".review-state"
+    state_dir.mkdir()
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {
+                    "ann-001": {
+                        "status": "applied",
+                        "before_text": "orig\n",
+                        "proposed_text": "APPLIED\n",
+                        "applied_text": "APPLIED\n",
+                        "applied_at": "2026-05-16T20:45:12Z",
+                        "last_build_id": None,
+                        "surface_chat_log": None,
+                        "failure_log_path": None,
+                        "failure_edit_text": None,
+                    }
+                },
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_dir / "mapping.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mappings": {
+                    "ann-001": {
+                        "latex_file": "templates/section.tex",
+                        "line_range": [1, 1],
+                        "confidence": 0.95,
+                        "method": "fuzzy_text",
+                        "needs_review": False,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Source-PDF guard: include source_pdf_md5 so assert_source_pdf_unchanged
+    # passes (without it, commit_phase would raise LegacyStateCommitError → 22).
+    source_pdf = project / "source.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4 fake\n")
+    pdf_md5 = _hashlib.md5(source_pdf.read_bytes()).hexdigest()
+    (state_dir / "annotations.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_pdf": str(source_pdf.resolve()),
+                "source_pdf_md5": pdf_md5,
+                "annotations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        [
+            "--project-dir", str(project),
+            "commit-phase",
+            "--phase", "1",
+            "--message-suffix", "smoke test",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    sha_printed = result.stdout.strip()
+    assert len(sha_printed) >= 7
+
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["phase"] == "2a-ratify"
+
+    log = subprocess.run(
+        ["git", "log", "--format=%H%n%B", "-n", "1"],
+        cwd=str(project), capture_output=True, text=True, check=True,
+    ).stdout
+    assert sha_printed in log
+    assert "smoke test" in log
 
 
 @pdflatex

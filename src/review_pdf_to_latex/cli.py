@@ -429,6 +429,43 @@ def _handle_override_mapping(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# Phase short-form (CLI flag) → canonical state.json phase identifier.
+# The CLI's argparse only accepts the short forms ("1", "2a", ...) per
+# chunk B; the state file uses full forms ("1-batch", "2a-ratify", ...).
+_PHASE_SHORT_TO_FULL: dict[str, str] = {
+    "0": "0-setup",
+    "1": "1-batch",
+    "2a": "2a-ratify",
+    "2b": "2b-surface",
+    "3": "3-final",
+    "0-setup": "0-setup",
+    "1-batch": "1-batch",
+    "2a-ratify": "2a-ratify",
+    "2b-surface": "2b-surface",
+    "3-final": "3-final",
+}
+
+
+def _handle_commit_phase(args: argparse.Namespace) -> int:
+    """``commit-phase`` subcommand handler (spec §8 exit codes 0, 1, 15, 19, 21, 22)."""
+    from review_pdf_to_latex.commit import CommitError, commit_phase
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    phase_arg = _PHASE_SHORT_TO_FULL.get(args.phase, args.phase)
+    try:
+        sha = commit_phase(
+            state_dir=state_dir,
+            phase_arg=phase_arg,
+            message_suffix=args.message_suffix,
+            granularity=args.granularity,
+        )
+    except CommitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    print(sha)
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -491,6 +528,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "append-chat": _handle_append_chat,
     "record-proposal": _handle_record_proposal,
     "override-mapping": _handle_override_mapping,
+    "commit-phase": _handle_commit_phase,
 }
 
 
