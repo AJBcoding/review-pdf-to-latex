@@ -259,3 +259,81 @@ def test_apply_edit_refuses_when_source_pdf_changed(tmp_path: Path) -> None:
             annotation_id="ann-001",
             new_text="anything\n",
         )
+
+
+from review_pdf_to_latex.apply import apply_batch
+
+
+def _make_project_three_in_one_file(tmp_path: Path) -> _ProjectFixture:
+    lines = [f"L{i:02d}\n" for i in range(1, 121)]  # 120 lines
+    proj = _make_project(tmp_path, lines=lines)
+    # Reset the default ann-001 mapping to a clean state, then add three.
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    state["annotations"] = {
+        "ann-A": dict(state["annotations"]["ann-001"]),
+        "ann-B": dict(state["annotations"]["ann-001"]),
+        "ann-C": dict(state["annotations"]["ann-001"]),
+    }
+    proj.state_path.write_text(json.dumps(state), encoding="utf-8")
+    mapping = {
+        "schema_version": 1,
+        "mappings": {
+            "ann-A": {
+                "latex_file": "templates/section.tex",
+                "line_range": [10, 10],
+                "confidence": 0.9,
+                "method": "fuzzy_text",
+                "needs_review": False,
+            },
+            "ann-B": {
+                "latex_file": "templates/section.tex",
+                "line_range": [50, 50],
+                "confidence": 0.9,
+                "method": "fuzzy_text",
+                "needs_review": False,
+            },
+            "ann-C": {
+                "latex_file": "templates/section.tex",
+                "line_range": [100, 100],
+                "confidence": 0.9,
+                "method": "fuzzy_text",
+                "needs_review": False,
+            },
+        },
+    }
+    proj.mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+    return proj
+
+
+def test_apply_batch_reverse_order_keeps_earlier_lines_valid(tmp_path: Path) -> None:
+    proj = _make_project_three_in_one_file(tmp_path)
+
+    # Provide the edits in arbitrary (ascending) order; apply_batch reorders.
+    edits = [
+        ("ann-A", "A-new1\nA-new2\nA-new3\n"),  # +2 lines at L10
+        ("ann-B", "B-new1\n"),                  # 0 net shift at L50
+        ("ann-C", ""),                          # -1 line at L100 (full deletion)
+    ]
+    results = apply_batch(state_dir=proj.state_dir, edits=edits)
+    assert len(results) == 3
+
+    new_text = proj.tex_path.read_text(encoding="utf-8")
+    new_lines = new_text.splitlines(keepends=True)
+
+    # Confirm each edit landed at the correct (post-shift) location by checking
+    # the surrounding context.
+    # ann-C: line 100 was "L100\n" → deleted; line 99 = "L99\n" preceding,
+    # next line should be "L101\n".
+    assert "L100\n" not in new_lines
+    # ann-B: line 50 was "L50\n" → "B-new1\n"; ann-B was applied before any
+    # other edit could shift it (since C was first in reverse order).
+    assert "B-new1\n" in new_lines
+    # ann-A: line 10 → three lines.
+    assert "A-new1\n" in new_lines
+    assert "A-new2\n" in new_lines
+    assert "A-new3\n" in new_lines
+
+    # State has all three statuses == applied
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    for ann_id in ("ann-A", "ann-B", "ann-C"):
+        assert state["annotations"][ann_id]["status"] == "applied"

@@ -348,3 +348,51 @@ def apply_edit(
         new_lines=new_lines,
         line_shift=line_shift,
     )
+
+
+def apply_batch(
+    state_dir: Path,
+    edits: list[tuple[str, str]],
+) -> list[AppliedEdit]:
+    """Apply many edits in the order spec §9.2 prescribes.
+
+    The skill drives Phase 1 by walking annotations in REVERSE line order
+    within each file so that earlier line numbers stay valid as later lines
+    are edited. apply_batch enforces this ordering even if the caller passes
+    edits in ascending order:
+
+        1. Group edits by file (using each annotation's current mapping).
+        2. Within each file, sort by current line_range[0] descending.
+        3. Apply each edit via apply_edit (which mutates state + mapping atomically).
+        4. After each apply, line_shift recomputation in apply_edit ensures
+           subsequent mappings see the post-edit line numbers (but since we
+           edit highest line numbers first, prior mappings are unchanged).
+
+    Cross-file order does not matter because line-shift recomputation only
+    affects mappings in the same file as the edit.
+
+    Returns the AppliedEdit objects in the order they were applied (reverse
+    line order).
+    """
+    state_dir = Path(state_dir)
+    _, _, mapping_path, mapping = _load_state_and_mapping(state_dir)
+
+    # Build a key: (latex_file, line_range[0]) for each edit. Edits whose
+    # mapping is unresolved are forwarded to apply_edit where they will raise.
+    annotated: list[tuple[str, str, str | None, int]] = []
+    for ann_id, new_text in edits:
+        entry = mapping["mappings"].get(ann_id, {})
+        latex_file = entry.get("latex_file")
+        line_range = entry.get("line_range") or [0, 0]
+        annotated.append((ann_id, new_text, latex_file, int(line_range[0])))
+
+    # Sort: by file, then by starting line descending. (None file sorts last.)
+    annotated.sort(
+        key=lambda t: (t[2] is None, t[2] or "", -t[3]),
+    )
+
+    results: list[AppliedEdit] = []
+    for ann_id, new_text, _file, _line in annotated:
+        result = apply_edit(state_dir=state_dir, annotation_id=ann_id, new_text=new_text)
+        results.append(result)
+    return results
