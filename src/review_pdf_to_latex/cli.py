@@ -281,6 +281,34 @@ def _handle_status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_migrate_state(args: argparse.Namespace) -> int:
+    """``migrate-state`` subcommand handler (spec §8 exit code 14).
+
+    Design decision (do NOT add a source-PDF integrity guard here):
+        Other mutators (apply / revert / preview / set-status / etc.) call
+        ``state.assert_source_pdf_unchanged`` to refuse work if the source
+        PDF's MD5 no longer matches ``annotations.json.source_pdf_md5``.
+        ``migrate-state`` deliberately does NOT call that guard: migration
+        operates on the on-disk state files only, and the source PDF may
+        have legitimately moved, been renamed, or been deleted between the
+        original ``extract`` and the migration run.
+    """
+    from review_pdf_to_latex import migrate as _migrate
+    from review_pdf_to_latex import state as _state
+
+    state_dir = _state.StateDir(args.project_dir)
+    try:
+        _migrate.migrate(
+            state_dir,
+            from_version=args.from_version,
+            to_version=args.to_version,
+        )
+    except _migrate.UnsupportedMigrationError as e:
+        print(f"unsupported migration: {e}", file=sys.stderr)
+        return EXIT_UNSUPPORTED_MIGRATION
+    return EXIT_OK
+
+
 # String fallback for subcommands without a wired handler: the value is the
 # name passed to `_stub`, which raises NotImplementedError. Real handlers
 # registered in `_HANDLERS_TABLE` shadow these entries.
@@ -308,6 +336,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "serve": _handle_serve,
     "wait-event": _handle_wait_event,
     "status": _handle_status,
+    "migrate-state": _handle_migrate_state,
 }
 
 

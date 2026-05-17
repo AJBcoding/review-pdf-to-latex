@@ -342,6 +342,49 @@ def test_cli_status_exits_6_when_state_missing(
     assert "state.json" in err
 
 
+# ---- Task 13.2: migrate-state subcommand -----------------------------------
+
+
+def test_cli_migrate_state_exits_14(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """Any migrate-state call in v1 exits 14 with the spec message."""
+    rc = cli.main(
+        [
+            "--project-dir",
+            str(tmp_project),
+            "migrate-state",
+            "--from",
+            "1",
+            "--to",
+            "2",
+        ]
+    )
+    assert rc == cli.EXIT_UNSUPPORTED_MIGRATION == 14
+    err = capsys.readouterr().err
+    assert "from=1" in err
+    assert "to=2" in err
+    assert "no migrations" in err.lower()
+
+
+def test_cli_migrate_state_same_from_to_also_exits_14(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """from=to is still rejected (the engine does not implicitly no-op)."""
+    rc = cli.main(
+        [
+            "--project-dir",
+            str(tmp_project),
+            "migrate-state",
+            "--from",
+            "1",
+            "--to",
+            "1",
+        ]
+    )
+    assert rc == cli.EXIT_UNSUPPORTED_MIGRATION
+
+
 @pdflatex
 @pdftoppm
 def test_cli_build_benchmark_emits_timing(tmp_path: Path) -> None:
