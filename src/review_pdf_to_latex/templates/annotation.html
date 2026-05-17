@@ -1,6 +1,122 @@
-<div class="three-pane">
-  <!-- Filled by Task 9.2 -->
-  <div class="pane pane-left">page {{ current_annotation.page }}</div>
-  <div class="pane pane-center">{{ current_annotation.id }}</div>
-  <div class="pane pane-right">preview</div>
-</div>
+{#
+  3-pane annotation block. Included by frame.html when mode == "normal".
+  See spec §10.1 for layout, §10.3 for button semantics.
+#}
+{% set ann = current_annotation %}
+{% set ann_state = current_state.annotations[ann.id] %}
+{% set status = ann_state.status %}
+
+{# Allowed source statuses per action (spec §10.3 table). #}
+{% set allowed = {
+  "approve":  ["applied", "redrafted"],
+  "reject":   ["applied", "redrafted"],
+  "redraft":  ["applied", "rejected", "redrafted"],
+  "preview":  ["pending", "applied", "accepted", "rejected", "redrafted", "deferred", "surfaced_pending", "surfaced_resolved", "needs_review"],
+  "skip":     ["pending", "applied", "redrafted", "rejected", "needs_review", "surfaced_pending"],
+  "surface":  ["pending", "applied", "deferred", "needs_review"]
+} %}
+
+{# Bbox → CSS scaling. PDF origin bottom-left → CSS origin top-left. #}
+{% set scale_x = image_width_px / pdf_page_width_pt %}
+{% set scale_y = image_height_px / pdf_page_height_pt %}
+{% set bbox_left = ann.bbox[0] * scale_x %}
+{% set bbox_top = (pdf_page_height_pt - ann.bbox[3]) * scale_y %}
+{% set bbox_width = (ann.bbox[2] - ann.bbox[0]) * scale_x %}
+{% set bbox_height = (ann.bbox[3] - ann.bbox[1]) * scale_y %}
+
+<section class="three-pane">
+
+  {# ───── Left pane: source PDF page + bbox overlay ───── #}
+  <div class="pane pane-left">
+    <div class="page-frame" style="position: relative; width: {{ image_width_px }}px; max-width: 100%;">
+      <img class="page-image"
+           src="/pages/page-{{ ann.page }}.png"
+           alt="PDF page {{ ann.page }}"
+           width="{{ image_width_px }}"
+           height="{{ image_height_px }}">
+      <div class="highlight-overlay"
+           style="position: absolute; pointer-events: none; outline: 2px solid rgba(255, 200, 0, 0.7); background: rgba(255, 240, 0, 0.18); left: {{ '%.2f'|format(bbox_left) }}px; top: {{ '%.2f'|format(bbox_top) }}px; width: {{ '%.2f'|format(bbox_width) }}px; height: {{ '%.2f'|format(bbox_height) }}px;"></div>
+    </div>
+    <div class="annotation-meta">
+      <div><strong>Page {{ ann.page }}</strong> &middot; @{{ ann.author }}</div>
+      <div class="comment">{{ ann.comment }}</div>
+    </div>
+  </div>
+
+  {# ───── Center pane: source LaTeX snippet + proposed edit + buttons ───── #}
+  <div class="pane pane-center">
+    <div class="snippet-header">
+      <strong>{{ current_mapping.latex_file or "(unmapped)" }}</strong>
+      {% if current_mapping.line_range %}
+        lines {{ current_mapping.line_range[0] }}–{{ current_mapping.line_range[1] }}
+      {% endif %}
+    </div>
+    <pre class="latex-snippet"><code>{% for line in latex_snippet.splitlines() %}<span class="gutter">{{ '%4d'|format(snippet_start_line + loop.index0) }}</span>  {{ line }}
+{% endfor %}</code></pre>
+
+    <div class="status-badge status-{{ status }}">Status: <strong>{{ status }}</strong></div>
+
+    {% if diff2html_present and ann_state.before_text and proposed_text %}
+    <div class="diff-block">
+      <div id="diff-container"></div>
+      <script>
+        (function () {
+          var before = {{ ann_state.before_text|tojson }};
+          var after = {{ proposed_text|tojson }};
+          // Build a minimal unified-diff header so diff2html parses it.
+          var diff = "--- before\n+++ proposed\n@@\n" +
+                     before.split("\n").map(function (l) { return "-" + l; }).join("\n") +
+                     "\n" +
+                     after.split("\n").map(function (l) { return "+" + l; }).join("\n");
+          if (typeof Diff2Html !== "undefined") {
+            document.getElementById("diff-container").innerHTML =
+              Diff2Html.html(diff, {drawFileList: false, outputFormat: "side-by-side"});
+          } else {
+            document.getElementById("diff-container").textContent =
+              "(diff2html not loaded; refresh after dropping diff2html.min.js into templates/static/)";
+          }
+        })();
+      </script>
+    </div>
+    {% else %}
+    <div class="proposed-block">
+      <div class="before">
+        <div class="label">Before</div>
+        <pre>{{ ann_state.before_text or "(no before text)" }}</pre>
+      </div>
+      <div class="proposed">
+        <div class="label">Proposed</div>
+        <pre class="proposed">{{ proposed_text or "(no proposal yet)" }}</pre>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="button-row">
+      {% for action in ["preview", "approve", "reject", "redraft", "skip", "surface"] %}
+        <button type="button"
+                data-action="{{ action }}"
+                data-annotation-id="{{ ann.id }}"
+                {% if status not in allowed[action] %}disabled{% endif %}>
+          {{ action|capitalize }}
+        </button>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ───── Right pane: current build preview + pagination indicator ───── #}
+  <div class="pane pane-right">
+    {% if current_build %}
+    <div class="build-frame">
+      <img class="build-image"
+           src="/builds/{{ current_build.id }}/page-{{ target_page }}.png"
+           alt="Build {{ current_build.id }} page {{ target_page }}">
+    </div>
+    <div class="pagination-indicator">{{ pagination_indicator }}</div>
+    {% else %}
+    <div class="no-build">
+      No build yet. Run <code>review-pdf build</code> from a terminal.
+    </div>
+    {% endif %}
+  </div>
+
+</section>
