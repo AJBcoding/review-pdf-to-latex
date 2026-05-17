@@ -76,3 +76,115 @@ def assert_clean_git(project_root: Path, current_phase: str) -> None:
             "dirty git state in project root; commit or stash before phase 0:\n"
             + result.stdout
         )
+
+
+# Phase ID to human-friendly suffix used in the commit subject.
+_PHASE_LABELS: dict[str, str] = {
+    "0-setup": "phase 0 — setup",
+    "1-batch": "phase 1 — batch apply",
+    "2a-ratify": "phase 2a — ratify",
+    "2b-surface": "phase 2b — surface",
+    "3-final": "phase 3 — final",
+}
+
+# Statuses that count as edits in the commit summary, in display order.
+_SUMMARY_STATUSES: list[str] = [
+    "applied",
+    "accepted",
+    "redrafted",
+    "rejected",
+    "deferred",
+    "surfaced_resolved",
+    "surfaced_pending",
+    "needs_review",
+    "pending",
+]
+
+
+def _count_by_status(state: dict) -> dict[str, int]:
+    counts: dict[str, int] = {s: 0 for s in _SUMMARY_STATUSES}
+    for _ann_id, entry in state.get("annotations", {}).items():
+        s = entry.get("status", "pending")
+        counts[s] = counts.get(s, 0) + 1
+    return counts
+
+
+def _summary_for_phase(phase: str, counts: dict[str, int]) -> list[str]:
+    """Return the body lines (without trailing newline) per spec §13.2."""
+    lines: list[str] = []
+    # For phase 1 the relevant categories are applied / needs_review;
+    # for phase 2a it's accepted / rejected / redrafted / deferred;
+    # for phase 2b it's surfaced_resolved / deferred; for phase 3 anything left.
+    relevant: list[str]
+    if phase == "1-batch":
+        relevant = ["applied", "needs_review"]
+    elif phase == "2a-ratify":
+        relevant = ["accepted", "rejected", "redrafted", "deferred"]
+    elif phase == "2b-surface":
+        relevant = ["surfaced_resolved", "deferred"]
+    elif phase == "3-final":
+        relevant = _SUMMARY_STATUSES
+    else:
+        relevant = _SUMMARY_STATUSES
+    for s in relevant:
+        n = counts.get(s, 0)
+        if n > 0:
+            lines.append(f"{s.replace('_', ' ').title().replace(' ', '')}: {n}")
+    return lines
+
+
+def render_commit_message(
+    phase: str,
+    granularity: str,
+    message_suffix: str | None,
+    state: dict,
+) -> str:
+    """Render a commit message per spec §13.2.
+
+    Subject line:
+        review-pdf-to-latex: <phase label>[ — <message_suffix>]
+
+    Body:
+        - one "<status>: <count>" per relevant status
+        - blank line
+        - annotation ID listing (first 10 IDs, plus "...and N more")
+        - blank line
+        - state snapshot pointer (state.json path)
+
+    Args:
+        phase: Phase id (the SOURCE phase being committed; e.g., "1-batch").
+        granularity: "phase" | "session" | "batch:N" — currently only affects
+            the subject line annotation.
+        message_suffix: Optional user-supplied project tag (e.g., "COTA v2.0").
+        state: The state.json dict to summarize.
+    """
+    if phase not in _PHASE_LABELS:
+        raise IllegalPhaseError(f"unknown phase {phase!r}")
+    counts = _count_by_status(state)
+
+    subject = f"review-pdf-to-latex: {_PHASE_LABELS[phase]}"
+    if message_suffix:
+        subject = f"{subject} — {message_suffix}"
+
+    body_lines = _summary_for_phase(phase, counts)
+
+    annotation_ids = sorted(state.get("annotations", {}).keys())
+    if annotation_ids:
+        head = annotation_ids[:10]
+        more = len(annotation_ids) - len(head)
+        listing = "Annotations: " + ", ".join(head)
+        if more > 0:
+            listing += f", ...and {more} more"
+    else:
+        listing = "Annotations: (none)"
+
+    parts: list[str] = [subject, ""]
+    if body_lines:
+        parts.extend(body_lines)
+        parts.append("")
+    parts.append(listing)
+    parts.append("")
+    parts.append("State snapshot: .review-state/state.json")
+    if granularity != "phase":
+        parts.append(f"Granularity: {granularity}")
+    return "\n".join(parts) + "\n"

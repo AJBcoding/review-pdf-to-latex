@@ -10,6 +10,7 @@ import pytest
 from review_pdf_to_latex.commit import (
     DirtyGitError,
     assert_clean_git,
+    render_commit_message,
 )
 
 
@@ -54,3 +55,65 @@ def test_assert_clean_git_tolerates_dirty_after_phase_0(tmp_path: Path) -> None:
     # In any phase past 0-setup, dirty state is expected — must not raise.
     for phase in ("1-batch", "2a-ratify", "2b-surface", "3-final"):
         assert_clean_git(project_root=repo, current_phase=phase)
+
+
+def _state(annotations: dict[str, dict]) -> dict:
+    return {
+        "schema_version": 1,
+        "phase": "1-batch",
+        "order": "mechanical-first",
+        "current_annotation_id": None,
+        "annotations": annotations,
+        "builds": [],
+    }
+
+
+def test_render_commit_message_phase_1(tmp_path: Path) -> None:
+    state = _state({
+        f"ann-{i:03d}": {"status": "applied"} for i in range(1, 11)
+    })
+    msg = render_commit_message(
+        phase="1-batch",
+        granularity="phase",
+        message_suffix=None,
+        state=state,
+    )
+    assert "phase 1" in msg
+    assert "10" in msg  # 10 applied edits referenced somewhere
+    # Annotation IDs appear in the body (truncated or full).
+    assert "ann-001" in msg
+
+
+def test_render_commit_message_phase_2a_with_suffix(tmp_path: Path) -> None:
+    anns = {}
+    for i in range(1, 63):
+        anns[f"ann-{i:03d}"] = {"status": "accepted"}
+    for i in range(63, 68):
+        anns[f"ann-{i:03d}"] = {"status": "rejected"}
+    for i in range(68, 71):
+        anns[f"ann-{i:03d}"] = {"status": "redrafted"}
+    state = _state(anns)
+    msg = render_commit_message(
+        phase="2a-ratify",
+        granularity="phase",
+        message_suffix="COTA Impact Report v2.0",
+        state=state,
+    )
+    assert "phase 2a" in msg
+    assert "Accepted: 62" in msg
+    assert "Rejected: 5" in msg
+    assert "Redrafted: 3" in msg
+    assert "COTA Impact Report v2.0" in msg
+
+
+def test_render_commit_message_phase_3_zero_edits(tmp_path: Path) -> None:
+    state = _state({})
+    msg = render_commit_message(
+        phase="3-final",
+        granularity="phase",
+        message_suffix=None,
+        state=state,
+    )
+    assert "phase 3" in msg
+    # Zero-count edge case must still produce a coherent message.
+    assert msg.strip() != ""
