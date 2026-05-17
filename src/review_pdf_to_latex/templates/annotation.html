@@ -70,7 +70,11 @@
                      after.split("\n").map(function (l) { return "+" + l; }).join("\n");
           if (typeof Diff2Html !== "undefined") {
             document.getElementById("diff-container").innerHTML =
-              Diff2Html.html(diff, {drawFileList: false, outputFormat: "side-by-side"});
+              Diff2Html.html(diff, {
+                drawFileList: false,
+                outputFormat: "side-by-side",
+                colorScheme: "dark"
+              });
           } else {
             document.getElementById("diff-container").textContent =
               "(diff2html not loaded; refresh after dropping diff2html.min.js into templates/static/)";
