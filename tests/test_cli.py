@@ -52,6 +52,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "migrate-state",
         "apply",
         "revert",
+        "set-status",
     }
 )
 
@@ -358,6 +359,35 @@ def test_cli_revert_subcommand_no_prior_apply_exits_10(tmp_path: Path) -> None:
         ]
     )
     assert r.returncode == 10, r.stderr
+
+
+def test_cli_set_status_subcommand(tmp_path: Path) -> None:
+    """apply lands ann-001 at status=applied; set-status moves it to accepted."""
+    project, state_dir, _ = _bootstrap_minimal_project(tmp_path)
+    nt = tmp_path / "d.txt"
+    nt.write_text("X\n", encoding="utf-8")
+    _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(nt),
+        ]
+    )
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "set-status",
+            "--annotation-id", "ann-001",
+            "--status", "accepted",
+            "--reason", "looks good",
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["annotations"]["ann-001"]["status"] == "accepted"
+    assert state["annotations"]["ann-001"]["last_status_reason"] == "looks good"
 
 
 @pdflatex

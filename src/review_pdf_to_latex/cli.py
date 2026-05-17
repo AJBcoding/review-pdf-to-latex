@@ -334,6 +334,24 @@ def _handle_revert(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_set_status(args: argparse.Namespace) -> int:
+    """``set-status`` subcommand handler (spec §8 exit codes 0, 7, 18, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, set_annotation_status
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    try:
+        set_annotation_status(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+            status=args.status,
+            reason=args.reason,
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -392,6 +410,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "migrate-state": _handle_migrate_state,
     "apply": _handle_apply,
     "revert": _handle_revert,
+    "set-status": _handle_set_status,
 }
 
 
