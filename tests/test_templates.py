@@ -259,3 +259,65 @@ def test_frame_script_disables_buttons_after_send():
     # After a successful POST, buttons should be disabled so the user can't double-click.
     assert "button[data-action]" in out
     assert "disabled = true" in out or "b.disabled" in out
+
+
+def test_mapping_renders_one_row_per_needs_review_annotation():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**mapping_context())
+    # Two rows from the default mapping_context() fixture
+    assert out.count('class="mapping-row"') == 2
+    assert "ann-013" in out
+    assert "ann-027" in out
+
+
+def test_mapping_renders_candidate_buttons():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**mapping_context())
+    # ann-013 has two candidates; ann-027 has none.
+    p = _ButtonCollector()
+    p.feed(out)
+    confirm_btns = [b for b in p.buttons if b.get("data-confirm-candidate") is not None or "data-confirm-candidate" in b]
+    # Two candidates for ann-013 → two confirm-candidate buttons.
+    candidate_confirms = [b for b in p.buttons if b.get("data-annotation-id") == "ann-013" and "data-confirm-candidate" in b]
+    assert len(candidate_confirms) == 2
+    # Each candidate button carries file + line numbers
+    files = sorted(b.get("data-file") for b in candidate_confirms)
+    assert files == ["templates/equity.tex", "templates/success.tex"]
+
+
+def test_mapping_renders_manual_override_form_per_row():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**mapping_context())
+    # One form per row, each with the right hidden annotation_id
+    assert out.count('class="manual-override"') == 2
+    assert 'value="ann-013"' in out
+    assert 'value="ann-027"' in out
+    # File <select> populated from tex_files
+    assert "<option" in out
+    assert "main.tex" in out
+    assert "templates/equity.tex" in out
+
+
+def test_mapping_renders_all_resolved_message_when_list_empty():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**mapping_context(needs_review_annotations=[]))
+    assert "All mappings resolved" in out
+
+
+def test_mapping_does_not_render_three_pane():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**mapping_context())
+    assert 'class="three-pane"' not in out
+
+
+def test_mapping_renders_excerpt_and_comment():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**mapping_context())
+    assert "The college experienced a substantial increase" in out
+    assert "Tighten this" in out

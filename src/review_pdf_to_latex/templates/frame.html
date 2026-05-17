@@ -239,7 +239,59 @@
         When the list is empty, Ctrl-C this server and re-run <code>review-pdf serve</code> without <code>--mapping-mode</code> to start Phase 1.
       </div>
       <div class="mapping-list" id="mapping-list">
-        <!-- Task 9.5 fills this -->
+        {% if needs_review_annotations|length == 0 %}
+          <div class="all-resolved">
+            <strong>All mappings resolved.</strong>
+            Ctrl-C this server and re-run <code>review-pdf serve</code>
+            (without <code>--mapping-mode</code>) to start Phase 1.
+          </div>
+        {% else %}
+          {% for item in needs_review_annotations %}
+            {% set a = item.annotation %}
+            {% set m = item.mapping %}
+            <div class="mapping-row">
+              <div class="mapping-meta">
+                <div><strong>{{ a.id }}</strong> &middot; p.{{ a.page }}</div>
+                <div class="excerpt">"{{ a.highlighted_text[:200] }}{% if a.highlighted_text|length > 200 %}…{% endif %}"</div>
+                <div class="comment"><em>{{ a.comment }}</em></div>
+              </div>
+              <div class="candidates">
+                {% if m.candidates and m.candidates|length > 0 %}
+                  {% for c in m.candidates %}
+                  <div class="candidate">
+                    <div><code>{{ c.file }}</code> lines {{ c.line_range[0] }}–{{ c.line_range[1] }}
+                      (score {{ '%.2f'|format(c.score) }})</div>
+                    <button type="button"
+                            data-confirm-candidate="1"
+                            data-annotation-id="{{ a.id }}"
+                            data-file="{{ c.file }}"
+                            data-line-start="{{ c.line_range[0] }}"
+                            data-line-end="{{ c.line_range[1] }}">
+                      Confirm
+                    </button>
+                  </div>
+                  {% endfor %}
+                {% else %}
+                  <div class="candidate-empty">No fuzzy candidates above threshold.</div>
+                {% endif %}
+              </div>
+              <div class="manual-side">
+                <form class="manual-override">
+                  <input type="hidden" name="annotation_id" value="{{ a.id }}">
+                  <select name="file" required>
+                    <option value="">— pick a .tex file —</option>
+                    {% for f in tex_files %}
+                    <option value="{{ f }}">{{ f }}</option>
+                    {% endfor %}
+                  </select>
+                  <input type="number" name="line_start" placeholder="start" min="1" required>
+                  <input type="number" name="line_end" placeholder="end" min="1" required>
+                  <button type="submit">Confirm</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        {% endif %}
       </div>
     {% else %}
       {% include "annotation.html" %}
