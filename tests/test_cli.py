@@ -223,6 +223,54 @@ hi
     assert state["builds"][0]["ok"] is True
 
 
+@pdflatex
+@pdftoppm
+def test_cli_build_benchmark_emits_timing(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    (project / "build").mkdir(parents=True)
+    main = project / "build" / "full_report.tex"
+    main.write_text(
+        r"""\documentclass{article}
+\begin{document}
+hi
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    state_dir = project / ".review-state"
+    state_dir.mkdir()
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "review_pdf_to_latex",
+            "--project-dir",
+            str(project),
+            "build",
+            "--quiet",
+            "--benchmark",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Compile took" in result.stderr
+
+
 def test_exit_code_constants_match_spec():
     """Module-level exit-code constants match spec §8 verbatim.
 

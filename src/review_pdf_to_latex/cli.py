@@ -96,6 +96,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
     )
     p_build.add_argument("--quiet", action="store_true")
+    p_build.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Print 'Compile took X.Xs' to stderr (spec §11.3).",
+    )
 
     # 7. status
     sub.add_parser("status", help="Report counts and current state.")
