@@ -40,8 +40,8 @@ ALL_SUBCOMMANDS = [
 
 
 # Subcommands whose handlers are wired (no longer raise NotImplementedError).
-# Stubs remaining in cli.py are the Wave-3 set (apply, revert, preview,
-# commit-phase, set-status, append-chat, record-proposal, override-mapping).
+# Wave-3.5 wires the remaining 8: apply, revert, preview, commit-phase,
+# set-status, append-chat, record-proposal, override-mapping.
 _WIRED_SUBCOMMANDS = frozenset(
     {
         "extract",
@@ -50,6 +50,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "status",
         "wait-event",
         "migrate-state",
+        "apply",
     }
 )
 
@@ -155,23 +156,164 @@ def test_print_json_serializes_sort_keys(capsys: pytest.CaptureFixture):
     assert out == '{"a": 2, "z": 1}'
 
 
-def test_apply_subcommand_with_json_flag_still_raises(tmp_project: Path):
-    """`--json apply` propagates through to a Wave-3 stub (not yet implemented)."""
-    draft = tmp_project / "draft.tex"
-    draft.write_text("hello", encoding="utf-8")
-    with pytest.raises(NotImplementedError, match="subcommand apply"):
-        cli.main(
-            [
-                "--project-dir",
-                str(tmp_project),
-                "--json",
-                "apply",
-                "--annotation-id",
-                "ann-001",
-                "--new-text-file",
-                str(draft),
-            ]
-        )
+# ---- Task 6.8 / 7.5 / 10.3: mutator + preview + commit-phase CLI ----------
+
+import hashlib as _hashlib
+
+
+def _bootstrap_minimal_project(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Build a minimal project directory wired for the mutator CLIs.
+
+    Layout (mirrors :func:`tests.test_apply._make_project`):
+
+        <tmp>/proj/
+            source.pdf                            (sentinel; MD5 in annotations.json)
+            templates/section.tex                 ("alpha..epsilon" — 5 lines)
+            .review-state/
+                state.json                        (phase=1-batch, ann-001 pending)
+                mapping.json                      (ann-001 → templates/section.tex 2:3)
+                annotations.json                  (carries source_pdf_md5 — guard OK)
+
+    Returns ``(project_dir, state_dir, tex_path)``.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "templates").mkdir()
+    tex = project / "templates" / "section.tex"
+    tex.write_text(
+        "alpha\nbeta\ngamma\ndelta\nepsilon\n",
+        encoding="utf-8",
+    )
+
+    pdf = project / "source.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fixture\n")
+    pdf_md5 = _hashlib.md5(pdf.read_bytes()).hexdigest()
+
+    state_dir = project / ".review-state"
+    state_dir.mkdir()
+    state = {
+        "schema_version": 1,
+        "phase": "1-batch",
+        "order": "mechanical-first",
+        "current_annotation_id": None,
+        "annotations": {
+            "ann-001": {
+                "status": "pending",
+                "before_text": None,
+                "proposed_text": None,
+                "applied_text": None,
+                "applied_at": None,
+                "last_build_id": None,
+                "surface_chat_log": None,
+                "failure_log_path": None,
+                "failure_edit_text": None,
+            }
+        },
+        "builds": [],
+    }
+    mapping = {
+        "schema_version": 1,
+        "mappings": {
+            "ann-001": {
+                "latex_file": "templates/section.tex",
+                "line_range": [2, 3],
+                "confidence": 0.9,
+                "method": "fuzzy_text",
+                "needs_review": False,
+            }
+        },
+    }
+    annotations = {
+        "schema_version": 1,
+        "source_pdf": str(pdf.resolve()),
+        "source_pdf_md5": pdf_md5,
+        "extracted_at": "2026-05-16T20:30:00Z",
+        "extractor": "pdfannots-fake",
+        "annotations": [
+            {
+                "id": "ann-001",
+                "page": 1,
+                "bbox": [0, 0, 0, 0],
+                "highlighted_text": "beta\ngamma",
+                "author": "anon",
+                "comment": "tighten",
+                "created": "2026-05-15T14:22:11Z",
+                "trigger_match": False,
+            }
+        ],
+    }
+    (state_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    (state_dir / "mapping.json").write_text(json.dumps(mapping), encoding="utf-8")
+    (state_dir / "annotations.json").write_text(
+        json.dumps(annotations), encoding="utf-8"
+    )
+    return project, state_dir, tex
+
+
+def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "review_pdf_to_latex", *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_cli_apply_subcommand(tmp_path: Path) -> None:
+    project, state_dir, tex = _bootstrap_minimal_project(tmp_path)
+    new_text_file = tmp_path / "draft.txt"
+    new_text_file.write_text("REPLACED\n", encoding="utf-8")
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(new_text_file),
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    assert tex.read_text(encoding="utf-8") == "alpha\nREPLACED\ndelta\nepsilon\n"
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["annotations"]["ann-001"]["status"] == "applied"
+
+
+def test_cli_apply_subcommand_dry_run_does_not_mutate(tmp_path: Path) -> None:
+    project, state_dir, tex = _bootstrap_minimal_project(tmp_path)
+    new_text_file = tmp_path / "draft.txt"
+    new_text_file.write_text("REPLACED\n", encoding="utf-8")
+    original = tex.read_text(encoding="utf-8")
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(new_text_file),
+            "--dry-run",
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    assert tex.read_text(encoding="utf-8") == original
+    # Diff-style output printed.
+    assert "templates/section.tex" in r.stdout
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["annotations"]["ann-001"]["status"] == "pending"
+
+
+def test_cli_apply_subcommand_unknown_annotation_exits_7(tmp_path: Path) -> None:
+    project, _, _ = _bootstrap_minimal_project(tmp_path)
+    new_text_file = tmp_path / "draft.txt"
+    new_text_file.write_text("X\n", encoding="utf-8")
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-999",
+            "--new-text-file", str(new_text_file),
+        ]
+    )
+    assert r.returncode == 7, r.stderr
 
 
 @pdflatex

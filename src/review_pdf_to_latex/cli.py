@@ -281,6 +281,36 @@ def _handle_status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_apply(args: argparse.Namespace) -> int:
+    """``apply`` subcommand handler (spec §8 exit codes 0, 7, 8, 9, 13, 16, 18, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, apply_edit
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    try:
+        new_text = Path(args.new_text_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read --new-text-file: {exc}", file=sys.stderr)
+        return EXIT_FILE_MUTATION_FAILED
+    try:
+        result = apply_edit(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+            new_text=new_text,
+            dry_run=bool(args.dry_run),
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    if args.dry_run:
+        print(f"--- {result.latex_file} (current)")
+        print(f"+++ {result.latex_file} (proposed)")
+        for ln in result.old_lines:
+            sys.stdout.write(f"-{ln}")
+        for ln in result.new_lines:
+            sys.stdout.write(f"+{ln}")
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -337,6 +367,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "wait-event": _handle_wait_event,
     "status": _handle_status,
     "migrate-state": _handle_migrate_state,
+    "apply": _handle_apply,
 }
 
 
