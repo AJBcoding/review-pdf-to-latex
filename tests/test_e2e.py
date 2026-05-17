@@ -452,20 +452,13 @@ def _drive_to_phase_2b(project_copy: Path, tmp_path: Path) -> state_mod.StateDir
     annotations so the 2a commit can run.
     """
     sd = _drive_to_phase_2a(project_copy, tmp_path)
-    # _drive_to_phase_2a stops at 2a-ratify; we need to commit it.
-    # All non-surface annotations must be terminal first.
-    for ann_id, target in [
-        ("ann-001", "accepted"),
-        ("ann-002", None),  # already rejected
-        ("ann-004", "accepted"),
-        ("ann-005", None),  # already redrafted
-    ]:
-        if target is None:
-            continue
+    # _drive_to_phase_2a stops at 2a-ratify with all four non-surface
+    # annotations in 'applied' status; we approve them so they're terminal.
+    for ann_id in ("ann-001", "ann-002", "ann-004", "ann-005"):
         st = state_mod.read_json(sd.state_path)
         if not state_mod.status_is_terminal(st["annotations"][ann_id]["status"]):
             cli.main(["--project-dir", str(project_copy), "set-status",
-                      "--annotation-id", ann_id, "--status", target])
+                      "--annotation-id", ann_id, "--status", "accepted"])
     cli.main(["--project-dir", str(project_copy),
               "commit-phase", "--phase", "2a"])
     return sd
@@ -542,3 +535,65 @@ def test_phase_2b_surface(project_copy: Path, tmp_path: Path):
     assert rc == 0
     st = state_mod.read_json(sd.state_path)
     assert st["phase"] == "3-final"
+
+
+def test_phase_3_final(project_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture):
+    """Phase 3: all annotations terminal, final build clean, commit applied."""
+    sd = _drive_to_phase_2b(project_copy, tmp_path)
+
+    # Resolve ann-003 (still surfaced_pending after _drive_to_phase_2b).
+    proposal = tmp_path / "ann-003-proposal.tex"
+    proposal.write_text(
+        "Roughly 12% year-over-year growth in undergraduate enrollment "
+        "reflects both program strength and outreach success.\n",
+        encoding="utf-8",
+    )
+    cli.main(["--project-dir", str(project_copy), "apply",
+              "--annotation-id", "ann-003",
+              "--new-text-file", str(proposal)])
+    cli.main(["--project-dir", str(project_copy), "build"])
+    # Bridge applied -> surfaced_resolved (see Phase 2b test rationale).
+    st = state_mod.read_json(sd.state_path)
+    st["annotations"]["ann-003"]["status"] = "surfaced_resolved"
+    state_mod.atomic_write_json(sd.state_path, st)
+    cli.main(["--project-dir", str(project_copy),
+              "commit-phase", "--phase", "2b"])
+
+    # All annotations are now terminal.
+    st = state_mod.read_json(sd.state_path)
+    for ann_id, entry in st["annotations"].items():
+        assert state_mod.status_is_terminal(entry["status"]), (
+            f"{ann_id} still in non-terminal status {entry['status']}"
+        )
+
+    # Final build must succeed.
+    rc = cli.main(["--project-dir", str(project_copy), "build"])
+    assert rc == 0
+
+    # commit-phase --phase 3 → phase stays at 3-final.
+    rc = cli.main(["--project-dir", str(project_copy),
+                   "commit-phase", "--phase", "3"])
+    assert rc == 0
+    st = state_mod.read_json(sd.state_path)
+    assert st["phase"] == "3-final"
+
+    # `status --json` reports zero non-terminal counts.
+    rc = cli.main(["--project-dir", str(project_copy), "--json", "status"])
+    assert rc == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    # Find the last line (status emits a single JSON object).
+    payload = json.loads(out[-1])
+    assert payload["non_terminal_count"] == 0
+
+    # Final PDF exists.
+    builds = sorted((sd.dir / "builds").glob("build-*.pdf"))
+    assert builds, "no build PDFs produced"
+
+    # git log: baseline + phase 1 + phase 2a + phase 2b + phase 3
+    # (phase 3 commit lands only if there are residual changes; spec §13.2
+    # allows phase 3 to be a no-op commit. We accept either 4 or 5 commits.)
+    log = subprocess.run(
+        ["git", "log", "--oneline"],
+        cwd=project_copy, capture_output=True, text=True, check=True,
+    ).stdout.strip().splitlines()
+    assert 4 <= len(log) <= 5, f"unexpected git log length: {log}"
