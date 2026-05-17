@@ -136,6 +136,8 @@ def normal_context(
         "target_page": target_page,
         "annotation_index": annotation_index,
         "total_annotations": total_annotations,
+        "total_all_annotations": total_annotations,
+        "view_filter": "unresolved",
         "image_width_px": image_width_px,
         "image_height_px": image_height_px,
         "pdf_page_width_pt": pdf_page_width_pt,

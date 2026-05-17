@@ -328,7 +328,14 @@
       <span class="phase">Phase: {{ phase }}</span>
       <span class="order">Order: {{ order }}</span>
       {% if mode == "normal" %}
-      <span class="counter">{{ annotation_index }} of {{ total_annotations }}</span>
+      <span class="counter">
+        {{ annotation_index }} of {{ total_annotations }}{% if view_filter == "unresolved" %} unresolved{% endif %}
+        {%- if view_filter == "unresolved" and total_all_annotations != total_annotations %}
+        <a class="counter-toggle" href="?include=terminal" title="Show all annotations including terminal-status">all {{ total_all_annotations }}</a>
+        {%- elif view_filter == "all" %}
+        <a class="counter-toggle" href="/" title="Show only unresolved annotations">unresolved only</a>
+        {%- endif %}
+      </span>
       <span class="annotation-id">{{ current_annotation.id }}</span>
       {% endif %}
     </div>

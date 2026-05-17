@@ -46,7 +46,7 @@ def running_server(minimal_project: Path, monkeypatch: pytest.MonkeyPatch):
     # The test for the real template is in tests/test_templates.py (chunk E).
     rendered_html = b"<!doctype html><html><body>frame-stub</body></html>"
 
-    def fake_render(self: server_mod.ReviewHandler) -> bytes:
+    def fake_render(self: server_mod.ReviewHandler, query: str = "") -> bytes:
         # Capture mode so the mapping-mode test (Task 8.4) can assert on it.
         return rendered_html + f"<!-- mode={self.mode} -->".encode()
 
@@ -506,6 +506,240 @@ def test_render_frame_default_mode_is_normal(
         status, _, _ = _get(f"http://127.0.0.1:{port}", "/")
         assert status == HTTPStatus.OK
         assert captured.get("mode") == "normal"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
+# ---- rev-s1o: unresolved-by-default counter + frame ------------------------
+
+
+def _multi_annotation_project(tmp_path: Path, statuses: list[tuple[str, str]]) -> Path:
+    """Seed a minimal_project-shaped tree with N annotations and given statuses.
+
+    ``statuses`` is a list of ``(annotation_id, status)``. The first entry is
+    written to state.current_annotation_id (matching the production invariant
+    where the engine seeds current_annotation_id to the first annotation).
+    """
+    project = tmp_path / "multi-project"
+    state_dir = project / ".review-state"
+    pages = state_dir / "pages"
+    build_dir = state_dir / "builds" / "build-001"
+    pages.mkdir(parents=True)
+    build_dir.mkdir(parents=True)
+    (project / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n"
+    )
+    (pages / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (build_dir / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    annotations = {}
+    annotations_list = []
+    mappings = {}
+    for ann_id, status in statuses:
+        annotations[ann_id] = {
+            "status": status,
+            "before_text": "old",
+            "proposed_text": "new",
+            "applied_text": "new" if status not in ("pending", "needs_review") else None,
+            "applied_at": "2026-05-16T20:45:12Z",
+            "last_build_id": "build-001",
+            "surface_chat_log": None,
+            "failure_log_path": None,
+            "failure_edit_text": None,
+        }
+        annotations_list.append(
+            {
+                "id": ann_id,
+                "page": 1,
+                "bbox": [72.0, 510.5, 540.0, 542.5],
+                "highlighted_text": "old",
+                "author": "anonymous",
+                "comment": "Tighten this",
+                "created": "2026-05-16T20:30:00Z",
+                "trigger_match": False,
+            }
+        )
+        mappings[ann_id] = {
+            "latex_file": "main.tex",
+            "line_range": [1, 4],
+            "method": "fuzzy",
+            "confidence": 0.91,
+            "needs_review": False,
+            "candidates": [],
+        }
+
+    state = {
+        "schema_version": 1,
+        "phase": "2a-ratify",
+        "order": "mechanical-first",
+        "current_annotation_id": statuses[0][0],
+        "annotations": annotations,
+        "builds": [
+            {
+                "id": "build-001",
+                "pdf_path": ".review-state/builds/build-001.pdf",
+                "page_count": 1,
+                "compiled_at": "2026-05-16T20:46:00Z",
+                "log_path": ".review-state/builds/build-001.log",
+                "ok": True,
+                "page_md5": ["d41d8cd98f00b204e9800998ecf8427e"],
+            }
+        ],
+    }
+    (state_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True))
+    (state_dir / "annotations.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_pdf": "/dev/null/source.pdf",
+                "source_pdf_md5": "d41d8cd98f00b204e9800998ecf8427e",
+                "extracted_at": "2026-05-16T20:40:00Z",
+                "extractor": "pdfannots-test",
+                "annotations": annotations_list,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    (state_dir / "mapping.json").write_text(
+        json.dumps({"schema_version": 1, "mappings": mappings}, indent=2, sort_keys=True)
+    )
+    return project
+
+
+def _capture_render_kwargs(
+    project: Path, monkeypatch: pytest.MonkeyPatch, query: str = ""
+) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    class FakeTemplate:
+        def render(self, **kwargs: Any) -> str:
+            captured.update(kwargs)
+            return "<html>ok</html>"
+
+    fake_env = MagicMock()
+    fake_env.get_template.return_value = FakeTemplate()
+    monkeypatch.setattr(server_mod, "_jinja_env", fake_env)
+
+    port = _pick_port()
+    httpd = server_mod.build_server(project, port)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        path = "/" + (("?" + query) if query else "")
+        status, _, _ = _get(f"http://127.0.0.1:{port}", path)
+        assert status == HTTPStatus.OK
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+    return captured
+
+
+def test_render_frame_default_skips_terminal_current_to_first_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When current_annotation_id is a terminal status, jump to first unresolved."""
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "deferred"),  # current_annotation_id; terminal
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),   # first unresolved
+            ("ann-004", "applied"),
+        ],
+    )
+    captured = _capture_render_kwargs(project, monkeypatch)
+    assert captured["view_filter"] == "unresolved"
+    assert captured["current_annotation"]["id"] == "ann-003"
+    # Two unresolved: ann-003 (pending) and ann-004 (applied). ann-003 is #1.
+    assert captured["annotation_index"] == 1
+    assert captured["total_annotations"] == 2
+    assert captured["total_all_annotations"] == 4
+
+
+def test_render_frame_default_preserves_current_when_non_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "applied"),   # non-terminal; should stay current
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),
+        ],
+    )
+    captured = _capture_render_kwargs(project, monkeypatch)
+    assert captured["current_annotation"]["id"] == "ann-001"
+    # Unresolved set: ann-001, ann-003. ann-001 is index 1.
+    assert captured["annotation_index"] == 1
+    assert captured["total_annotations"] == 2
+
+
+def test_render_frame_include_terminal_uses_all_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "deferred"),
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),
+        ],
+    )
+    captured = _capture_render_kwargs(project, monkeypatch, query="include=terminal")
+    assert captured["view_filter"] == "all"
+    # With include=terminal, the saved current_annotation_id (ann-001) is shown
+    # even though it is terminal — the toggle exposes the prior behaviour.
+    assert captured["current_annotation"]["id"] == "ann-001"
+    assert captured["annotation_index"] == 1
+    assert captured["total_annotations"] == 3
+    assert captured["total_all_annotations"] == 3
+
+
+def test_render_frame_all_terminal_falls_back_to_saved_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When every annotation is terminal, render the saved current so the
+    3-pane keeps working; total is 0 (phase-complete indicator)."""
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "accepted"),
+            ("ann-002", "deferred"),
+        ],
+    )
+    captured = _capture_render_kwargs(project, monkeypatch)
+    assert captured["view_filter"] == "unresolved"
+    assert captured["current_annotation"]["id"] == "ann-001"
+    assert captured["total_annotations"] == 0
+    assert captured["annotation_index"] == 0
+
+
+def test_serve_frame_counter_renders_unresolved_label(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: the rendered HTML carries the "unresolved" suffix."""
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "deferred"),
+            ("ann-002", "pending"),
+        ],
+    )
+    port = _pick_port()
+    httpd = server_mod.build_server(project, port)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, body = _get(f"http://127.0.0.1:{port}", "/")
+        assert status == HTTPStatus.OK, body
+        assert b"1 of 1" in body
+        assert b"unresolved" in body
+        # Toggle link should advertise the all-view.
+        assert b"?include=terminal" in body
     finally:
         httpd.shutdown()
         httpd.server_close()

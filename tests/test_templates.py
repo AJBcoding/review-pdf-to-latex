@@ -57,6 +57,33 @@ def test_frame_renders_top_bar_in_normal_mode():
     assert "3 of 7" in out
     assert "ann-001" in out
     assert 'id="status"' in out  # status line element used by JS handler
+    # rev-s1o: counter labels the default "unresolved" view and exposes the
+    # ?include=terminal toggle when there are decided annotations to include.
+    assert "unresolved" in out
+
+
+def test_frame_counter_shows_include_terminal_toggle_when_decided_exist():
+    """Default 'unresolved' view must offer a toggle when totals differ."""
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context(
+        annotation_index=1,
+        total_annotations=2,
+    ) | {"total_all_annotations": 10})
+    assert "?include=terminal" in out
+    assert "all 10" in out
+
+
+def test_frame_counter_shows_all_view_label_when_include_terminal():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    ctx = normal_context(annotation_index=3, total_annotations=7)
+    ctx["view_filter"] = "all"
+    ctx["total_all_annotations"] = 7
+    out = tpl.render(**ctx)
+    assert "3 of 7" in out
+    assert "unresolved only" in out  # toggle label back to default view
+    assert ">unresolved<" not in out  # the counter itself does not say "unresolved"
 
 
 def test_frame_renders_mapping_mode_banner_when_mode_mapping():

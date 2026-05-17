@@ -26,11 +26,12 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import jinja2
 
 from review_pdf_to_latex import terminal as terminal_bridge
+from review_pdf_to_latex.state import status_is_terminal
 
 EVENTS_FILENAME = "state-events.jsonl"
 STATE_DIR_NAME = ".review-state"  # mirrors state.STATE_DIR_NAME for module independence
@@ -179,9 +180,10 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
     # ---- GET dispatch -------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlsplit(self.path).path
+        split = urlsplit(self.path)
+        path = split.path
         if path == "/":
-            self._serve_frame()
+            self._serve_frame(split.query)
             return
         if path == "/api/state":
             self._serve_state_json()
@@ -284,9 +286,9 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
 
     # ---- per-route helpers --------------------------------------------------
 
-    def _serve_frame(self) -> None:
+    def _serve_frame(self, query: str = "") -> None:
         try:
-            body = self._render_frame()
+            body = self._render_frame(query=query)
         except FileNotFoundError:
             # state.json missing — degrade to a clean 503 so the viewer can show
             # a "no review session" page; we surface 503 (Service Unavailable)
@@ -295,7 +297,7 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._send_bytes(HTTPStatus.OK, body, "text/html; charset=utf-8")
 
-    def _render_frame(self) -> bytes:
+    def _render_frame(self, query: str = "") -> bytes:
         """Render frame.html. The template branches on `mode` ("normal" or "mapping").
 
         Loads state.json + annotations.json + mapping.json and assembles the
@@ -318,18 +320,54 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
         )
         mappings: dict[str, dict[str, Any]] = mapping_doc.get("mappings", {})
 
-        current_id = current_state.get("current_annotation_id")
-        if current_id is None and annotations_list:
-            current_id = annotations_list[0]["id"]
-
         by_id = {a["id"]: a for a in annotations_list}
+        ann_state = current_state.get("annotations", {})
+
+        # rev-s1o: counter and current-frame default to "unresolved only".
+        # The viewer skips terminal-status annotations (accepted, rejected,
+        # redrafted, deferred, surfaced_resolved) when picking the rendered
+        # frame and computing the "X of Y" counter. Pass ?include=terminal
+        # to revert to the original "X of TOTAL" behaviour (e.g., to scroll
+        # back through already-decided annotations).
+        params = parse_qs(query) if query else {}
+        view_filter = "all" if "terminal" in params.get("include", []) else "unresolved"
+
+        def _is_unresolved(ann_id: str) -> bool:
+            status = ann_state.get(ann_id, {}).get("status", "pending")
+            try:
+                return not status_is_terminal(status)
+            except ValueError:
+                # Unknown status — treat as unresolved so it remains visible
+                # rather than silently hidden behind the default filter.
+                return True
+
+        unresolved_ids = [a["id"] for a in annotations_list if _is_unresolved(a["id"])]
+
+        saved_id = current_state.get("current_annotation_id")
+        if view_filter == "unresolved":
+            visible_ids = unresolved_ids
+            if saved_id in visible_ids:
+                current_id = saved_id
+            elif visible_ids:
+                current_id = visible_ids[0]
+            else:
+                # All annotations terminal — fall back to saved/first so the
+                # 3-pane still renders something rather than crashing on a
+                # None current_annotation.
+                current_id = saved_id if saved_id in by_id else (
+                    annotations_list[0]["id"] if annotations_list else None
+                )
+        else:
+            visible_ids = [a["id"] for a in annotations_list]
+            current_id = saved_id if saved_id in by_id else (
+                annotations_list[0]["id"] if annotations_list else None
+            )
+
         current_annotation = by_id.get(current_id) if current_id else None
 
         annotation_index = 0
-        if current_id and current_id in by_id:
-            annotation_index = (
-                list(by_id.keys()).index(current_id) + 1
-            )
+        if current_id and current_id in visible_ids:
+            annotation_index = visible_ids.index(current_id) + 1
 
         diff2html_present = (_STATIC_DIR / "diff2html.min.js").exists()
         xterm_present = (_STATIC_DIR / "xterm.js").exists()
@@ -341,7 +379,9 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             "phase": current_state.get("phase", ""),
             "order": current_state.get("order", ""),
             "annotation_index": annotation_index,
-            "total_annotations": len(annotations_list),
+            "total_annotations": len(visible_ids),
+            "total_all_annotations": len(annotations_list),
+            "view_filter": view_filter,
             "current_annotation": current_annotation,
             "diff2html_present": diff2html_present,
             "xterm_present": xterm_present,
