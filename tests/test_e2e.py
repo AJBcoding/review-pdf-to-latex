@@ -322,3 +322,124 @@ def test_phase_1_batch_apply(project_copy: Path, tmp_path: Path):
     ).stdout.strip().splitlines()
     assert len(log) == 2, f"expected 2 commits (baseline + phase 1), got: {log}"
     assert "phase 1" in log[0].lower() or "phase 1" in log[0]
+
+
+def _drive_to_phase_2a(project_copy: Path, tmp_path: Path) -> state_mod.StateDir:
+    """Helper: run extract + Phase 1 + commit, leaving phase at 2a-ratify."""
+    sd = _phase_0_setup(project_copy)
+    _override_ann_004_mapping(project_copy, sd)
+    _allow_state_in_git(project_copy)
+    _advance_phase(sd, "1-batch")
+
+    # Mark ann-003 surfaced_pending and apply the rest.
+    cli.main(
+        ["--project-dir", str(project_copy), "set-status",
+         "--annotation-id", "ann-003", "--status", "surfaced_pending"]
+    )
+    for ann_id in ("ann-005", "ann-002", "ann-001", "ann-004"):
+        proposal_path = tmp_path / f"proposal-{ann_id}.tex"
+        if ann_id == "ann-004":
+            proposal_path.write_text(
+                "Studio Art & 142 & 170 \\\\\n", encoding="utf-8"
+            )
+        else:
+            proposal_path.write_text(_proposal_for(ann_id), encoding="utf-8")
+        cli.main(["--project-dir", str(project_copy), "apply",
+                  "--annotation-id", ann_id,
+                  "--new-text-file", str(proposal_path)])
+        cli.main(["--project-dir", str(project_copy), "build"])
+    cli.main(["--project-dir", str(project_copy),
+              "commit-phase", "--phase", "1"])
+    return sd
+
+
+def test_phase_2a_ratify(project_copy: Path, tmp_path: Path):
+    """Approve, Reject, Redraft, and Preview each affect state per spec §10.3."""
+    sd = _drive_to_phase_2a(project_copy, tmp_path)
+
+    # 1) Approve ann-001 → status applied → accepted.
+    rc = cli.main(
+        ["--project-dir", str(project_copy),
+         "set-status", "--annotation-id", "ann-001", "--status", "accepted"]
+    )
+    assert rc == 0
+    st = state_mod.read_json(sd.state_path)
+    assert st["annotations"]["ann-001"]["status"] == "accepted"
+
+    # 2) Reject ann-002 → file restored to before_text → status rejected.
+    rc = cli.main(
+        ["--project-dir", str(project_copy),
+         "revert", "--annotation-id", "ann-002", "--status", "rejected"]
+    )
+    assert rc == 0
+    rc = cli.main(["--project-dir", str(project_copy), "build"])
+    assert rc == 0
+    st = state_mod.read_json(sd.state_path)
+    ann2 = st["annotations"]["ann-002"]
+    assert ann2["status"] == "rejected"
+    assert ann2["applied_text"] is None
+    assert ann2["before_text"] is not None
+    # The .tex file must contain ann-002's before_text again.
+    findings = (project_copy / "templates" / "findings.tex").read_text(
+        encoding="utf-8"
+    )
+    assert "meaningful boost in completion rates" in findings
+
+    # 3) Redraft ann-005 → revert + apply new draft + build + set status redrafted.
+    new_draft = tmp_path / "redraft-ann-005.tex"
+    new_draft.write_text(
+        "the priorities for the coming year include continued "
+        "investment in mid-semester checkpoints and alumni engagement.\n",
+        encoding="utf-8",
+    )
+    cli.main(["--project-dir", str(project_copy),
+              "revert", "--annotation-id", "ann-005", "--status", "rejected"])
+    cli.main(["--project-dir", str(project_copy), "apply",
+              "--annotation-id", "ann-005",
+              "--new-text-file", str(new_draft)])
+    cli.main(["--project-dir", str(project_copy), "build"])
+    cli.main(["--project-dir", str(project_copy), "set-status",
+              "--annotation-id", "ann-005", "--status", "redrafted"])
+    st = state_mod.read_json(sd.state_path)
+    assert st["annotations"]["ann-005"]["status"] == "redrafted"
+
+    # 4) Preview ann-005 — speculative compile only. builds[] grows by one;
+    #    state.annotations[ann-005] is unchanged.
+    builds_before = list(st["builds"])
+    spec_text = tmp_path / "spec-ann-005.tex"
+    spec_text.write_text(
+        "the priorities for the coming year include 12% growth in "
+        "studio enrollment and continued alumni engagement.\n",
+        encoding="utf-8",
+    )
+    rc = cli.main(
+        ["--project-dir", str(project_copy),
+         "preview", "--annotation-id", "ann-005",
+         "--new-text-file", str(spec_text)]
+    )
+    assert rc == 0
+    st_after = state_mod.read_json(sd.state_path)
+    assert len(st_after["builds"]) == len(builds_before) + 1
+    # status unchanged.
+    assert st_after["annotations"]["ann-005"]["status"] == "redrafted"
+    # The .tex file is back to its pre-preview state (the redraft).
+    conclusion = (project_copy / "templates" / "conclusion.tex").read_text(
+        encoding="utf-8"
+    )
+    assert "mid-semester checkpoints" in conclusion
+    assert "12% growth in studio enrollment" not in conclusion
+
+    # 5) Approve the remaining applied annotation (ann-004) so we can commit.
+    cli.main(
+        ["--project-dir", str(project_copy),
+         "set-status", "--annotation-id", "ann-004", "--status", "accepted"]
+    )
+
+    # commit-phase --phase 2a → advance to 2b-surface.
+    rc = cli.main(
+        ["--project-dir", str(project_copy),
+         "commit-phase", "--phase", "2a"]
+    )
+    assert rc == 0
+    st = state_mod.read_json(sd.state_path)
+    assert st["phase"] == "2b-surface"
