@@ -450,3 +450,183 @@ def test_render_frame_default_mode_is_normal(
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=2.0)
+
+
+# ---- Task 8.5: wait_for_events polling --------------------------------------
+
+
+def test_wait_for_events_returns_new_event(tmp_path: Path) -> None:
+    events_path = tmp_path / "state-events.jsonl"
+    events_path.touch()
+
+    # Spawn a writer that appends an event after 200ms.
+    def writer() -> None:
+        time.sleep(0.2)
+        rec = {
+            "ts": "2026-05-16T20:47:11Z",
+            "annotation_id": "ann-001",
+            "action": "approve",
+        }
+        with events_path.open("a") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    result = server_mod.wait_for_events(
+        events_path, since_ts="2026-05-16T00:00:00Z", timeout_sec=3
+    )
+    t.join(timeout=2)
+    assert len(result) == 1
+    assert result[0]["annotation_id"] == "ann-001"
+    assert result[0]["action"] == "approve"
+
+
+def test_wait_for_events_returns_empty_on_timeout(tmp_path: Path) -> None:
+    events_path = tmp_path / "state-events.jsonl"
+    events_path.touch()
+    start = time.monotonic()
+    result = server_mod.wait_for_events(
+        events_path, since_ts="2026-05-16T00:00:00Z", timeout_sec=1
+    )
+    elapsed = time.monotonic() - start
+    assert result == []
+    # Timeout should be close to requested value, not significantly under (no spurious
+    # early returns) and not significantly over (we cap polling at 250ms granularity).
+    assert 0.9 <= elapsed <= 1.6, f"timeout elapsed {elapsed}s outside [0.9, 1.6]"
+
+
+def test_wait_for_events_filters_by_since(tmp_path: Path) -> None:
+    events_path = tmp_path / "state-events.jsonl"
+    events = [
+        {
+            "ts": "2026-05-16T20:47:00Z",
+            "annotation_id": "ann-001",
+            "action": "approve",
+        },
+        {
+            "ts": "2026-05-16T20:47:30Z",
+            "annotation_id": "ann-002",
+            "action": "reject",
+        },
+        {
+            "ts": "2026-05-16T20:48:00Z",
+            "annotation_id": "ann-003",
+            "action": "skip",
+        },
+    ]
+    events_path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+    # Append a fourth event in the background after 200ms.
+    def writer() -> None:
+        time.sleep(0.2)
+        with events_path.open("a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": "2026-05-16T20:48:30Z",
+                        "annotation_id": "ann-004",
+                        "action": "surface",
+                    }
+                )
+                + "\n"
+            )
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    result = server_mod.wait_for_events(
+        events_path, since_ts="2026-05-16T20:47:30Z", timeout_sec=3
+    )
+    t.join(timeout=2)
+    assert len(result) >= 1
+    for rec in result:
+        assert rec["ts"] > "2026-05-16T20:47:30Z"
+    # The fresh ann-004 must be among them (it was the only post-start growth).
+    assert any(r["annotation_id"] == "ann-004" for r in result)
+
+
+def test_wait_for_events_defaults_since_to_last_existing(tmp_path: Path) -> None:
+    """When since_ts is None and the file has events, default to last event's ts."""
+    events_path = tmp_path / "state-events.jsonl"
+    existing = {
+        "ts": "2026-05-16T20:47:00Z",
+        "annotation_id": "ann-001",
+        "action": "approve",
+    }
+    events_path.write_text(json.dumps(existing) + "\n")
+
+    def writer() -> None:
+        time.sleep(0.2)
+        new_rec = {
+            "ts": "2026-05-16T20:47:30Z",
+            "annotation_id": "ann-002",
+            "action": "reject",
+        }
+        with events_path.open("a") as f:
+            f.write(json.dumps(new_rec) + "\n")
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    result = server_mod.wait_for_events(events_path, since_ts=None, timeout_sec=3)
+    t.join(timeout=2)
+    assert len(result) == 1
+    assert result[0]["annotation_id"] == "ann-002"
+
+
+def test_wait_for_events_empty_file_and_no_growth_returns_empty(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "state-events.jsonl"
+    events_path.touch()
+    result = server_mod.wait_for_events(events_path, since_ts=None, timeout_sec=1)
+    assert result == []
+
+
+def test_wait_for_events_missing_file_eventually_appears(tmp_path: Path) -> None:
+    """If the file does not exist at call time, the watcher waits for it to appear."""
+    events_path = tmp_path / "state-events.jsonl"
+    assert not events_path.exists()
+
+    def writer() -> None:
+        time.sleep(0.2)
+        rec = {
+            "ts": "2026-05-16T20:47:11Z",
+            "annotation_id": "ann-X",
+            "action": "approve",
+        }
+        events_path.write_text(json.dumps(rec) + "\n")
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    result = server_mod.wait_for_events(
+        events_path, since_ts="1970-01-01T00:00:00Z", timeout_sec=3
+    )
+    t.join(timeout=2)
+    assert len(result) == 1
+    assert result[0]["annotation_id"] == "ann-X"
+
+
+def test_wait_for_events_skips_malformed_lines(tmp_path: Path) -> None:
+    events_path = tmp_path / "state-events.jsonl"
+    events_path.touch()
+
+    def writer() -> None:
+        time.sleep(0.2)
+        with events_path.open("a") as f:
+            f.write("garbage not json\n")
+            f.write(
+                json.dumps(
+                    {
+                        "ts": "2026-05-16T20:47:11Z",
+                        "annotation_id": "ann-OK",
+                        "action": "approve",
+                    }
+                )
+                + "\n"
+            )
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    result = server_mod.wait_for_events(events_path, since_ts=None, timeout_sec=3)
+    t.join(timeout=2)
+    assert len(result) == 1
+    assert result[0]["annotation_id"] == "ann-OK"

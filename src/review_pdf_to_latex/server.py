@@ -20,6 +20,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -380,13 +381,196 @@ def build_server(
     return http.server.HTTPServer(("127.0.0.1", port), handler_cls)
 
 
+_POLL_INTERVAL_SEC = 0.25
+_SENTINEL_TS = "1970-01-01T00:00:00Z"
+
+
+def _read_last_event_ts(events_path: Path) -> str:
+    """Return the ts of the last well-formed event in events_path, or the sentinel."""
+    if not events_path.exists():
+        return _SENTINEL_TS
+    try:
+        text = events_path.read_text()
+    except OSError:
+        return _SENTINEL_TS
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = obj.get("ts")
+        if isinstance(ts, str):
+            return ts
+    return _SENTINEL_TS
+
+
 def wait_for_events(
     events_path: Path,
     since_ts: str | None,
     timeout_sec: int = 60,
 ) -> list[dict[str, Any]]:
-    """Block until new event(s) land in events_path or the timeout fires.
+    """Block until new event(s) appear in events_path, or timeout fires.
 
-    See Task 8.5 for the full implementation; this stub is replaced incrementally.
+    Returns the events with ts > since_ts (in file order) on growth, [] on timeout.
+
+    Defaults:
+    - If since_ts is None, use the ts of the last existing event in the file
+      (or "1970-01-01T00:00:00Z" if the file is empty/missing).
+
+    Side effects: NONE. The function only reads events_path; it never writes.
+
+    Lifecycle properties (spec §10.5):
+    - Browser closed mid-wait: invisible to this function. The function tails a
+      file, not a socket; closing the browser does not affect the wait. The
+      caller (skill) re-opens its loop normally.
+    - Server crashed mid-wait: this function continues polling; the caller is
+      responsible for noticing serve.lock disappearance and re-launching serve.
+    - SIGTERM mid-wait: handled by the wait-event CLI wrapper in cli.py
+      (see Task 8.7), which catches the signal and exits 0 with no output.
+    - SIGINT mid-wait: also handled by the CLI wrapper — exit 130 (standard).
     """
-    raise NotImplementedError  # filled in by Task 8.5
+    events_path = Path(events_path)
+    if since_ts is None:
+        since_ts = _read_last_event_ts(events_path)
+
+    last_size = events_path.stat().st_size if events_path.exists() else 0
+    pending_partial = b""
+    watcher = _make_watcher(events_path)
+    deadline = time.monotonic() + timeout_sec
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return []
+
+            # Wait for change. Prefer the watcher if available; otherwise sleep.
+            slice_sec = min(remaining, _POLL_INTERVAL_SEC)
+            if watcher is not None:
+                try:
+                    watcher.wait(slice_sec)
+                except OSError:
+                    time.sleep(slice_sec)
+            else:
+                time.sleep(slice_sec)
+
+            if not events_path.exists():
+                continue
+
+            try:
+                cur_size = events_path.stat().st_size
+            except FileNotFoundError:
+                continue
+
+            if cur_size < last_size:
+                # Truncation: reset and rescan from start.
+                last_size = 0
+                pending_partial = b""
+
+            if cur_size == last_size:
+                continue
+
+            # Read the new bytes.
+            try:
+                with events_path.open("rb") as f:
+                    f.seek(last_size)
+                    new_bytes = f.read(cur_size - last_size)
+            except OSError:
+                continue
+            last_size = cur_size
+
+            chunk = pending_partial + new_bytes
+            lines = chunk.split(b"\n")
+            # Last element after split is the partial tail (empty if chunk ends with \n).
+            pending_partial = lines[-1]
+            complete_lines = lines[:-1]
+
+            fresh: list[dict[str, Any]] = []
+            for raw_line in complete_lines:
+                if not raw_line.strip():
+                    continue
+                try:
+                    obj = json.loads(raw_line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                ts = obj.get("ts")
+                if not isinstance(ts, str):
+                    continue
+                if ts > since_ts:
+                    fresh.append(obj)
+            if fresh:
+                return fresh
+    finally:
+        if watcher is not None:
+            try:
+                watcher.close()
+            except Exception:
+                pass
+
+
+def _make_watcher(path: Path):  # noqa: ANN201 (returns watcher or None)
+    """Return a watcher object with .wait(timeout) and .close(), or None.
+
+    Best-effort: silently falls back to None (stat-poll only) on any error.
+    """
+    # Try inotify_simple (Linux). Not in our dep list — only used if installed.
+    try:
+        import inotify_simple  # type: ignore[import-not-found]  # pragma: no cover
+        from inotify_simple import flags  # type: ignore[import-not-found]  # pragma: no cover
+
+        path.parent.mkdir(parents=True, exist_ok=True)  # pragma: no cover
+        inot = inotify_simple.INotify()  # pragma: no cover
+        inot.add_watch(str(path.parent), flags.MODIFY | flags.CREATE)  # pragma: no cover
+
+        class _InotifyWatcher:  # pragma: no cover
+            def wait(self, timeout: float) -> None:
+                inot.read(timeout=int(timeout * 1000))
+
+            def close(self) -> None:
+                inot.close()
+
+        return _InotifyWatcher()  # pragma: no cover
+    except ImportError:
+        pass
+    except OSError:
+        pass
+
+    # Try kqueue (macOS / BSD).
+    try:
+        import select
+
+        if not hasattr(select, "kqueue"):
+            return None
+        if not path.exists():
+            # Watch the parent dir instead — kqueue needs a real fd.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+        kq = select.kqueue()
+        fd = os.open(str(path), os.O_RDONLY)
+        kev = select.kevent(
+            fd,
+            filter=select.KQ_FILTER_VNODE,
+            flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+            fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND,
+        )
+        kq.control([kev], 0, 0)
+
+        class _KqueueWatcher:
+            def wait(self, timeout: float) -> None:
+                kq.control([], 1, timeout)
+
+            def close(self) -> None:
+                try:
+                    kq.close()
+                finally:
+                    os.close(fd)
+
+        return _KqueueWatcher()
+    except (ImportError, OSError):
+        return None
