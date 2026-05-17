@@ -337,3 +337,60 @@ def test_frame_omits_diff2html_link_when_absent():
     out = tpl.render(**normal_context(diff2html_present=False))
     assert "diff2html.min.css" not in out
     assert "diff2html.min.js" not in out
+
+
+from tests.fixtures.template_contexts import sample_annotation, sample_mapping_entry
+
+
+ALL_STATUSES = [
+    "pending", "applied", "accepted", "rejected", "redrafted",
+    "deferred", "surfaced_pending", "surfaced_resolved", "needs_review",
+]
+
+
+@pytest.mark.parametrize("status", ALL_STATUSES)
+def test_frame_renders_for_every_status(status):
+    env = _env()
+    tpl = env.get_template("frame.html")
+    ctx = normal_context()
+    ctx["current_state"]["annotations"]["ann-001"]["status"] = status
+    # Must not raise; output must contain the status string.
+    out = tpl.render(**ctx)
+    assert status in out
+
+
+def test_frame_renders_mapping_mode_with_three_candidates():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    ctx = mapping_context(
+        needs_review_annotations=[{
+            "annotation": sample_annotation(annotation_id="ann-099", page=22),
+            "mapping": sample_mapping_entry(
+                latex_file=None,
+                line_range=None,
+                confidence=0.0,
+                method="failed",
+                needs_review=True,
+                candidates=[
+                    {"file": "a.tex", "line_range": [1, 5], "score": 0.45},
+                    {"file": "b.tex", "line_range": [10, 14], "score": 0.40},
+                    {"file": "c.tex", "line_range": [20, 24], "score": 0.35},
+                ],
+            ),
+        }],
+    )
+    out = tpl.render(**ctx)
+    p = _ButtonCollector()
+    p.feed(out)
+    candidate_confirms = [b for b in p.buttons if "data-confirm-candidate" in b]
+    assert len(candidate_confirms) == 3
+    assert "a.tex" in out and "b.tex" in out and "c.tex" in out
+
+
+def test_frame_renders_without_proposed_text():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    ctx = normal_context(proposed_text=None)
+    ctx["current_state"]["annotations"]["ann-001"]["proposed_text"] = None
+    out = tpl.render(**ctx)
+    assert "(no proposal yet)" in out
