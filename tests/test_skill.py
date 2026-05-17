@@ -66,3 +66,17 @@ def test_skill_phase1_section_present_and_loop_correct(skill_text: str) -> None:
     assert "surfaced_pending" in skill_text
     # Clean-git precondition mentioned:
     assert "git status" in skill_text or "clean" in skill_text.lower()
+
+
+def test_skill_phase2a_section_has_wait_event_loop(skill_text: str) -> None:
+    assert "## Phase 2a — Ratify" in skill_text
+    # The wait-event loop is the heart of the skill:
+    assert "review-pdf wait-event" in skill_text
+    assert "--timeout 300" in skill_text or "--timeout 60" in skill_text
+    # Exit code 20 (timeout) handled:
+    assert "20" in skill_text and "timeout" in skill_text.lower()
+    # All six action dispatches must appear:
+    for action in ("approve", "reject", "redraft", "preview", "skip", "surface"):
+        assert action in skill_text.lower(), f"missing action: {action}"
+    # commit-phase boundary:
+    assert "commit-phase --phase 2a" in skill_text
