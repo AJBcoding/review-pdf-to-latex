@@ -87,3 +87,11 @@ def test_skill_phase2b_section_present(skill_text: str) -> None:
     assert "review-pdf append-chat" in skill_text
     assert "surfaced_resolved" in skill_text
     assert "commit-phase --phase 2b" in skill_text
+
+
+def test_skill_phase3_section_present(skill_text: str) -> None:
+    assert "## Phase 3 — Final commit" in skill_text
+    assert "review-pdf status --json" in skill_text
+    assert "commit-phase --phase 3" in skill_text
+    # Must check for non-terminal statuses before commit:
+    assert "terminal" in skill_text.lower()
