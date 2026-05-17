@@ -428,3 +428,31 @@ class StateFile:
             "annotations": {k: v.to_dict() for k, v in self.annotations.items()},
             "builds": [b.to_dict() for b in self.builds],
         }
+
+
+_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"accepted", "rejected", "redrafted", "deferred", "surfaced_resolved"}
+)
+_NON_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"pending", "applied", "surfaced_pending", "needs_review"}
+)
+_ALL_STATUSES: frozenset[str] = _TERMINAL_STATUSES | _NON_TERMINAL_STATUSES
+
+
+def status_is_terminal(status: str) -> bool:
+    """Return True iff ``status`` is in the spec §7.3 terminal set.
+
+    Terminal: ``accepted``, ``rejected``, ``redrafted``, ``deferred``,
+    ``surfaced_resolved``. An annotation in a terminal status requires
+    no further action; Phase 3 requires every annotation to be terminal.
+
+    Raises
+    ------
+    ValueError
+        ``status`` is not in the spec §7.3 enum.
+    """
+    if status not in _ALL_STATUSES:
+        raise ValueError(
+            f"unknown status: {status!r} (expected one of {sorted(_ALL_STATUSES)})"
+        )
+    return status in _TERMINAL_STATUSES

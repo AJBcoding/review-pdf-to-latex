@@ -267,3 +267,30 @@ def test_state_file_round_trip():
     assert obj.order == "mechanical-first"
     assert obj.current_annotation_id is None
     assert obj.to_dict() == raw
+
+
+@pytest.mark.parametrize(
+    "status,expected_terminal",
+    [
+        # Terminal per spec §7.3
+        ("accepted", True),
+        ("rejected", True),
+        ("redrafted", True),
+        ("deferred", True),
+        ("surfaced_resolved", True),
+        # Non-terminal per spec §7.3
+        ("pending", False),
+        ("applied", False),
+        ("surfaced_pending", False),
+        ("needs_review", False),
+    ],
+)
+def test_status_is_terminal(status: str, expected_terminal: bool):
+    """status_is_terminal returns True only for the spec §7.3 terminal set."""
+    assert state.status_is_terminal(status) is expected_terminal
+
+
+def test_status_is_terminal_rejects_unknown_status():
+    """An unknown status raises ValueError (defensive — schema violation)."""
+    with pytest.raises(ValueError, match="unknown status"):
+        state.status_is_terminal("invalid-status")
