@@ -31,6 +31,7 @@ ALL_SUBCOMMANDS = [
     "status",
     "override-mapping",
     "set-status",
+    "set-current",
     "append-chat",
     "record-proposal",
     "commit-phase",
@@ -84,6 +85,7 @@ def test_global_args_accepted_after_subcommand(subcommand: str) -> None:
         "preview": ["--annotation-id", "a", "--new-text-file", "x.txt"],
         "override-mapping": ["--annotation-id", "a", "--file", "x.tex", "--lines", "1:2"],
         "set-status": ["--annotation-id", "a", "--status", "accepted"],
+        "set-current": ["--annotation-id", "a"],
         "append-chat": ["--annotation-id", "a", "--role", "user", "--text-file", "x.txt"],
         "record-proposal": ["--annotation-id", "a", "--text-file", "x.txt"],
         "commit-phase": ["--phase", "1"],
@@ -375,6 +377,35 @@ def test_cli_set_status_subcommand(tmp_path: Path) -> None:
     state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
     assert state["annotations"]["ann-001"]["status"] == "accepted"
     assert state["annotations"]["ann-001"]["last_status_reason"] == "looks good"
+
+
+def test_cli_set_current_subcommand(tmp_path: Path) -> None:
+    """set-current updates current_annotation_id without touching status."""
+    project, state_dir, _ = _bootstrap_minimal_project(tmp_path)
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "set-current",
+            "--annotation-id", "ann-001",
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["current_annotation_id"] == "ann-001"
+    # Status untouched — set-current is status-neutral.
+    assert state["annotations"]["ann-001"]["status"] == "pending"
+
+
+def test_cli_set_current_unknown_annotation_exits_7(tmp_path: Path) -> None:
+    project, _, _ = _bootstrap_minimal_project(tmp_path)
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "set-current",
+            "--annotation-id", "ann-999",
+        ]
+    )
+    assert r.returncode == 7, r.stderr
 
 
 def test_cli_append_chat_subcommand(tmp_path: Path) -> None:

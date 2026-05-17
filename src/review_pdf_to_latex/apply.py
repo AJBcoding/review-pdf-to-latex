@@ -672,6 +672,37 @@ def bulk_surface_pending(state_dir: Path) -> list[str]:
 _CHAT_ROLES: frozenset[str] = frozenset({"user", "claude"})
 
 
+def set_current_annotation(
+    state_dir: Path,
+    annotation_id: str,
+) -> None:
+    """Update state.json.current_annotation_id without any status transition.
+
+    Spec rev-bus: status-neutral navigation. The viewer's Prev/Next buttons
+    and the ``set-current`` CLI both land here. We deliberately bypass
+    ``validate_status_transition`` — moving the cursor is not an action on
+    the targeted annotation; it merely changes which annotation the viewer
+    is focused on.
+
+    Raises:
+        AnnotationNotFoundError: ``annotation_id`` not present in
+            state.annotations.
+        SourcePdfChangedApplyError / LegacyStateApplyError: source PDF guard
+            (spec §14 risk 9). Mirrors every other writer in this module so
+            stale state can't silently advance the cursor.
+    """
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)
+    state_path = state_dir / "state.json"
+    if not state_path.exists():
+        raise FileMutationError(f"state.json not found at {state_path}")
+    state = _read_json(state_path)
+    if annotation_id not in state.get("annotations", {}):
+        raise AnnotationNotFoundError(annotation_id)
+    state["current_annotation_id"] = annotation_id
+    atomic_write_json(state_path, state)
+
+
 def append_chat_turn(
     state_dir: Path,
     annotation_id: str,

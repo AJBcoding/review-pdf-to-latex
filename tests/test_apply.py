@@ -454,6 +454,39 @@ def test_set_status_no_reason_does_not_set_field(tmp_path: Path) -> None:
     assert entry.get("last_status_reason") in (None,)
 
 
+from review_pdf_to_latex.apply import (
+    AnnotationNotFoundError,
+    SourcePdfChangedApplyError,
+    set_current_annotation,
+)
+
+
+def test_set_current_annotation_updates_state_without_status_change(tmp_path: Path) -> None:
+    """set-current is status-neutral: only current_annotation_id moves."""
+    proj = _make_project(tmp_path)
+    set_current_annotation(state_dir=proj.state_dir, annotation_id="ann-001")
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    assert state["current_annotation_id"] == "ann-001"
+    # Status remains whatever it was (pending in this fixture).
+    assert state["annotations"]["ann-001"]["status"] == "pending"
+
+
+def test_set_current_annotation_unknown_id_raises(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    with pytest.raises(AnnotationNotFoundError):
+        set_current_annotation(state_dir=proj.state_dir, annotation_id="ann-missing")
+
+
+def test_set_current_annotation_source_pdf_changed_raises(tmp_path: Path) -> None:
+    """Cursor moves are gated by the same source-PDF guard as every other writer
+    in apply.py (spec §14 risk 9)."""
+    proj = _make_project(tmp_path)
+    pdf = proj.project / "source.pdf"
+    pdf.write_bytes(b"%PDF-1.4 mutated\n")  # md5 no longer matches annotations.json
+    with pytest.raises(SourcePdfChangedApplyError):
+        set_current_annotation(state_dir=proj.state_dir, annotation_id="ann-001")
+
+
 from review_pdf_to_latex.apply import append_chat_turn
 
 

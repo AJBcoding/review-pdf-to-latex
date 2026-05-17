@@ -141,6 +141,25 @@
     }
     .diff-block { margin-bottom: 12px; }
 
+    /* ───── Nav row (Prev/Next, status-neutral) ───── */
+    .nav-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .nav-row button {
+      flex: 1 1 0;
+      padding: 6px 10px;
+      border: 1px solid #4a5060;
+      background: #2c333d;
+      color: #e6e8eb;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .nav-row button:hover:not(:disabled) { background: #3a4150; }
+    .nav-row button:disabled { opacity: 0.45; cursor: not-allowed; }
+
     /* ───── Button row ───── */
     .button-row {
       display: flex;
@@ -461,7 +480,9 @@
       // Disable the button row so the user can't double-click while the
       // engine processes. The state poll will reload the page once the
       // engine writes state.json, which restores button state.
-      document.querySelectorAll("button[data-action]").forEach(function (b) {
+      document.querySelectorAll(
+        "button[data-action], button[data-navigate]"
+      ).forEach(function (b) {
         b.disabled = true;
       });
       const s = document.getElementById("status");
@@ -483,6 +504,17 @@
           extra.speculative_text = t;
         }
         sendAction(annotationId, action, extra);
+      });
+    });
+
+    // Prev/Next buttons (rev-bus). Status-neutral: POST a navigate event
+    // with direction='next'|'previous'. The engine resolves the target
+    // annotation and calls set-current; the state-poll picks up the change.
+    document.querySelectorAll("button[data-navigate]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        sendAction(btn.dataset.annotationId, "navigate", {
+          direction: btn.dataset.navigate,
+        });
       });
     });
 
