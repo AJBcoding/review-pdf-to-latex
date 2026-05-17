@@ -135,3 +135,135 @@ def test_read_json_older_schema_raises_migration_required(tmp_project: Path):
 def test_read_json_supported_schema_constant_is_one():
     """SUPPORTED_SCHEMA is 1 in v1 (spec §7)."""
     assert state.SUPPORTED_SCHEMA == 1
+
+
+def test_annotation_dataclass_round_trip():
+    """Annotation dataclass round-trips through to_dict / from_dict using spec §7.1 example."""
+    raw = {
+        "id": "ann-001",
+        "page": 4,
+        "bbox": [72.0, 510.5, 540.0, 542.5],
+        "highlighted_text": "The college experienced a substantial increase…",
+        "author": "commenter-name-or-anonymous",
+        "comment": "Tighten this — too academic",
+        "created": "2026-05-15T14:22:11Z",
+        "trigger_match": False,
+    }
+    obj = state.Annotation.from_dict(raw)
+    assert obj.id == "ann-001"
+    assert obj.bbox == (72.0, 510.5, 540.0, 542.5)
+    assert obj.trigger_match is False
+    assert obj.to_dict() == raw
+
+
+def test_mapping_dataclass_round_trip_resolved():
+    """Mapping with method=fuzzy_text round-trips per spec §7.2 example."""
+    raw = {
+        "latex_file": "templates/enrollment_growth.tex",
+        "line_range": [47, 52],
+        "confidence": 0.92,
+        "method": "fuzzy_text",
+        "needs_review": False,
+        "candidates": [],
+    }
+    obj = state.Mapping.from_dict(raw)
+    assert obj.latex_file == "templates/enrollment_growth.tex"
+    assert obj.line_range == (47, 52)
+    assert obj.confidence == 0.92
+    assert obj.method == "fuzzy_text"
+    assert obj.needs_review is False
+    assert obj.to_dict() == raw
+
+
+def test_mapping_dataclass_round_trip_needs_review():
+    """Mapping with method=failed round-trips with null line_range and candidates list."""
+    raw = {
+        "latex_file": None,
+        "line_range": None,
+        "confidence": 0.0,
+        "method": "failed",
+        "needs_review": True,
+        "candidates": [
+            {"file": "templates/equity_findings.tex", "line_range": [22, 28], "score": 0.34},
+            {"file": "templates/student_success.tex", "line_range": [88, 91], "score": 0.31},
+        ],
+    }
+    obj = state.Mapping.from_dict(raw)
+    assert obj.latex_file is None
+    assert obj.line_range is None
+    assert obj.needs_review is True
+    assert len(obj.candidates) == 2
+    assert obj.to_dict() == raw
+
+
+def test_annotation_state_dataclass_round_trip_applied():
+    """AnnotationState with status=applied round-trips per spec §7.3 example."""
+    raw = {
+        "status": "applied",
+        "before_text": "The college experienced a substantial increase…",
+        "proposed_text": "COTA enrollment grew 12% YoY…",
+        "applied_text": "COTA enrollment grew 12% YoY…",
+        "applied_at": "2026-05-16T20:45:12Z",
+        "last_build_id": "build-007",
+        "surface_chat_log": None,
+        "failure_log_path": None,
+        "failure_edit_text": None,
+    }
+    obj = state.AnnotationState.from_dict(raw)
+    assert obj.status == "applied"
+    assert obj.applied_at == "2026-05-16T20:45:12Z"
+    assert obj.to_dict() == raw
+
+
+def test_annotation_state_dataclass_round_trip_needs_review_with_failure():
+    """AnnotationState with status=needs_review carries failure metadata."""
+    raw = {
+        "status": "needs_review",
+        "before_text": "Original snippet that broke the build…",
+        "proposed_text": "Claude's proposal that failed to compile…",
+        "applied_text": None,
+        "applied_at": None,
+        "last_build_id": None,
+        "failure_log_path": ".review-state/builds/build-011.log",
+        "failure_edit_text": "Claude's proposal that failed to compile…",
+        "surface_chat_log": None,
+    }
+    obj = state.AnnotationState.from_dict(raw)
+    assert obj.failure_log_path == ".review-state/builds/build-011.log"
+    assert obj.to_dict() == raw
+
+
+def test_build_dataclass_round_trip():
+    """Build dataclass round-trips per spec §7.3 example."""
+    raw = {
+        "id": "build-007",
+        "pdf_path": ".review-state/builds/build-007.pdf",
+        "page_count": 24,
+        "compiled_at": "2026-05-16T20:45:30Z",
+        "log_path": ".review-state/builds/build-007.log",
+        "ok": True,
+        "page_md5": ["aaa", "bbb", "ccc"],
+    }
+    obj = state.Build.from_dict(raw)
+    assert obj.id == "build-007"
+    assert obj.page_count == 24
+    assert obj.ok is True
+    assert obj.page_md5 == ("aaa", "bbb", "ccc")
+    assert obj.to_dict() == raw
+
+
+def test_state_file_round_trip():
+    """StateFile round-trips through to_dict / from_dict on a minimal example."""
+    raw = {
+        "schema_version": 1,
+        "phase": "0-setup",
+        "order": "mechanical-first",
+        "current_annotation_id": None,
+        "annotations": {},
+        "builds": [],
+    }
+    obj = state.StateFile.from_dict(raw)
+    assert obj.phase == "0-setup"
+    assert obj.order == "mechanical-first"
+    assert obj.current_annotation_id is None
+    assert obj.to_dict() == raw
