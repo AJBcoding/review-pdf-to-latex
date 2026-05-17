@@ -470,3 +470,119 @@ def test_ensure_gitignore_entry_treats_substring_as_distinct(tmp_path: Path) -> 
 
     lines = gi.read_text(encoding="utf-8").splitlines()
     assert ".review-state/" in lines, "literal entry must be appended"
+
+
+# ---- rev-is6: default trigger + .review-config.toml override --------------
+
+from review_pdf_to_latex.extract import (
+    DEFAULT_SURFACE_TRIGGER,
+    load_project_config,
+)
+
+
+def test_default_trigger_is_broadened_substring() -> None:
+    """Default trigger no longer requires 'claude' prefix.
+
+    Regression guard for rev-is6: a real run found reviewers writing
+    'Surface this' / 'SURFACE THIS' without the 'claude' prefix, which the
+    legacy 'claude surface this' default missed entirely.
+    """
+    assert DEFAULT_SURFACE_TRIGGER == "surface this"
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "Surface this whole table for conversation",
+        "SURFACE THIS - not sure this is accurate",
+        "claude surface this and let's refine",  # legacy phrasing still matches
+        "Claude, please surface this paragraph",
+    ],
+    ids=["title-case", "shout-case", "legacy-with-claude", "legacy-with-comma"],
+)
+def test_default_trigger_catches_reviewer_vocabulary(comment: str) -> None:
+    """The broadened default must catch every surface-intent phrasing observed
+    in the first real run (see docs/handoffs/2026-05-17-first-run-cota-feedback.md
+    BUG #4)."""
+    assert is_trigger(comment, DEFAULT_SURFACE_TRIGGER) is True
+
+
+def test_load_project_config_returns_empty_when_file_absent(tmp_path: Path) -> None:
+    assert load_project_config(tmp_path) == {}
+
+
+def test_load_project_config_reads_surface_trigger(tmp_path: Path) -> None:
+    (tmp_path / ".review-config.toml").write_text(
+        'surface_trigger = "discuss this"\n', encoding="utf-8"
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg == {"surface_trigger": "discuss this"}
+
+
+def test_load_project_config_swallows_parse_errors(tmp_path: Path) -> None:
+    """A malformed config must not block extract — silently degrades to {}."""
+    (tmp_path / ".review-config.toml").write_text(
+        "surface_trigger = [unterminated\n", encoding="utf-8"
+    )
+    assert load_project_config(tmp_path) == {}
+
+
+from review_pdf_to_latex.extract import run_extract
+
+
+def test_run_extract_uses_config_file_trigger_when_cli_arg_absent(
+    tmp_path: Path,
+) -> None:
+    """Precedence check: config file overrides the built-in default."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".review-config.toml").write_text(
+        'surface_trigger = "discuss this"\n', encoding="utf-8"
+    )
+    rc = run_extract(
+        pdf_path=FIXTURE_PDF,
+        project_dir=project,
+        surface_trigger=None,  # no CLI override → fall through to config
+    )
+    assert rc == 0, "extract failed against the fixture PDF"
+
+    import json
+
+    annotations_doc = json.loads(
+        (project / ".review-state" / "annotations.json").read_text()
+    )
+    matched = [
+        a for a in annotations_doc["annotations"] if a["trigger_match"]
+    ]
+    # The fixture PDF's comments contain "claude surface this" but not
+    # "discuss this", so the config override must zero out trigger_match.
+    assert matched == [], (
+        f"config-file trigger 'discuss this' should not match any fixture "
+        f"comment; got {[a['comment'] for a in matched]}"
+    )
+
+
+def test_run_extract_cli_arg_overrides_config_file(tmp_path: Path) -> None:
+    """Precedence check: explicit surface_trigger arg wins over config file."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".review-config.toml").write_text(
+        'surface_trigger = "discuss this"\n', encoding="utf-8"
+    )
+    rc = run_extract(
+        pdf_path=FIXTURE_PDF,
+        project_dir=project,
+        surface_trigger="surface this",  # explicit override
+    )
+    assert rc == 0
+
+    import json
+
+    annotations_doc = json.loads(
+        (project / ".review-state" / "annotations.json").read_text()
+    )
+    # Fixture has at least one "claude surface this" comment — the explicit
+    # "surface this" arg must catch it despite the config saying otherwise.
+    assert any(a["trigger_match"] for a in annotations_doc["annotations"]), (
+        "explicit surface_trigger arg failed to override config-file value"
+    )

@@ -53,7 +53,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Read PDF, build annotations.json + mapping.json + initial state.json.",
     )
     p_extract.add_argument("--pdf", type=Path, required=True)
-    p_extract.add_argument("--surface-trigger", default="claude surface this")
+    p_extract.add_argument(
+        "--surface-trigger",
+        default=None,
+        help=(
+            "Case-insensitive substring that flags an annotation's comment as "
+            "SURFACE-intent. Overrides .review-config.toml's surface_trigger key "
+            "(which itself overrides the built-in default 'surface this')."
+        ),
+    )
     p_extract.add_argument("--force", action="store_true")
 
     # 2. serve

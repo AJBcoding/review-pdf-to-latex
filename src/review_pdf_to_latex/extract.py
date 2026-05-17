@@ -38,6 +38,18 @@ def _format_created(raw: object) -> str | None:
     return str(raw)
 
 
+DEFAULT_SURFACE_TRIGGER = "surface this"
+"""Case-insensitive substring used to flag SURFACE-intent annotations.
+
+Broadened from the legacy ``claude surface this`` after a real run found
+reviewers writing ``Surface this``/``SURFACE THIS`` without the ``claude``
+prefix (rev-is6). The legacy phrase still matches because it contains
+``surface this`` as a substring. Per-project override via
+``.review-config.toml``'s ``surface_trigger`` key; see
+:func:`load_project_config`.
+"""
+
+
 def is_trigger(comment: str, trigger_phrase: str) -> bool:
     """Return True iff `trigger_phrase` appears in `comment` (case-insensitive substring).
 
@@ -49,9 +61,33 @@ def is_trigger(comment: str, trigger_phrase: str) -> bool:
     return trigger_phrase.casefold() in comment.casefold()
 
 
+def load_project_config(project_dir: Path) -> dict:
+    """Read ``<project_dir>/.review-config.toml`` if present, else return {}.
+
+    Currently recognized keys:
+
+    - ``surface_trigger`` (str): override the case-insensitive substring used
+      to flag SURFACE-intent annotations.
+
+    Unknown keys are ignored. Parse errors silently degrade to ``{}`` so a
+    broken config never blocks ``extract``; future work could surface a
+    warning to stderr.
+    """
+    import tomllib
+
+    config_path = Path(project_dir) / ".review-config.toml"
+    if not config_path.exists():
+        return {}
+    try:
+        with config_path.open("rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
 def read_annotations(
     pdf_path: Path,
-    trigger_phrase: str = "claude surface this",
+    trigger_phrase: str = DEFAULT_SURFACE_TRIGGER,
 ) -> list[Annotation]:
     """Parse PDF highlight annotations into a list of Annotation dataclasses.
 
@@ -62,7 +98,8 @@ def read_annotations(
 
     Args:
         pdf_path: Absolute or relative path to an annotated PDF.
-        trigger_phrase: SURFACE trigger phrase (default "claude surface this").
+        trigger_phrase: SURFACE trigger phrase (default
+            :data:`DEFAULT_SURFACE_TRIGGER`).
 
     Returns:
         List of Annotation dataclasses in document order. May be empty.
@@ -507,10 +544,14 @@ def _pdfannots_version() -> str:
 def run_extract(
     pdf_path: Path,
     project_dir: Path,
-    surface_trigger: str = "claude surface this",
+    surface_trigger: str | None = None,
     force: bool = False,
 ) -> int:
     """Execute the full Phase 0 pipeline. Returns a CLI exit code.
+
+    Trigger precedence (highest first): explicit ``surface_trigger`` arg
+    → ``.review-config.toml``'s ``surface_trigger`` key →
+    :data:`DEFAULT_SURFACE_TRIGGER`.
 
     Exit codes (per spec §8 extract row):
         0  ok
@@ -546,9 +587,16 @@ def run_extract(
     state_dir.mkdir(parents=True, exist_ok=True)
     pages_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve effective trigger: CLI arg > project config > default.
+    effective_trigger = surface_trigger
+    if effective_trigger is None:
+        effective_trigger = load_project_config(project_dir).get(
+            "surface_trigger", DEFAULT_SURFACE_TRIGGER
+        )
+
     # 1. Read annotations.
     try:
-        annotations = read_annotations(pdf_path, trigger_phrase=surface_trigger)
+        annotations = read_annotations(pdf_path, trigger_phrase=effective_trigger)
     except RuntimeError as exc:
         print(f"error: pdfannots failed: {exc}", file=sys.stderr)
         return 4
