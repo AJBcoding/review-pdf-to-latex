@@ -95,3 +95,43 @@ def test_atomic_write_json_concurrent_writers_do_not_corrupt(tmp_project: Path):
     loaded = json.loads(sd.state_path.read_text(encoding="utf-8"))
     assert loaded["schema_version"] == 1
     assert loaded["v"] in (1, 2)
+
+
+def test_read_json_round_trips_supported_schema(tmp_project: Path):
+    """read_json returns the parsed dict for schema_version == SUPPORTED_SCHEMA."""
+    sd = state.StateDir(tmp_project)
+    payload = {"schema_version": 1, "hello": "world"}
+    state.atomic_write_json(sd.state_path, payload)
+    loaded = state.read_json(sd.state_path)
+    assert loaded == payload
+
+
+def test_read_json_missing_schema_version_raises(tmp_project: Path):
+    """A JSON file without schema_version raises SchemaVersionError."""
+    sd = state.StateDir(tmp_project)
+    state.atomic_write_json(sd.state_path, {"no_version": True})
+    with pytest.raises(state.SchemaVersionError, match="missing schema_version"):
+        state.read_json(sd.state_path)
+
+
+def test_read_json_future_schema_raises(tmp_project: Path):
+    """A schema_version higher than SUPPORTED_SCHEMA raises SchemaVersionError."""
+    sd = state.StateDir(tmp_project)
+    state.atomic_write_json(sd.state_path, {"schema_version": state.SUPPORTED_SCHEMA + 1})
+    with pytest.raises(state.SchemaVersionError, match="unsupported"):
+        state.read_json(sd.state_path)
+
+
+def test_read_json_older_schema_raises_migration_required(tmp_project: Path):
+    """A schema_version below SUPPORTED_SCHEMA raises MigrationRequiredError."""
+    if state.SUPPORTED_SCHEMA <= 1:
+        pytest.skip("No older schema exists yet at SUPPORTED_SCHEMA=1")
+    sd = state.StateDir(tmp_project)
+    state.atomic_write_json(sd.state_path, {"schema_version": state.SUPPORTED_SCHEMA - 1})
+    with pytest.raises(state.MigrationRequiredError):
+        state.read_json(sd.state_path)
+
+
+def test_read_json_supported_schema_constant_is_one():
+    """SUPPORTED_SCHEMA is 1 in v1 (spec §7)."""
+    assert state.SUPPORTED_SCHEMA == 1

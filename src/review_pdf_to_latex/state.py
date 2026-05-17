@@ -96,3 +96,69 @@ def atomic_write_json(path: Path, data: Any) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+SUPPORTED_SCHEMA = 1
+"""The schema_version this build of the engine reads and writes.
+
+Bumped only on breaking changes per spec §7. A backwards-compatible
+field addition does NOT bump this constant. The ``review-pdf
+migrate-state`` subcommand handles upgrades when the major version
+changes.
+"""
+
+
+class SchemaVersionError(Exception):
+    """Raised when a state file's schema_version is missing or unsupported.
+
+    Distinct from :class:`MigrationRequiredError`, which signals a known
+    older version that the engine could migrate forward via
+    ``review-pdf migrate-state``.
+    """
+
+
+class MigrationRequiredError(Exception):
+    """Raised when a state file's schema_version is older than SUPPORTED_SCHEMA.
+
+    The engine refuses to read the file in place; the user must run
+    ``review-pdf migrate-state --from N --to M`` to upgrade it.
+    """
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    """Read a state JSON file and enforce the schema-version contract.
+
+    Returns the parsed dict if ``schema_version == SUPPORTED_SCHEMA``.
+
+    Raises
+    ------
+    SchemaVersionError
+        - The top-level object has no ``schema_version`` key, OR
+        - ``schema_version`` is greater than ``SUPPORTED_SCHEMA``.
+    MigrationRequiredError
+        ``schema_version`` is a known older version (less than
+        ``SUPPORTED_SCHEMA``). Run ``review-pdf migrate-state``.
+    FileNotFoundError
+        Path does not exist. Callers (e.g., the viewer's polling loop)
+        should tolerate one retry during the atomic-rename window.
+    """
+    path = Path(path)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if "schema_version" not in data:
+        raise SchemaVersionError(
+            f"{path}: missing schema_version (engine refuses to read)"
+        )
+    version = data["schema_version"]
+    if version > SUPPORTED_SCHEMA:
+        raise SchemaVersionError(
+            f"{path}: schema_version={version} is unsupported "
+            f"(engine supports up to {SUPPORTED_SCHEMA}; upgrade the engine)"
+        )
+    if version < SUPPORTED_SCHEMA:
+        raise MigrationRequiredError(
+            f"{path}: schema_version={version} is older than "
+            f"{SUPPORTED_SCHEMA}; run `review-pdf migrate-state "
+            f"--from {version} --to {SUPPORTED_SCHEMA}`"
+        )
+    return data
