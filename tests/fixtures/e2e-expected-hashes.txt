@@ -1,0 +1,9 @@
+# md5  relative-path-from-tests/fixtures/
+2efc4ec09f6f5eef1369322ac883018a  e2e-sample-project/build/full_report.tex
+551e0356fefd96f974eec62faac1fd19  e2e-sample-project/templates/intro.tex
+bd4faa5a7019cf00b1f512cd8d512090  e2e-sample-project/templates/findings.tex
+14a023e115c6cc7b374d9890f4216f4e  e2e-sample-project/templates/conclusion.tex
+f5225b50b1065ff4be227571a9b4762a  e2e-sample-project/templates/table.tex
+da735d1851cde5ef23b78c3af6c05aba  e2e-sample-project/build/full_report.pdf
+e8563ec7f4fa637d9a87fbc2c0995280  e2e-annotated.pdf
+11996e2ee272e62abf271ac48b6ecf91  E2E-EXPECTED.md

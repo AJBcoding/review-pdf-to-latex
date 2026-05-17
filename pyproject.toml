@@ -49,3 +49,6 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-ra --strict-markers"
+markers = [
+    "slow: end-to-end / system tests; deselect with -m 'not slow'",
+]
