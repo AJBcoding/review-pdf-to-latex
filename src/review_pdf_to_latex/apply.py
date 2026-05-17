@@ -601,6 +601,74 @@ def set_annotation_status(
     atomic_write_json(state_path, state)
 
 
+def bulk_surface_pending(state_dir: Path) -> list[str]:
+    """Promote every ``status=pending`` annotation with ``trigger_match=true``
+    to ``surfaced_pending``.
+
+    Skill-side workflow shortcut for ``--order surface-first`` runs (spec
+    §9.5): when the surface-intent annotations dominate the residual set,
+    walking them in Phase 2b *before* the Phase 1 mechanical batch avoids
+    drafting mechanical edits that a SURFACE conversation may later
+    invalidate (rev-bwi).
+
+    Only annotations whose entry in ``annotations.json`` has
+    ``trigger_match: true`` AND whose current state.json status is exactly
+    ``pending`` are promoted. Annotations already in ``surfaced_pending``,
+    ``surfaced_resolved``, ``applied``, or any terminal status are left
+    untouched. Validation goes through ``validate_status_transition`` per
+    the (pending, surface) row in §10.3 — an illegal transition raises
+    ``IllegalStatusTransitionError`` and aborts the batch before any write
+    (state.json is only persisted if every candidate validates).
+
+    Args:
+        state_dir: ``.review-state`` directory.
+
+    Returns:
+        The ids of annotations that were promoted, in annotations.json
+        document order. An empty list if no candidates matched.
+
+    Raises:
+        FileMutationError: state.json or annotations.json missing.
+        IllegalStatusTransitionError: any candidate fails validation.
+        SourcePdfChangedApplyError / LegacyStateApplyError: source PDF guard.
+    """
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)
+    state_path = state_dir / "state.json"
+    annotations_path = state_dir / "annotations.json"
+    if not state_path.exists():
+        raise FileMutationError(f"state.json not found at {state_path}")
+    if not annotations_path.exists():
+        raise FileMutationError(
+            f"annotations.json not found at {annotations_path}"
+        )
+
+    state = _read_json(state_path)
+    annotations_doc = _read_json(annotations_path)
+    state_entries: dict[str, Any] = state.get("annotations", {})
+
+    promoted: list[str] = []
+    for ann in annotations_doc.get("annotations", []):
+        if not ann.get("trigger_match"):
+            continue
+        ann_id = ann.get("id")
+        entry = state_entries.get(ann_id)
+        if entry is None:
+            continue
+        if entry.get("status") != "pending":
+            continue
+        try:
+            validate_status_transition("pending", "surfaced_pending", "surface")
+        except ValueError as exc:
+            raise IllegalStatusTransitionError(str(exc)) from exc
+        entry["status"] = "surfaced_pending"
+        promoted.append(ann_id)
+
+    if promoted:
+        atomic_write_json(state_path, state)
+    return promoted
+
+
 _CHAT_ROLES: frozenset[str] = frozenset({"user", "claude"})
 
 

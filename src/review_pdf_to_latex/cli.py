@@ -211,7 +211,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_we.add_argument("--timeout", type=int, default=60)
     _add_global_args(p_we, on_subparser=True)
 
-    # 14. migrate-state
+    # 14. bulk-surface
+    p_bs = sub.add_parser(
+        "bulk-surface",
+        help=(
+            "Promote every status=pending annotation with trigger_match=true "
+            "to surfaced_pending (surface-first ordering shortcut, rev-bwi)."
+        ),
+    )
+    _add_global_args(p_bs, on_subparser=True)
+
+    # 15. migrate-state
     p_ms = sub.add_parser(
         "migrate-state", help="Upgrade state files between schema versions."
     )
@@ -541,6 +551,32 @@ def _handle_preview(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_bulk_surface(args: argparse.Namespace) -> int:
+    """``bulk-surface`` subcommand handler (rev-bwi).
+
+    Exit codes: 0 ok; 18 illegal transition (validation guard); 21/22
+    source-PDF guard. ``--json`` emits ``{"promoted": [...]}``; the human
+    output is one ``"promoted N: id1 id2 ..."`` line on stdout.
+    """
+    from review_pdf_to_latex.apply import ApplyError, bulk_surface_pending
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    try:
+        promoted = bulk_surface_pending(state_dir=state_dir)
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+
+    if getattr(args, "json_output", False):
+        print_json({"promoted": list(promoted)})
+    else:
+        if promoted:
+            print(f"promoted {len(promoted)}: {' '.join(promoted)}")
+        else:
+            print("promoted 0")
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -587,6 +623,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "override-mapping": _handle_override_mapping,
     "commit-phase": _handle_commit_phase,
     "preview": _handle_preview,
+    "bulk-surface": _handle_bulk_surface,
 }
 
 
