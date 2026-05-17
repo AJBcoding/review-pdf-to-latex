@@ -172,6 +172,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ss.add_argument("--reason", default=None)
     _add_global_args(p_ss, on_subparser=True)
 
+    # 9b. set-current (rev-bus: status-neutral navigation)
+    p_sc = sub.add_parser(
+        "set-current",
+        help="Move the viewer cursor to an annotation without changing its status.",
+    )
+    p_sc.add_argument("--annotation-id", required=True)
+    _add_global_args(p_sc, on_subparser=True)
+
     # 10. append-chat
     p_ac = sub.add_parser(
         "append-chat", help="Append a Phase-2b chat turn to surface_chat_log."
@@ -389,6 +397,22 @@ def _handle_set_status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_set_current(args: argparse.Namespace) -> int:
+    """``set-current`` subcommand handler (spec rev-bus, exit codes 0, 7, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, set_current_annotation
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    try:
+        set_current_annotation(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    return EXIT_OK
+
+
 def _handle_append_chat(args: argparse.Namespace) -> int:
     """``append-chat`` subcommand handler (spec §8 exit codes 0, 7, 21, 22)."""
     from review_pdf_to_latex.apply import ApplyError, append_chat_turn
@@ -582,6 +606,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "apply": _handle_apply,
     "revert": _handle_revert,
     "set-status": _handle_set_status,
+    "set-current": _handle_set_current,
     "append-chat": _handle_append_chat,
     "record-proposal": _handle_record_proposal,
     "override-mapping": _handle_override_mapping,

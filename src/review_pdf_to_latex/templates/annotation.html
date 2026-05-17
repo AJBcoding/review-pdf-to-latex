@@ -95,6 +95,21 @@
     </div>
     {% endif %}
 
+    <div class="nav-row">
+      <button type="button"
+              data-navigate="previous"
+              data-annotation-id="{{ ann.id }}"
+              {% if annotation_index <= 1 %}disabled{% endif %}>
+        ◀ Previous
+      </button>
+      <button type="button"
+              data-navigate="next"
+              data-annotation-id="{{ ann.id }}"
+              {% if annotation_index >= total_annotations %}disabled{% endif %}>
+        Next ▶
+      </button>
+    </div>
+
     <div class="button-row">
       {% for action in ["preview", "approve", "reject", "redraft", "skip", "surface"] %}
         <button type="button"

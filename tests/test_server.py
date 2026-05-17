@@ -280,6 +280,52 @@ def test_post_events_override_mapping_bad_line_end_rejected(running_server) -> N
     assert b"line_end" in body
 
 
+@pytest.mark.parametrize("direction", ["next", "previous"])
+def test_post_events_navigate_roundtrip(running_server, direction: str) -> None:
+    """navigate requires direction='next'|'previous' and persists it (rev-bus)."""
+    base_url, project_dir = running_server
+    status, _ = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-001",
+            "action": "navigate",
+            "direction": direction,
+        },
+    )
+    assert status == HTTPStatus.NO_CONTENT
+    events_path = project_dir / ".review-state" / "state-events.jsonl"
+    rec = json.loads(events_path.read_text().splitlines()[-1])
+    assert rec["action"] == "navigate"
+    assert rec["direction"] == direction
+
+
+def test_post_events_navigate_missing_direction_rejected(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {"annotation_id": "ann-001", "action": "navigate"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"direction" in body
+
+
+def test_post_events_navigate_bad_direction_rejected(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-001",
+            "action": "navigate",
+            "direction": "sideways",
+        },
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"direction" in body
+
+
 def test_post_events_rejects_invalid_action(running_server) -> None:
     base_url, _ = running_server
     status, body = _post_json(

@@ -67,8 +67,10 @@ _VALID_ACTIONS = frozenset(
         "skip",
         "surface",
         "override-mapping",
+        "navigate",
     }
 )
+_VALID_NAVIGATE_DIRECTIONS = frozenset({"next", "previous"})
 _MAX_BODY_BYTES = 64 * 1024
 
 
@@ -116,6 +118,16 @@ def _validate_event(payload: object) -> dict[str, Any]:
         if not isinstance(spec_text, str):
             raise _BadRequest("speculative_text must be a string")
         record["speculative_text"] = spec_text
+    if action == "navigate":
+        # Status-neutral navigation (rev-bus). The engine maps
+        # direction to the next/previous annotation_id and calls
+        # apply.set_current_annotation; no status changes.
+        direction = payload.get("direction")
+        if not isinstance(direction, str) or direction not in _VALID_NAVIGATE_DIRECTIONS:
+            raise _BadRequest(
+                "missing field: direction (must be 'next' or 'previous' for navigate)"
+            )
+        record["direction"] = direction
     if action == "override-mapping":
         # Required override-mapping fields per spec §10.6.
         file_val = payload.get("file")
