@@ -95,3 +95,11 @@ def test_skill_phase3_section_present(skill_text: str) -> None:
     assert "commit-phase --phase 3" in skill_text
     # Must check for non-terminal statuses before commit:
     assert "terminal" in skill_text.lower()
+
+
+def test_skill_resumption_section_present(skill_text: str) -> None:
+    assert "## Resuming an interrupted session" in skill_text
+    # Resume from state.json.phase:
+    assert "state.json" in skill_text and "phase" in skill_text
+    # Context compaction explicitly covered:
+    assert "compaction" in skill_text.lower() or "compact" in skill_text.lower()
