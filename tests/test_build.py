@@ -162,3 +162,66 @@ def test_next_build_id_widens_past_999() -> None:
     assert any("widening" in str(w.message).lower() for w in captured), (
         f"expected widening warning, got {[str(w.message) for w in captured]}"
     )
+
+
+from review_pdf_to_latex.build import (
+    PaginationDiff,
+    compute_page_md5s,
+    paginate_diff,
+)
+
+
+pdftoppm = pytest.mark.skipif(
+    shutil.which("pdftoppm") is None,
+    reason="pdftoppm not on PATH; install Poppler",
+)
+
+
+@pdftoppm
+@pdflatex
+def test_compute_page_md5s_returns_one_per_page(tmp_path: Path) -> None:
+    # Produce a 2-page PDF via pdflatex.
+    src = tmp_path / "two.tex"
+    src.write_text(
+        r"""\documentclass{article}
+\begin{document}
+page one
+\newpage
+page two
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    ok, _ = run_latex(main_file=src, engine="pdflatex", log_path=tmp_path / "l.log")
+    assert ok is True
+    md5s = compute_page_md5s(tmp_path / "two.pdf")
+    assert len(md5s) == 2
+    # MD5 hex digests are 32 chars
+    assert all(len(h) == 32 and int(h, 16) >= 0 for h in md5s)
+    # Two visually distinct pages → distinct hashes
+    assert md5s[0] != md5s[1]
+
+
+@pytest.mark.parametrize(
+    "prev, curr, expected_count, expected_first, expected_summary_contains",
+    [
+        # Identical builds → no shift
+        (["a", "b", "c"], ["a", "b", "c"], (3, 3), None, "no shift"),
+        # Same count, content shift on page 2
+        (["a", "b", "c"], ["a", "X", "c"], (3, 3), 2, "content shift at p.2"),
+        # Page count increases; shift starts where divergence first appears
+        (["a", "b", "c"], ["a", "b", "Y", "c"], (3, 4), 3, "3 → 4 pages"),
+        # Page count decreases
+        (["a", "b", "c", "d"], ["a", "b"], (4, 2), 3, "4 → 2 pages"),
+        # No prior build (cold start)
+        ([], ["a", "b"], (0, 2), None, "initial build"),
+    ],
+)
+def test_paginate_diff_cases(
+    prev, curr, expected_count, expected_first, expected_summary_contains
+) -> None:
+    diff = paginate_diff(prev, curr)
+    assert isinstance(diff, PaginationDiff)
+    assert (diff.prev_count, diff.curr_count) == expected_count
+    assert diff.first_changed_page == expected_first
+    assert expected_summary_contains in diff.summary

@@ -136,3 +136,103 @@ def next_build_id(state: dict) -> str:
         )
         return f"build-{next_n:04d}"
     return f"build-{next_n:03d}"
+
+
+@dataclass(frozen=True)
+class PaginationDiff:
+    """Result of comparing two builds' per-page MD5 lists.
+
+    Fields:
+        prev_count: Page count of the previous successful build (0 if none).
+        curr_count: Page count of the current build.
+        first_changed_page: 1-indexed page where the two builds first diverge,
+            or None if they are identical.
+        summary: Human-readable indicator string suitable for the viewer's
+            pagination pane (see spec §10.1, §11.2). Examples:
+                "3 → 3 pages, no shift"
+                "3 → 3 pages, content shift at p.2"
+                "3 → 4 pages, shift at p.3"
+                "initial build, 2 pages" (cold start, no prior)
+    """
+
+    prev_count: int
+    curr_count: int
+    first_changed_page: int | None
+    summary: str
+
+
+def compute_page_md5s(pdf_path: Path) -> list[str]:
+    """Render each page of pdf_path to PNG via pdftoppm; return MD5 hex digests.
+
+    Renders into a temp directory that is deleted on return. The choice of PNG
+    (rather than text via pdftotext) is for fidelity per spec §11.2: a page that
+    only changes a figure caption width would not change its text content but
+    would change its rendered image.
+
+    Resolution is 100 DPI — high enough that font hinting variation does not
+    flip pixels, low enough that a 24-page report renders in < 1s.
+    """
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        raise FileNotFoundError(pdf_path)
+
+    with tempfile.TemporaryDirectory(prefix="review-pdf-pages-") as td:
+        out_root = Path(td) / "page"
+        # pdftoppm writes page-1.png, page-2.png, ... with -png and a numeric suffix.
+        subprocess.run(  # noqa: S603
+            [
+                "pdftoppm",
+                "-r",
+                "100",
+                "-png",
+                str(pdf_path),
+                str(out_root),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        pages = sorted(
+            Path(td).glob("page-*.png"),
+            key=lambda p: int(p.stem.rsplit("-", 1)[1]),
+        )
+        return [hashlib.md5(p.read_bytes()).hexdigest() for p in pages]
+
+
+def paginate_diff(prev: list[str], curr: list[str]) -> PaginationDiff:
+    """Compare two per-page MD5 lists; return a PaginationDiff per spec §11.2.
+
+    Cases (matching spec §11.2):
+        - No prior build: `summary = "initial build, N pages"`,
+          `first_changed_page = None`.
+        - Same count, identical hashes: `"N → N pages, no shift"`.
+        - Same count, hashes differ at page k (1-indexed):
+          `"N → N pages, content shift at p.k"`.
+        - Page count differs: walk forward to find the first index where
+          hashes diverge (or where one list runs out); report
+          `"M → N pages, shift at p.k"`.
+    """
+    pc, cc = len(prev), len(curr)
+    if pc == 0:
+        return PaginationDiff(0, cc, None, f"initial build, {cc} pages")
+
+    if pc == cc:
+        for i, (a, b) in enumerate(zip(prev, curr)):
+            if a != b:
+                return PaginationDiff(
+                    pc,
+                    cc,
+                    i + 1,
+                    f"{pc} → {cc} pages, content shift at p.{i + 1}",
+                )
+        return PaginationDiff(pc, cc, None, f"{pc} → {cc} pages, no shift")
+
+    # Page count delta: find first divergence
+    first: int | None = None
+    for i in range(min(pc, cc)):
+        if prev[i] != curr[i]:
+            first = i + 1
+            break
+    if first is None:
+        # One is a strict prefix of the other; divergence is at min+1
+        first = min(pc, cc) + 1
+    return PaginationDiff(pc, cc, first, f"{pc} → {cc} pages, shift at p.{first}")
