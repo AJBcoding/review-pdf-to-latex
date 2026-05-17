@@ -597,3 +597,63 @@ def test_phase_3_final(project_copy: Path, tmp_path: Path, capsys: pytest.Captur
         cwd=project_copy, capture_output=True, text=True, check=True,
     ).stdout.strip().splitlines()
     assert 4 <= len(log) <= 5, f"unexpected git log length: {log}"
+
+
+def test_phase_1_build_failure_reverts_and_flags(project_copy: Path, tmp_path: Path):
+    """A pdflatex failure after apply triggers revert + needs_review flag."""
+    sd = _phase_0_setup(project_copy)
+    _override_ann_004_mapping(project_copy, sd)
+    _allow_state_in_git(project_copy)
+    _advance_phase(sd, "1-batch")
+
+    cli.main(["--project-dir", str(project_copy), "set-status",
+              "--annotation-id", "ann-003", "--status", "surfaced_pending"])
+
+    # Apply a deliberately broken proposal to ann-005 (unmatched brace).
+    broken_proposal = tmp_path / "broken-ann-005.tex"
+    broken_proposal.write_text(
+        "the priorities for the coming year include sustaining the "
+        "mid-semester checkpoint program \\unbalanced{ brace here\n",
+        encoding="utf-8",
+    )
+    rc = cli.main(
+        ["--project-dir", str(project_copy), "apply",
+         "--annotation-id", "ann-005",
+         "--new-text-file", str(broken_proposal)]
+    )
+    assert rc == 0  # apply itself succeeds (it does not validate LaTeX)
+
+    # build must fail with exit code 11.
+    rc = cli.main(["--project-dir", str(project_copy), "build"])
+    assert rc == cli.EXIT_BUILD_FAILED == 11
+
+    # Locate the failed build's log path from state.json.builds[].
+    st = state_mod.read_json(sd.state_path)
+    last_build = st["builds"][-1]
+    assert last_build["ok"] is False
+    failure_log = last_build["log_path"]
+    assert Path(project_copy / failure_log).exists() or Path(failure_log).exists()
+
+    # Skill's failure handler: revert --status needs_review --failure-log
+    rc = cli.main(
+        ["--project-dir", str(project_copy), "revert",
+         "--annotation-id", "ann-005",
+         "--status", "needs_review",
+         "--failure-log", failure_log]
+    )
+    assert rc == 0
+
+    # State assertions:
+    st = state_mod.read_json(sd.state_path)
+    ann5 = st["annotations"]["ann-005"]
+    assert ann5["status"] == "needs_review"
+    assert ann5["failure_log_path"] == failure_log
+    assert ann5["failure_edit_text"] is not None
+    assert "\\unbalanced" in ann5["failure_edit_text"]
+
+    # The .tex file is restored to before_text.
+    conclusion = (project_copy / "templates" / "conclusion.tex").read_text(
+        encoding="utf-8"
+    )
+    assert "\\unbalanced" not in conclusion
+    assert "mid-semester checkpoint program" in conclusion
