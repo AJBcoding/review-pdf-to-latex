@@ -640,3 +640,32 @@ def append_chat_turn(
     entry["surface_chat_log"] = log
 
     atomic_write_json(state_path, state)
+
+
+def record_proposal(
+    state_dir: Path,
+    annotation_id: str,
+    proposed_text: str,
+) -> None:
+    """Write proposed_text into state.json without touching the .tex file.
+
+    Spec §8 record-proposal row. Used by the skill to stage a draft for later
+    apply (e.g., generate proposals in bulk during Phase 1 then apply them in
+    a separate pass) or for replay.
+
+    Does NOT change status; the annotation remains in whatever state it was in.
+
+    Raises:
+        AnnotationNotFoundError: annotation_id not present.
+        SourcePdfChangedApplyError / LegacyStateApplyError: source PDF guard.
+    """
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)  # spec §14 risk 9
+    state_path = state_dir / "state.json"
+    if not state_path.exists():
+        raise FileMutationError(f"state.json not found at {state_path}")
+    state = _read_json(state_path)
+    if annotation_id not in state.get("annotations", {}):
+        raise AnnotationNotFoundError(annotation_id)
+    state["annotations"][annotation_id]["proposed_text"] = proposed_text
+    atomic_write_json(state_path, state)

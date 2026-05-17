@@ -503,3 +503,26 @@ def test_append_chat_invalid_role_raises(tmp_path: Path) -> None:
             role="assistant",  # only "user" or "claude" allowed
             text="hi",
         )
+
+
+from review_pdf_to_latex.apply import record_proposal
+
+
+def test_record_proposal_writes_state_but_not_tex(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    original_tex = proj.tex_path.read_text(encoding="utf-8")
+
+    record_proposal(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        proposed_text="stashed proposal\n",
+    )
+
+    # .tex file is untouched.
+    assert proj.tex_path.read_text(encoding="utf-8") == original_tex
+    # state.json carries the proposal but status has NOT moved off pending.
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    entry = state["annotations"]["ann-001"]
+    assert entry["proposed_text"] == "stashed proposal\n"
+    assert entry["applied_text"] is None
+    assert entry["status"] == "pending"
