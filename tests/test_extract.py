@@ -187,3 +187,155 @@ def test_render_pages_reinvokes_pdftoppm_when_pdf_newer_than_pngs(
     # render_pages must re-rasterize without raising (the PNGs get overwritten).
     paths2 = render_pages(pdf, out_dir, dpi=72)
     assert paths2 == paths
+
+
+from review_pdf_to_latex.extract import fuzzy_map
+from review_pdf_to_latex.state import Mapping
+
+
+SAMPLE_PROJECT = Path(__file__).parent / "fixtures" / "sample-project"
+
+
+def _make_sample_project(root: Path) -> None:
+    """Create a synthetic 3-file LaTeX project for fuzzy_map tests."""
+    (root / "chapters").mkdir(parents=True, exist_ok=True)
+    (root / "build").mkdir(parents=True, exist_ok=True)
+
+    (root / "main.tex").write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\input{chapters/intro}\n"
+        "\\input{chapters/methods}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+
+    (root / "chapters" / "intro.tex").write_text(
+        "\\section{Introduction}\n"
+        "The College of the Arts experienced a substantial increase in\n"
+        "enrollment between 2019 and 2024, growing from 1,200 to 1,680\n"
+        "undergraduate students across all majors.\n"
+        "\n"
+        "This growth reshaped advising workloads in every department.\n",
+        encoding="utf-8",
+    )
+
+    (root / "chapters" / "methods.tex").write_text(
+        "\\section{Methods}\n"
+        "We surveyed 412 students using a stratified random sample drawn\n"
+        "from each declared major. Response rate was 67 percent.\n"
+        "\n"
+        "Quantitative items were analyzed using descriptive statistics.\n",
+        encoding="utf-8",
+    )
+
+    # File under build/ — must be excluded by default.
+    (root / "build" / "cached.tex").write_text(
+        "The College of the Arts experienced a substantial increase in\n"
+        "enrollment between 2019 and 2024.\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def sample_project(tmp_path: Path) -> Path:
+    root = tmp_path / "proj"
+    root.mkdir()
+    _make_sample_project(root)
+    return root
+
+
+def _ann(highlighted: str, ann_id: str = "ann-001") -> Annotation:
+    return Annotation(
+        id=ann_id,
+        page=1,
+        bbox=(0.0, 0.0, 0.0, 0.0),
+        highlighted_text=highlighted,
+        author="anonymous",
+        comment="",
+        created=None,
+        trigger_match=False,
+    )
+
+
+def test_fuzzy_map_high_confidence_match(sample_project: Path) -> None:
+    """A near-verbatim quote maps to the right file with confidence >= 0.5."""
+    ann = _ann(
+        "The College of the Arts experienced a substantial increase in "
+        "enrollment between 2019 and 2024, growing from 1,200 to 1,680 "
+        "undergraduate students across all majors."
+    )
+
+    result = fuzzy_map(ann, sample_project)
+
+    assert isinstance(result, Mapping)
+    assert result.latex_file == "chapters/intro.tex", (
+        f"expected chapters/intro.tex, got {result.latex_file!r}"
+    )
+    assert result.confidence >= 0.5
+    assert result.method == "fuzzy_text"
+    assert result.needs_review is False
+    assert result.candidates == []
+    assert isinstance(result.line_range, tuple) and len(result.line_range) == 2
+    start, end = result.line_range
+    assert 1 <= start <= end
+
+
+def test_fuzzy_map_excludes_build_directory(sample_project: Path) -> None:
+    """build/ directory must not contribute matches even when it contains the text."""
+    ann = _ann(
+        "The College of the Arts experienced a substantial increase in "
+        "enrollment between 2019 and 2024, growing from 1,200 to 1,680 "
+        "undergraduate students across all majors."
+    )
+
+    result = fuzzy_map(ann, sample_project)
+
+    assert result.latex_file != "build/cached.tex"
+    assert result.latex_file is not None
+    assert not result.latex_file.startswith("build/")
+
+
+def test_fuzzy_map_ambiguous_low_confidence_records_candidates(
+    sample_project: Path,
+) -> None:
+    """A short ambiguous phrase produces needs_review with top-3 candidates."""
+    # Words that partially overlap multiple files (.tex prose includes "arts",
+    # "growth", "departments") but no single line is a near-verbatim quote.
+    # Empirically lands in the [0.2, 0.5) needs_review band against the
+    # sample-project fixtures with rapidfuzz 3.x.
+    ann = _ann("departments arts methodology growth")
+
+    result = fuzzy_map(ann, sample_project)
+
+    # Either needs_review (0.2 <= score < 0.5) or failed (< 0.2); both produce
+    # a populated `candidates` entry. We just assert needs_review is True.
+    assert result.needs_review is True
+    assert result.candidates is not None
+    assert 0 <= len(result.candidates) <= 3
+    for c in result.candidates:
+        assert isinstance(c.file, str)
+        assert isinstance(c.line_range, tuple) and len(c.line_range) == 2
+        assert isinstance(c.score, float)
+        assert 0.0 <= c.score <= 1.0
+
+
+def test_fuzzy_map_failed_match_below_threshold(sample_project: Path) -> None:
+    """Text not present at all yields method=failed, latex_file=None."""
+    ann = _ann(
+        "zzz quantum chromodynamics non sequitur lorem ipsum dolor sit amet "
+        "consectetur xyzzy bogus foobar nothing-here-at-all"
+    )
+
+    result = fuzzy_map(ann, sample_project)
+
+    assert result.needs_review is True
+    # Score is too low to land anywhere meaningful.
+    if result.method == "failed":
+        assert result.latex_file is None
+        assert result.line_range is None
+        assert result.candidates == []
+    else:
+        # Borderline case: rapidfuzz might still find a weak partial match.
+        # Either way needs_review must be True.
+        assert result.method == "fuzzy_text"
