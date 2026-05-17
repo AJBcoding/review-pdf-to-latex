@@ -129,3 +129,34 @@ def test_status_subcommand_with_json_flag_still_raises(tmp_project: Path):
     """`--json status` propagates through to the stub (not yet implemented)."""
     with pytest.raises(NotImplementedError, match="subcommand status"):
         cli.main(["--project-dir", str(tmp_project), "--json", "status"])
+
+
+def test_exit_code_constants_match_spec():
+    """Module-level exit-code constants match spec §8 verbatim.
+
+    The CLI surface table in spec §8 documents these codes as the
+    contract between the engine and the skill. Renaming or renumbering
+    breaks the skill; this test pins them.
+    """
+    assert cli.EXIT_OK == 0
+    assert cli.EXIT_MISSING_PDF == 2
+    assert cli.EXIT_EXISTING_STATE == 3
+    assert cli.EXIT_PDFANNOTS_FAILED == 4
+    assert cli.EXIT_PORT_UNAVAILABLE == 5
+    assert cli.EXIT_STATE_MISSING == 6
+    assert cli.EXIT_ANNOTATION_NOT_FOUND == 7
+    assert cli.EXIT_MAPPING_UNRESOLVED == 8
+    assert cli.EXIT_FILE_MUTATION_FAILED == 9
+    assert cli.EXIT_NO_PRIOR_APPLY == 10
+    assert cli.EXIT_BUILD_FAILED == 11
+    assert cli.EXIT_MAIN_FILE_NOT_FOUND == 12
+    assert cli.EXIT_INVALID_LINE_RANGE == 13
+    assert cli.EXIT_UNSUPPORTED_MIGRATION == 14
+    assert cli.EXIT_DIRTY_GIT_STATE == 15
+    assert cli.EXIT_OVERLAPPING_LINE_RANGE == 16
+    assert cli.EXIT_RESTORE_FAILED == 17
+    assert cli.EXIT_ILLEGAL_STATUS_TRANSITION == 18
+    assert cli.EXIT_COMMIT_FAILED == 19
+    assert cli.EXIT_WAIT_TIMEOUT == 20
+    assert cli.EXIT_SOURCE_PDF_CHANGED == 21
+    assert cli.EXIT_LEGACY_STATE == 22

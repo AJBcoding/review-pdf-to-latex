@@ -226,3 +226,29 @@ def print_json(data: object) -> None:
     sys.stdout.write(_json.dumps(data, sort_keys=True))
     sys.stdout.write("\n")
     sys.stdout.flush()
+
+
+# Exit codes (spec §8 — pinned by tests/test_cli.py::test_exit_code_constants_match_spec).
+# The skill consumes these as its contract with the engine; do NOT renumber.
+EXIT_OK = 0
+EXIT_MISSING_PDF = 2  # extract: --pdf path absent or unreadable
+EXIT_EXISTING_STATE = 3  # extract: .review-state/ exists, no --force
+EXIT_PDFANNOTS_FAILED = 4  # extract: pdfannots parse error
+EXIT_PORT_UNAVAILABLE = 5  # serve: requested port in use
+EXIT_STATE_MISSING = 6  # any: state.json absent when required
+EXIT_ANNOTATION_NOT_FOUND = 7  # any per-annotation: id absent
+EXIT_MAPPING_UNRESOLVED = 8  # apply/preview: mapping has no latex_file/line_range
+EXIT_FILE_MUTATION_FAILED = 9  # apply: .tex write failed
+EXIT_NO_PRIOR_APPLY = 10  # revert: no before_text captured
+EXIT_BUILD_FAILED = 11  # build/preview: pdflatex non-zero
+EXIT_MAIN_FILE_NOT_FOUND = 12  # build: --main-file absent
+EXIT_INVALID_LINE_RANGE = 13  # override-mapping: bad START:END
+EXIT_UNSUPPORTED_MIGRATION = 14  # migrate-state: no path from N to M
+EXIT_DIRTY_GIT_STATE = 15  # commit-phase: git status --porcelain non-empty
+EXIT_OVERLAPPING_LINE_RANGE = 16  # apply: conflict with another annotation
+EXIT_RESTORE_FAILED = 17  # preview: in-place restore failed (engine emits recovery)
+EXIT_ILLEGAL_STATUS_TRANSITION = 18  # set-status: rejected by validate_status_transition
+EXIT_COMMIT_FAILED = 19  # commit-phase: hook or staging error
+EXIT_WAIT_TIMEOUT = 20  # wait-event: --timeout elapsed before any event
+EXIT_SOURCE_PDF_CHANGED = 21  # any mutator: PDF md5 differs from annotations.json.source_pdf_md5
+EXIT_LEGACY_STATE = 22  # any mutator: annotations.json predates source_pdf_md5 guard
