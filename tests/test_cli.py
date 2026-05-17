@@ -54,6 +54,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "revert",
         "set-status",
         "append-chat",
+        "record-proposal",
     }
 )
 
@@ -409,6 +410,28 @@ def test_cli_append_chat_subcommand(tmp_path: Path) -> None:
     log = state["annotations"]["ann-001"]["surface_chat_log"]
     assert log[0]["text"] == "How does this paragraph land?"
     assert log[0]["role"] == "user"
+
+
+def test_cli_record_proposal_subcommand(tmp_path: Path) -> None:
+    project, state_dir, tex = _bootstrap_minimal_project(tmp_path)
+    tf = tmp_path / "proposal.txt"
+    tf.write_text("stashed\n", encoding="utf-8")
+    original = tex.read_text(encoding="utf-8")
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "record-proposal",
+            "--annotation-id", "ann-001",
+            "--text-file", str(tf),
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    # .tex untouched.
+    assert tex.read_text(encoding="utf-8") == original
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["annotations"]["ann-001"]["proposed_text"] == "stashed\n"
+    # Status unchanged (record-proposal does not transition).
+    assert state["annotations"]["ann-001"]["status"] == "pending"
 
 
 @pdflatex

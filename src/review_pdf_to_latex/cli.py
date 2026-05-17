@@ -379,6 +379,28 @@ def _handle_append_chat(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_record_proposal(args: argparse.Namespace) -> int:
+    """``record-proposal`` subcommand handler (spec §8 exit codes 0, 7, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, record_proposal
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    try:
+        text = Path(args.text_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read --text-file: {exc}", file=sys.stderr)
+        return EXIT_FILE_MUTATION_FAILED
+    try:
+        record_proposal(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+            proposed_text=text,
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -439,6 +461,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "revert": _handle_revert,
     "set-status": _handle_set_status,
     "append-chat": _handle_append_chat,
+    "record-proposal": _handle_record_proposal,
 }
 
 
