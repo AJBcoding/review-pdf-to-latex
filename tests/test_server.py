@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import socket
 import threading
 import urllib.request
@@ -630,3 +631,76 @@ def test_wait_for_events_skips_malformed_lines(tmp_path: Path) -> None:
     t.join(timeout=2)
     assert len(result) == 1
     assert result[0]["annotation_id"] == "ann-OK"
+
+
+# ---- Task 8.7: blocking-call lifecycle (signal sentinels) -------------------
+#
+# The CLI integration tests for SIGTERM/SIGINT behavior live in the CLI test
+# suite (added when the CLI batcher wires up the `wait-event` subcommand
+# and `handle_wait_event`). Here we exercise the signal-handling primitives
+# directly so the contract is locked at the server-module boundary.
+
+import signal as _signal
+
+
+def test_sig_term_exit_is_base_exception() -> None:
+    """SIGTERM sentinel must subclass BaseException, NOT Exception.
+
+    BaseException ensures the sentinel is not silently swallowed by
+    `except Exception:` clauses inside wait_for_events' inner loops.
+    """
+    assert issubclass(server_mod._SigTermExit, BaseException)
+    assert not issubclass(server_mod._SigTermExit, Exception)
+
+
+def test_sig_int_exit_is_base_exception() -> None:
+    """Same contract for SIGINT."""
+    assert issubclass(server_mod._SigIntExit, BaseException)
+    assert not issubclass(server_mod._SigIntExit, Exception)
+
+
+def test_install_wait_event_signal_handlers_returns_previous_handlers() -> None:
+    """The installer must return the previous (SIGTERM, SIGINT) handlers."""
+    prev_term_before = _signal.getsignal(_signal.SIGTERM)
+    prev_int_before = _signal.getsignal(_signal.SIGINT)
+    try:
+        prev_term, prev_int = server_mod._install_wait_event_signal_handlers()
+        # The returned values should match what was installed before our call.
+        assert prev_term == prev_term_before
+        assert prev_int == prev_int_before
+        # And the newly installed handlers must be callable closures.
+        new_term = _signal.getsignal(_signal.SIGTERM)
+        new_int = _signal.getsignal(_signal.SIGINT)
+        assert callable(new_term)
+        assert callable(new_int)
+        assert new_term != prev_term_before
+        assert new_int != prev_int_before
+    finally:
+        _signal.signal(_signal.SIGTERM, prev_term_before)
+        _signal.signal(_signal.SIGINT, prev_int_before)
+
+
+def test_install_wait_event_signal_handlers_sigterm_raises_sentinel() -> None:
+    """Delivering SIGTERM with our handlers installed raises _SigTermExit."""
+    prev_term = _signal.getsignal(_signal.SIGTERM)
+    prev_int = _signal.getsignal(_signal.SIGINT)
+    try:
+        server_mod._install_wait_event_signal_handlers()
+        with pytest.raises(server_mod._SigTermExit):
+            os.kill(os.getpid(), _signal.SIGTERM)
+    finally:
+        _signal.signal(_signal.SIGTERM, prev_term)
+        _signal.signal(_signal.SIGINT, prev_int)
+
+
+def test_install_wait_event_signal_handlers_sigint_raises_sentinel() -> None:
+    """Delivering SIGINT with our handlers installed raises _SigIntExit."""
+    prev_term = _signal.getsignal(_signal.SIGTERM)
+    prev_int = _signal.getsignal(_signal.SIGINT)
+    try:
+        server_mod._install_wait_event_signal_handlers()
+        with pytest.raises(server_mod._SigIntExit):
+            os.kill(os.getpid(), _signal.SIGINT)
+    finally:
+        _signal.signal(_signal.SIGTERM, prev_term)
+        _signal.signal(_signal.SIGINT, prev_int)

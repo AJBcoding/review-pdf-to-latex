@@ -20,6 +20,7 @@ import json
 import mimetypes
 import os
 import re
+import signal
 import time
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -574,3 +575,49 @@ def _make_watcher(path: Path):  # noqa: ANN201 (returns watcher or None)
         return _KqueueWatcher()
     except (ImportError, OSError):
         return None
+
+
+# ---- Task 8.7: blocking-call lifecycle (signals + compaction) --------------
+#
+# Sentinel exceptions raised by signal handlers installed around
+# `wait_for_events` to translate POSIX signals into deterministic CLI exits:
+#
+# | Spec §10.5 bullet | Behavior |
+# |---|---|
+# | Idle wait timeout | wait_for_events returns []; CLI exits 20. |
+# | Browser closed mid-wait | Invisible (we tail a file, not a socket). |
+# | Context compaction (SIGTERM) | _SigTermExit → CLI exits 0, no stdout. |
+# | User Ctrl-C (SIGINT) | _SigIntExit → CLI exits 130 (128 + SIGINT=2). |
+#
+# The compaction case (SIGTERM) is what makes this non-default: the standard
+# Python handler treats SIGTERM as fatal with rc != 0, but the skill needs
+# the post-compaction re-call (with --since <last_observed_ts>) to be able
+# to pick up any concurrent event from the file without false positives.
+
+
+class _SigTermExit(BaseException):
+    """Raised internally when SIGTERM arrives during wait-event."""
+
+
+class _SigIntExit(BaseException):
+    """Raised internally when SIGINT arrives during wait-event."""
+
+
+def _install_wait_event_signal_handlers() -> tuple[Any, Any]:
+    """Install SIGTERM/SIGINT handlers that raise our sentinels.
+
+    Returns (prev_sigterm, prev_sigint) so the caller can restore them
+    via ``signal.signal`` in a finally block. Used by ``handle_wait_event``
+    (wired by the CLI batcher in chunk A) to bracket the blocking
+    ``wait_for_events`` call.
+    """
+
+    def _sigterm(signum: int, frame: Any) -> None:
+        raise _SigTermExit()
+
+    def _sigint(signum: int, frame: Any) -> None:
+        raise _SigIntExit()
+
+    prev_term = signal.signal(signal.SIGTERM, _sigterm)
+    prev_int = signal.signal(signal.SIGINT, _sigint)
+    return prev_term, prev_int
