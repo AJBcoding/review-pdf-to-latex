@@ -5,8 +5,212 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>review-pdf-to-latex</title>
   <style>
-    /* CSS body filled by Task 9.3 — placeholder so the file parses. */
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; }
+    /* ───── Reset and base ───── */
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      color: #222;
+      background: #f7f7f9;
+      display: grid;
+      grid-template-rows: 48px 1fr;
+    }
+    code, pre { font-family: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace; }
+
+    /* ───── Top bar ───── */
+    .topbar {
+      height: 48px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 0 16px;
+      background: #1f2329;
+      color: #f1f3f5;
+      border-bottom: 1px solid #0c0d10;
+    }
+    .topbar-left { justify-self: start; opacity: 0.85; }
+    .topbar-center {
+      display: flex; gap: 16px; align-items: center; justify-self: center;
+    }
+    .topbar-right { justify-self: end; }
+    .project-root { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+    .phase, .order { background: #2c333d; padding: 2px 8px; border-radius: 3px; }
+    .counter, .annotation-id { font-weight: 600; }
+    .status-line { font-style: italic; opacity: 0.9; }
+
+    /* ───── Main 3-pane grid ───── */
+    main {
+      overflow: hidden;
+      padding: 12px;
+    }
+    .three-pane {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.6fr) minmax(280px, 1fr);
+      gap: 12px;
+      height: 100%;
+    }
+    .pane {
+      background: #ffffff;
+      border: 1px solid #d8dadf;
+      border-radius: 6px;
+      padding: 10px;
+      overflow: auto;
+      min-width: 0;
+    }
+    .pane-left .page-image,
+    .pane-right .build-image {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      object-fit: contain;
+    }
+
+    /* ───── Annotation meta + snippet ───── */
+    .annotation-meta { margin-top: 8px; font-size: 13px; }
+    .comment { margin-top: 4px; font-style: italic; color: #555; }
+    .snippet-header { font-size: 12px; color: #555; margin-bottom: 6px; }
+    .latex-snippet {
+      background: #f1f3f5;
+      border: 1px solid #d8dadf;
+      border-radius: 4px;
+      padding: 8px;
+      margin: 0 0 10px 0;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre;
+      font-size: 12px;
+    }
+    .latex-snippet .gutter {
+      color: #999;
+      user-select: none;
+      display: inline-block;
+      width: 4ch;
+      text-align: right;
+      margin-right: 8px;
+    }
+
+    /* ───── Status badge ───── */
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      background: #e9ecef;
+      margin-bottom: 8px;
+    }
+    .status-applied   { background: #cfe2ff; }
+    .status-accepted  { background: #d4edda; }
+    .status-rejected  { background: #f8d7da; }
+    .status-redrafted { background: #fff3cd; }
+    .status-deferred  { background: #e2e3e5; }
+    .status-needs_review { background: #f5c2c7; }
+    .status-surfaced_pending { background: #e0cffc; }
+
+    /* ───── Proposed / before-after blocks ───── */
+    .proposed-block {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .proposed-block .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #666;
+      margin-bottom: 2px;
+    }
+    .proposed-block pre {
+      background: #fafbfc;
+      border: 1px solid #e6e8eb;
+      border-radius: 4px;
+      padding: 6px;
+      margin: 0;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .diff-block { margin-bottom: 12px; }
+
+    /* ───── Button row ───── */
+    .button-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .button-row button {
+      flex: 1 1 calc(33.33% - 8px);
+      min-width: 92px;
+      padding: 8px 12px;
+      border: 1px solid #b8bcc4;
+      background: #ffffff;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .button-row button:hover:not(:disabled) {
+      background: #f1f3f5;
+    }
+    .button-row button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .button-row button[data-action="approve"]:not(:disabled) { border-color: #2e7d32; color: #2e7d32; }
+    .button-row button[data-action="reject"]:not(:disabled)  { border-color: #c62828; color: #c62828; }
+    .button-row button[data-action="redraft"]:not(:disabled) { border-color: #ef6c00; color: #ef6c00; }
+    .button-row button[data-action="preview"]:not(:disabled) { border-color: #1565c0; color: #1565c0; }
+
+    /* ───── Right pane ───── */
+    .pagination-indicator {
+      margin-top: 8px;
+      font-size: 12px;
+      padding: 6px 8px;
+      background: #f1f3f5;
+      border: 1px solid #d8dadf;
+      border-radius: 4px;
+    }
+    .no-build {
+      padding: 24px;
+      text-align: center;
+      color: #777;
+      font-size: 13px;
+    }
+
+    /* ───── Mapping mode ───── */
+    .mapping-banner {
+      padding: 8px 12px;
+      background: #fff3cd;
+      border: 1px solid #ffeaa7;
+      border-radius: 4px;
+      margin-bottom: 12px;
+    }
+    .mapping-row {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(300px, 1.4fr) minmax(280px, 1fr);
+      gap: 12px;
+      background: #ffffff;
+      border: 1px solid #d8dadf;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .mapping-row .candidates { display: flex; flex-direction: column; gap: 6px; }
+    .mapping-row .candidate {
+      padding: 6px;
+      background: #f1f3f5;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .mapping-row form.manual-override {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 6px;
+      align-items: center;
+    }
+    .mapping-row form.manual-override input[type="number"] { width: 70px; }
   </style>
 </head>
 <body>

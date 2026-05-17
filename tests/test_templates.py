@@ -198,3 +198,28 @@ def test_annotation_overlay_position_correct_for_known_bbox():
     m_width = re.search(r"width:\s*([\d.]+)px;[^}]*background", out) or re.search(r"width:\s*([\d.]+)px", out)
     assert m_left and abs(float(m_left.group(1)) - 150.0) < 0.5
     assert m_top and abs(float(m_top.group(1)) - 519.79) < 0.5
+
+
+def test_frame_has_grid_layout_rules():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    # Top bar height
+    assert "height: 48px" in out
+    # 3-column grid
+    assert "grid-template-columns" in out
+    assert "minmax(280px, 1fr)" in out
+    assert "minmax(360px, 1.6fr)" in out
+    # Button row gap
+    assert "gap: 12px" in out
+    # Highlight overlay rules
+    assert "rgba(255, 200, 0, 0.7)" in out
+    assert "rgba(255, 240, 0, 0.18)" in out
+
+
+def test_frame_has_no_external_stylesheet_link():
+    """v1 decision: inline CSS only, no external <link rel='stylesheet'>."""
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    assert 'rel="stylesheet"' not in out
