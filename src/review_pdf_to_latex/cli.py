@@ -401,6 +401,34 @@ def _handle_record_proposal(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_override_mapping(args: argparse.Namespace) -> int:
+    """``override-mapping`` subcommand handler (spec §8 exit codes 0, 7, 9, 13, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, override_mapping
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    # args.lines is the raw "START:END" string from argparse; parse it here.
+    try:
+        start_s, end_s = args.lines.split(":", 1)
+        lines = (int(start_s), int(end_s))
+    except (ValueError, AttributeError):
+        print(
+            f"error: --lines must be START:END (got {args.lines!r})",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_LINE_RANGE
+    try:
+        override_mapping(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+            file=args.file,
+            lines=lines,
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -462,6 +490,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "set-status": _handle_set_status,
     "append-chat": _handle_append_chat,
     "record-proposal": _handle_record_proposal,
+    "override-mapping": _handle_override_mapping,
 }
 
 

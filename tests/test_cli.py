@@ -55,6 +55,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "set-status",
         "append-chat",
         "record-proposal",
+        "override-mapping",
     }
 )
 
@@ -432,6 +433,43 @@ def test_cli_record_proposal_subcommand(tmp_path: Path) -> None:
     assert state["annotations"]["ann-001"]["proposed_text"] == "stashed\n"
     # Status unchanged (record-proposal does not transition).
     assert state["annotations"]["ann-001"]["status"] == "pending"
+
+
+def test_cli_override_mapping_subcommand(tmp_path: Path) -> None:
+    project, state_dir, _ = _bootstrap_minimal_project(tmp_path)
+    other = project / "templates" / "other.tex"
+    other.write_text("o1\no2\no3\n", encoding="utf-8")
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "override-mapping",
+            "--annotation-id", "ann-001",
+            "--file", "templates/other.tex",
+            "--lines", "1:2",
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    mapping = json.loads((state_dir / "mapping.json").read_text(encoding="utf-8"))
+    entry = mapping["mappings"]["ann-001"]
+    assert entry["latex_file"] == "templates/other.tex"
+    assert entry["line_range"] == [1, 2]
+    assert entry["method"] == "manual"
+    assert entry["needs_review"] is False
+
+
+def test_cli_override_mapping_subcommand_bad_lines_exits_13(tmp_path: Path) -> None:
+    """A malformed --lines argument (no colon) returns exit code 13."""
+    project, _, _ = _bootstrap_minimal_project(tmp_path)
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "override-mapping",
+            "--annotation-id", "ann-001",
+            "--file", "templates/section.tex",
+            "--lines", "garbage",
+        ]
+    )
+    assert r.returncode == 13, r.stderr
 
 
 @pdflatex
