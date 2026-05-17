@@ -385,3 +385,68 @@ def test_post_events_503_when_state_dir_missing(tmp_path) -> None:
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=2.0)
+
+
+# ---- Task 8.4: --mapping-mode template dispatch -----------------------------
+
+from unittest.mock import MagicMock
+
+
+def test_render_frame_passes_mode_kwarg_to_template(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Jinja2 template render must receive mode= as a kwarg."""
+    captured: dict[str, Any] = {}
+
+    class FakeTemplate:
+        def render(self, **kwargs: Any) -> str:
+            captured.update(kwargs)
+            return "<html>ok</html>"
+
+    fake_env = MagicMock()
+    fake_env.get_template.return_value = FakeTemplate()
+    monkeypatch.setattr(server_mod, "_jinja_env", fake_env)
+
+    port = _pick_port()
+    httpd = server_mod.build_server(minimal_project, port, mode="mapping")
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, body = _get(f"http://127.0.0.1:{port}", "/")
+        assert status == HTTPStatus.OK
+        assert b"<html>ok</html>" in body
+        assert captured.get("mode") == "mapping"
+        assert "current_state" in captured
+        assert captured["current_state"]["phase"] == "2a-ratify"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_render_frame_default_mode_is_normal(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeTemplate:
+        def render(self, **kwargs: Any) -> str:
+            captured.update(kwargs)
+            return "<html>ok</html>"
+
+    fake_env = MagicMock()
+    fake_env.get_template.return_value = FakeTemplate()
+    monkeypatch.setattr(server_mod, "_jinja_env", fake_env)
+
+    port = _pick_port()
+    httpd = server_mod.build_server(minimal_project, port)  # default mode="normal"
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, _ = _get(f"http://127.0.0.1:{port}", "/")
+        assert status == HTTPStatus.OK
+        assert captured.get("mode") == "normal"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
