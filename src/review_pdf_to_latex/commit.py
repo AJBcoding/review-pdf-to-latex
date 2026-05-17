@@ -188,3 +188,26 @@ def render_commit_message(
     if granularity != "phase":
         parts.append(f"Granularity: {granularity}")
     return "\n".join(parts) + "\n"
+
+
+# Spec §7.3: 0-setup → 1-batch → 2a-ratify → 2b-surface → 3-final (terminal).
+_PHASE_TRANSITIONS: dict[str, str] = {
+    "0-setup": "1-batch",
+    "1-batch": "2a-ratify",
+    "2a-ratify": "2b-surface",
+    "2b-surface": "3-final",
+    "3-final": "3-final",  # terminal, idempotent
+}
+
+
+def next_phase(current: str) -> str:
+    """Return the phase that follows `current`. Terminal phase 3-final is fixed.
+
+    Raises:
+        IllegalPhaseError: if `current` is not a known phase id.
+    """
+    if current not in _PHASE_TRANSITIONS:
+        raise IllegalPhaseError(
+            f"unknown phase {current!r}; expected one of {sorted(_PHASE_TRANSITIONS)}"
+        )
+    return _PHASE_TRANSITIONS[current]

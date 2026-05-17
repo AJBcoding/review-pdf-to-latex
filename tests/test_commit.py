@@ -9,7 +9,9 @@ import pytest
 
 from review_pdf_to_latex.commit import (
     DirtyGitError,
+    IllegalPhaseError,
     assert_clean_git,
+    next_phase,
     render_commit_message,
 )
 
@@ -117,3 +119,22 @@ def test_render_commit_message_phase_3_zero_edits(tmp_path: Path) -> None:
     assert "phase 3" in msg
     # Zero-count edge case must still produce a coherent message.
     assert msg.strip() != ""
+
+
+@pytest.mark.parametrize(
+    "current, expected",
+    [
+        ("0-setup", "1-batch"),
+        ("1-batch", "2a-ratify"),
+        ("2a-ratify", "2b-surface"),
+        ("2b-surface", "3-final"),
+        ("3-final", "3-final"),  # terminal: stays
+    ],
+)
+def test_next_phase_valid_transitions(current: str, expected: str) -> None:
+    assert next_phase(current) == expected
+
+
+def test_next_phase_invalid_phase_raises() -> None:
+    with pytest.raises(IllegalPhaseError):
+        next_phase("not-a-real-phase")
