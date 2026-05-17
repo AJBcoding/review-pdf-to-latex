@@ -11,6 +11,7 @@ See spec §8 for the full per-command contract and exit codes.
 from __future__ import annotations
 
 import argparse
+import json as _json
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -213,3 +214,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(2)
     _stub(_HANDLERS[args.subcommand])
     return 0  # unreachable until stubs are replaced
+
+
+def print_json(data: object) -> None:
+    """Write one JSON object as a newline-terminated line on stdout.
+
+    Sorted keys; compact separators; no trailing whitespace. Used by every
+    subcommand handler whose ``args.json_output`` is true. The single-line
+    format makes streaming output trivially parseable by the skill.
+    """
+    sys.stdout.write(_json.dumps(data, sort_keys=True))
+    sys.stdout.write("\n")
+    sys.stdout.flush()

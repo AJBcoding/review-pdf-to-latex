@@ -107,3 +107,25 @@ def test_subcommand_stub_raises_not_implemented(
     ]
     with pytest.raises(NotImplementedError, match=f"subcommand {subcommand}"):
         cli.main(argv)
+
+
+def test_print_json_writes_single_line(capsys: pytest.CaptureFixture):
+    """print_json writes a single newline-terminated JSON object to stdout."""
+    cli.print_json({"ok": True, "count": 3})
+    out = capsys.readouterr().out
+    assert out.endswith("\n")
+    parsed = json.loads(out.strip())
+    assert parsed == {"ok": True, "count": 3}
+
+
+def test_print_json_serializes_sort_keys(capsys: pytest.CaptureFixture):
+    """print_json output is stable: keys are sorted for diffability."""
+    cli.print_json({"z": 1, "a": 2})
+    out = capsys.readouterr().out.strip()
+    assert out == '{"a": 2, "z": 1}'
+
+
+def test_status_subcommand_with_json_flag_still_raises(tmp_project: Path):
+    """`--json status` propagates through to the stub (not yet implemented)."""
+    with pytest.raises(NotImplementedError, match="subcommand status"):
+        cli.main(["--project-dir", str(tmp_project), "--json", "status"])
