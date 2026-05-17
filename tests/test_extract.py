@@ -406,6 +406,99 @@ def test_bootstrap_state_handles_empty_annotation_list() -> None:
     assert state.builds == []
 
 
+def _empty_highlight_ann(ann_id: str, *, trigger_match: bool = False) -> Annotation:
+    """Annotation whose highlighted_text is empty (pdfannots + bbox both failed)."""
+    return Annotation(
+        id=ann_id,
+        page=1,
+        bbox=(0.0, 0.0, 0.0, 0.0),
+        highlighted_text="",
+        author="anonymous",
+        comment="needs your judgement here",
+        created=None,
+        trigger_match=trigger_match,
+    )
+
+
+def test_bootstrap_state_empty_highlighted_text_routes_to_surfaced_pending() -> None:
+    """Empty highlighted_text bypasses Phase 1 by starting in surfaced_pending (rev-mvd).
+
+    Phase 1's apply-revert-on-failure dance has nothing to anchor on when
+    pdfannots couldn't read the text run and bbox recovery also failed. Route
+    these straight to Phase 2b so the user can resolve them via the SURFACE
+    conversation loop instead of stranding them in needs_review.
+    """
+    anns = [_empty_highlight_ann("ann-001")]
+    mappings = {
+        "ann-001": Mapping(
+            latex_file=None,
+            line_range=None,
+            confidence=0.0,
+            method="failed",
+            needs_review=True,
+            candidates=[],
+        ),
+    }
+
+    state = bootstrap_state(anns, mappings)
+
+    assert state.annotations["ann-001"].status == "surfaced_pending"
+
+
+def test_bootstrap_state_empty_highlighted_text_with_trigger_match_stays_pending() -> None:
+    """Trigger-matched annotations keep the existing surface routing.
+
+    The SKILL transitions trigger_match annotations to surfaced_pending after
+    Phase 1's candidate loop via `set-status`. If bootstrap already routed
+    these to surfaced_pending, that transition would be illegal. Leave them
+    on the normal path (needs_review when mapping is unresolved, else pending)
+    so the SKILL's existing post-loop set-status call stays legal.
+    """
+    anns = [_empty_highlight_ann("ann-001", trigger_match=True)]
+    mappings = {
+        "ann-001": Mapping(
+            latex_file=None,
+            line_range=None,
+            confidence=0.0,
+            method="failed",
+            needs_review=True,
+            candidates=[],
+        ),
+    }
+
+    state = bootstrap_state(anns, mappings)
+
+    assert state.annotations["ann-001"].status == "needs_review"
+
+
+def test_bootstrap_state_whitespace_only_highlighted_text_routes_to_surfaced_pending() -> None:
+    """Whitespace-only highlighted_text counts as empty for routing purposes."""
+    ann = Annotation(
+        id="ann-001",
+        page=1,
+        bbox=(0.0, 0.0, 0.0, 0.0),
+        highlighted_text="   \n\t  ",
+        author="anonymous",
+        comment="see margin",
+        created=None,
+        trigger_match=False,
+    )
+    mappings = {
+        "ann-001": Mapping(
+            latex_file=None,
+            line_range=None,
+            confidence=0.0,
+            method="failed",
+            needs_review=True,
+            candidates=[],
+        ),
+    }
+
+    state = bootstrap_state([ann], mappings)
+
+    assert state.annotations["ann-001"].status == "surfaced_pending"
+
+
 import os
 import time
 

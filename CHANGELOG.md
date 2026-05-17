@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test suite: unit tests per module, end-to-end fixture against a synthetic annotated PDF + minimal LaTeX project.
 
 ### Fixed
-- (List bug fixes here as they land.)
+- `bootstrap_state` now initializes annotations with empty `highlighted_text` and `trigger_match=false` directly to `surfaced_pending`, routing them past Phase 1 (which has nothing to anchor on without a source text run) into Phase 2b's SURFACE conversation loop (rev-mvd).
 
 ### Changed
 - (List breaking or notable behavior changes here.)

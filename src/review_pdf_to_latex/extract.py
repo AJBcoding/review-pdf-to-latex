@@ -20,6 +20,7 @@ from review_pdf_to_latex.state import (
     Mapping,
     MappingCandidate,
     StateFile,
+    Status,
 )
 
 
@@ -530,9 +531,21 @@ def bootstrap_state(
     """Build the initial state.json contents for a freshly-extracted project.
 
     Phase is "0-setup"; order is "mechanical-first"; no current annotation;
-    no builds yet. Per-annotation status is "needs_review" when the mapping
-    requires review, otherwise "pending". All other annotation fields are
-    None (no text captured, no build yet).
+    no builds yet. All other annotation fields are None (no text captured,
+    no build yet). Per-annotation initial status is one of:
+
+    - ``surfaced_pending`` when ``highlighted_text == ""`` and ``trigger_match``
+      is False (rev-mvd): pdfannots could not extract the source text run and
+      bbox recovery also failed, so Phase 1's apply-revert-on-failure has
+      nothing to anchor on. Routing these directly to Phase 2b lets the user
+      and Claude resolve them via the SURFACE conversation loop instead of
+      stranding them in ``needs_review`` after Phase 1 (where the viewer has
+      no surface for "you'll need to type the intended edit text here").
+      ``trigger_match`` annotations stay on the normal path so the SKILL's
+      post-Phase-1 ``set-status surfaced_pending`` transition stays legal.
+    - ``needs_review`` when the mapping requires review (and the empty-text
+      bypass above does not apply).
+    - ``pending`` otherwise.
 
     Args:
         annotations: The list returned by read_annotations.
@@ -546,8 +559,15 @@ def bootstrap_state(
     for ann in annotations:
         m = mappings.get(ann.id)
         needs_review = bool(m and m.needs_review)
+        empty_highlighted = not (ann.highlighted_text or "").strip()
+        if empty_highlighted and not ann.trigger_match:
+            initial_status: Status = "surfaced_pending"
+        elif needs_review:
+            initial_status = "needs_review"
+        else:
+            initial_status = "pending"
         ann_states[ann.id] = AnnotationState(
-            status="needs_review" if needs_review else "pending",
+            status=initial_status,
             before_text=None,
             proposed_text=None,
             applied_text=None,
