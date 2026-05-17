@@ -93,6 +93,31 @@ def minimal_project(tmp_path: Path) -> Path:
         ],
     }
     (state_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True))
+    (state_dir / "annotations.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_pdf": "/dev/null/source.pdf",
+                "source_pdf_md5": "d41d8cd98f00b204e9800998ecf8427e",
+                "extracted_at": "2026-05-16T20:40:00Z",
+                "extractor": "pdfannots-test",
+                "annotations": [
+                    {
+                        "id": "ann-001",
+                        "page": 1,
+                        "bbox": [72.0, 510.5, 540.0, 542.5],
+                        "highlighted_text": "old",
+                        "author": "anonymous",
+                        "comment": "Tighten this",
+                        "created": "2026-05-16T20:30:00Z",
+                        "trigger_match": False,
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     (state_dir / "mapping.json").write_text(
         json.dumps(
             {
@@ -104,6 +129,7 @@ def minimal_project(tmp_path: Path) -> Path:
                         "method": "fuzzy",
                         "confidence": 0.91,
                         "needs_review": False,
+                        "candidates": [],
                     }
                 },
             },

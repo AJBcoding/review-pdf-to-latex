@@ -425,6 +425,65 @@ def test_render_frame_passes_mode_kwarg_to_template(
         thread.join(timeout=2.0)
 
 
+def test_render_frame_real_template_renders_against_minimal_project(
+    minimal_project: Path,
+) -> None:
+    """Smoke test for the real Jinja render path.
+
+    Regression guard for the BLOCKER bug where ``_render_frame`` only passed
+    ``current_state`` and ``mode``, causing ``StrictUndefined`` to raise on
+    the first ``{% if diff2html_present %}`` reference. The rest of the
+    server test suite stubs ``_render_frame``; this test exercises it for
+    real so any future missing-kwarg slips fail loudly here.
+    """
+    port = _pick_port()
+    httpd = server_mod.build_server(minimal_project, port, mode="normal")
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, ctype, body = _get(f"http://127.0.0.1:{port}", "/")
+        assert status == HTTPStatus.OK, body
+        assert ctype.startswith("text/html")
+        # Top bar + 3-pane content rendered (no StrictUndefined error).
+        assert b"<!DOCTYPE html>" in body
+        assert b"ann-001" in body
+        assert b"2a-ratify" in body
+        assert b"three-pane" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_render_frame_real_template_renders_mapping_mode(
+    minimal_project: Path,
+) -> None:
+    """Mapping-mode counterpart of the real-render smoke test."""
+    # Flip the one annotation to needs_review so the mapping list is non-empty.
+    mapping_path = minimal_project / ".review-state" / "mapping.json"
+    doc = json.loads(mapping_path.read_text())
+    doc["mappings"]["ann-001"]["needs_review"] = True
+    mapping_path.write_text(json.dumps(doc, indent=2, sort_keys=True))
+
+    port = _pick_port()
+    httpd = server_mod.build_server(minimal_project, port, mode="mapping")
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _, body = _get(f"http://127.0.0.1:{port}", "/")
+        assert status == HTTPStatus.OK, body
+        assert b"Mapping mode" in body
+        assert b"ann-001" in body
+        # The 3-pane content must NOT render in mapping mode (the class
+        # selector still appears in the inline <style>, so check for the
+        # element itself).
+        assert b'class="three-pane"' not in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
 def test_render_frame_default_mode_is_normal(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

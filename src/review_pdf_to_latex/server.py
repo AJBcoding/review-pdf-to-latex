@@ -259,18 +259,145 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
     def _render_frame(self) -> bytes:
         """Render frame.html. The template branches on `mode` ("normal" or "mapping").
 
-        Chunk E owns the template content; this method only guarantees that
-        current_state (dict) and mode (str) are always passed as kwargs.
+        Loads state.json + annotations.json + mapping.json and assembles the
+        Jinja context required by ``templates/frame.html`` and the included
+        ``templates/annotation.html``. Both are rendered with
+        ``jinja2.StrictUndefined``, so every variable they reference must be
+        present in the returned context.
         """
-        state_path = self.project_dir / STATE_DIR_NAME / "state.json"
-        try:
-            current_state: dict[str, Any] = json.loads(state_path.read_text())
-        except FileNotFoundError:
-            raise
-        template = _jinja_env.get_template("frame.html")
-        return template.render(current_state=current_state, mode=self.mode).encode(
-            "utf-8"
+        state_dir = self.project_dir / STATE_DIR_NAME
+        state_path = state_dir / "state.json"
+        annotations_path = state_dir / "annotations.json"
+        mapping_path = state_dir / "mapping.json"
+
+        current_state: dict[str, Any] = json.loads(state_path.read_text())
+        annotations_doc = json.loads(annotations_path.read_text())
+        mapping_doc = json.loads(mapping_path.read_text())
+
+        annotations_list: list[dict[str, Any]] = annotations_doc.get(
+            "annotations", []
         )
+        mappings: dict[str, dict[str, Any]] = mapping_doc.get("mappings", {})
+
+        current_id = current_state.get("current_annotation_id")
+        if current_id is None and annotations_list:
+            current_id = annotations_list[0]["id"]
+
+        by_id = {a["id"]: a for a in annotations_list}
+        current_annotation = by_id.get(current_id) if current_id else None
+
+        annotation_index = 0
+        if current_id and current_id in by_id:
+            annotation_index = (
+                list(by_id.keys()).index(current_id) + 1
+            )
+
+        diff2html_present = (_STATIC_DIR / "diff2html.min.js").exists()
+
+        context: dict[str, Any] = {
+            "current_state": current_state,
+            "mode": self.mode,
+            "project_root": str(self.project_dir),
+            "phase": current_state.get("phase", ""),
+            "order": current_state.get("order", ""),
+            "annotation_index": annotation_index,
+            "total_annotations": len(annotations_list),
+            "current_annotation": current_annotation,
+            "diff2html_present": diff2html_present,
+        }
+
+        if self.mode == "mapping":
+            context["needs_review_annotations"] = [
+                {"annotation": ann, "mapping": mappings[ann["id"]]}
+                for ann in annotations_list
+                if ann["id"] in mappings
+                and mappings[ann["id"]].get("needs_review")
+            ]
+            context["tex_files"] = _list_project_tex_files(self.project_dir)
+        else:
+            context.update(
+                self._build_normal_mode_context(
+                    current_state=current_state,
+                    current_annotation=current_annotation,
+                    current_mapping=(
+                        mappings.get(current_id) if current_id else None
+                    ),
+                )
+            )
+
+        template = _jinja_env.get_template("frame.html")
+        return template.render(**context).encode("utf-8")
+
+    def _build_normal_mode_context(
+        self,
+        *,
+        current_state: dict[str, Any],
+        current_annotation: dict[str, Any] | None,
+        current_mapping: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Assemble the 3-pane fields consumed by ``annotation.html``."""
+        # LaTeX snippet — slice the mapped file by line_range.
+        latex_snippet = ""
+        snippet_start_line = 1
+        if (
+            current_mapping
+            and current_mapping.get("latex_file")
+            and current_mapping.get("line_range")
+        ):
+            tex_path = self.project_dir / current_mapping["latex_file"]
+            try:
+                lines = tex_path.read_text().splitlines()
+            except OSError:
+                lines = []
+            start, end = current_mapping["line_range"]
+            snippet_start_line = start
+            if lines:
+                latex_snippet = "\n".join(lines[start - 1 : end])
+
+        # Image + PDF dimensions. Pages are rendered at 150 DPI by
+        # extract.render_pages (1 pt = 72 in / DPI); derive page dims from
+        # the PNG header so we don't have to re-parse the source PDF.
+        image_width_px, image_height_px = 1275, 1650  # US letter @ 150 DPI fallback
+        if current_annotation is not None:
+            page_png = (
+                self.project_dir
+                / STATE_DIR_NAME
+                / "pages"
+                / f"page-{current_annotation['page']}.png"
+            )
+            dims = _png_dimensions(page_png)
+            if dims is not None:
+                image_width_px, image_height_px = dims
+        pdf_page_width_pt = image_width_px * 72 / 150
+        pdf_page_height_pt = image_height_px * 72 / 150
+
+        builds = current_state.get("builds", []) or []
+        current_build = builds[-1] if builds else None
+        target_page = current_annotation["page"] if current_annotation else 1
+
+        ann_state = (
+            current_state.get("annotations", {}).get(current_annotation["id"], {})
+            if current_annotation
+            else {}
+        )
+        proposed_text = ann_state.get("proposed_text")
+
+        return {
+            "current_mapping": current_mapping or {
+                "latex_file": None,
+                "line_range": None,
+            },
+            "current_build": current_build,
+            "latex_snippet": latex_snippet,
+            "snippet_start_line": snippet_start_line,
+            "proposed_text": proposed_text,
+            "pagination_indicator": "",
+            "target_page": target_page,
+            "image_width_px": image_width_px,
+            "image_height_px": image_height_px,
+            "pdf_page_width_pt": pdf_page_width_pt,
+            "pdf_page_height_pt": pdf_page_height_pt,
+        }
 
     def _serve_state_json(self) -> None:
         state_path = self.project_dir / STATE_DIR_NAME / "state.json"
@@ -365,6 +492,50 @@ def _is_within(target: Path, base: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_dimensions(path: Path) -> tuple[int, int] | None:
+    """Return (width, height) in pixels from a PNG's IHDR chunk, or None.
+
+    PNG layout: 8-byte signature, then a chunk preamble (4-byte length +
+    4-byte type "IHDR"), then width (uint32 BE) at bytes 16:20 and height
+    at 20:24. Reads only the first 24 bytes — avoids pulling in Pillow.
+    """
+    try:
+        with path.open("rb") as f:
+            header = f.read(24)
+    except OSError:
+        return None
+    if len(header) < 24 or header[:8] != _PNG_SIGNATURE:
+        return None
+    width = int.from_bytes(header[16:20], "big")
+    height = int.from_bytes(header[20:24], "big")
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _list_project_tex_files(project_dir: Path) -> list[str]:
+    """Return posix-relative paths of every .tex file under project_dir.
+
+    Skips ``build/`` and ``.review-state/`` to mirror ``extract.fuzzy_map``'s
+    default scan scope.
+    """
+    excluded = ("build", STATE_DIR_NAME)
+    out: list[str] = []
+    for path in sorted(project_dir.rglob("*.tex")):
+        try:
+            rel = path.relative_to(project_dir)
+        except ValueError:
+            continue
+        parts = rel.parts
+        if parts and parts[0] in excluded:
+            continue
+        out.append(rel.as_posix())
+    return out
 
 
 def build_server(
