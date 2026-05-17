@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>review-pdf-to-latex</title>
+  <style>
+    /* CSS body filled by Task 9.3 — placeholder so the file parses. */
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="project-root">{{ project_root }}</span>
+    </div>
+    <div class="topbar-center">
+      <span class="phase">Phase: {{ phase }}</span>
+      <span class="order">Order: {{ order }}</span>
+      {% if mode == "normal" %}
+      <span class="counter">{{ annotation_index }} of {{ total_annotations }}</span>
+      <span class="annotation-id">{{ current_annotation.id }}</span>
+      {% endif %}
+    </div>
+    <div class="topbar-right">
+      <span id="status" class="status-line">Ready.</span>
+    </div>
+  </header>
+  <main>
+    {% if mode == "mapping" %}
+      {# Filled by Task 9.5 #}
+      <div class="mapping-banner">
+        <strong>Mapping mode</strong> &middot;
+        {{ needs_review_annotations|length }} annotation{% if needs_review_annotations|length != 1 %}s{% endif %} need mapping.
+        When the list is empty, Ctrl-C this server and re-run <code>review-pdf serve</code> without <code>--mapping-mode</code> to start Phase 1.
+      </div>
+      <div class="mapping-list" id="mapping-list">
+        <!-- Task 9.5 fills this -->
+      </div>
+    {% else %}
+      {% include "annotation.html" %}
+    {% endif %}
+  </main>
+  <script>
+    // Body filled by Task 9.4 — placeholder so the file parses and the test passes.
+    async function sendAction() { /* implemented in Task 9.4 */ }
+  </script>
+</body>
+</html>
