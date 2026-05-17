@@ -30,8 +30,17 @@ from urllib.parse import unquote, urlsplit
 
 import jinja2
 
+from review_pdf_to_latex import terminal as terminal_bridge
+
 EVENTS_FILENAME = "state-events.jsonl"
 STATE_DIR_NAME = ".review-state"  # mirrors state.STATE_DIR_NAME for module independence
+
+# Default subprocess spawned by the viewer's embedded terminal pane
+# (rev-dyn). Overridable via ``.review-config.toml``'s ``terminal_command``
+# key — see ``_load_terminal_command`` below. Default is ``claude`` because
+# the embedded terminal exists to host SURFACE-intent Phase 2b conversations
+# without alt-tabbing.
+DEFAULT_TERMINAL_COMMAND = "claude"
 
 _PAGE_FILENAME_RE = re.compile(r"^page-\d+\.png$")
 _BUILD_ID_RE = re.compile(r"^build-\d+$")
@@ -164,6 +173,8 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
 
     project_dir: Path = Path(".")
     mode: str = "normal"
+    terminal_command: str = DEFAULT_TERMINAL_COMMAND
+    terminal_enabled: bool = True
 
     # ---- GET dispatch -------------------------------------------------------
 
@@ -174,6 +185,9 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/api/state":
             self._serve_state_json()
+            return
+        if path == "/ws/terminal":
+            self._serve_terminal_ws()
             return
         if path.startswith("/pages/"):
             self._serve_page_png(path[len("/pages/") :])
@@ -192,6 +206,31 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             self._send_404()
             return
         self._handle_events_post()
+
+    def _serve_terminal_ws(self) -> None:
+        """Upgrade the connection and hand off to the pty bridge (rev-dyn).
+
+        Rejects the upgrade with 403 when the terminal is disabled
+        (no command configured) or 426 when the request isn't a valid
+        WebSocket upgrade. Otherwise this method does not return until the
+        bridge tears down — the connection is "stolen" from http.server.
+        """
+        if not self.terminal_enabled or not self.terminal_command:
+            self._send_simple(HTTPStatus.FORBIDDEN, b"terminal disabled\n")
+            return
+        if not terminal_bridge.is_websocket_upgrade(self.headers):
+            self.send_response(int(HTTPStatus.UPGRADE_REQUIRED))
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        client_key = self.headers.get("Sec-WebSocket-Key", "")
+        terminal_bridge.send_handshake(self.wfile, client_key)
+        # After this returns the socket is consumed; we deliberately do
+        # not call any send_response helpers. The handler's do_GET caller
+        # ends here.
+        terminal_bridge.run_bridge(self, self.terminal_command)
 
     def _handle_events_post(self) -> None:
         # Enforce the body-size cap BEFORE reading so a malicious client can't OOM us.
@@ -293,6 +332,7 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             )
 
         diff2html_present = (_STATIC_DIR / "diff2html.min.js").exists()
+        xterm_present = (_STATIC_DIR / "xterm.js").exists()
 
         context: dict[str, Any] = {
             "current_state": current_state,
@@ -304,6 +344,8 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             "total_annotations": len(annotations_list),
             "current_annotation": current_annotation,
             "diff2html_present": diff2html_present,
+            "xterm_present": xterm_present,
+            "terminal_enabled": bool(self.terminal_enabled and self.terminal_command),
         }
 
         if self.mode == "mapping":
@@ -538,19 +580,70 @@ def _list_project_tex_files(project_dir: Path) -> list[str]:
     return out
 
 
+def _load_terminal_command(project_dir: Path) -> tuple[str, bool]:
+    """Return ``(command, enabled)`` for the embedded terminal pane.
+
+    Reads ``<project_dir>/.review-config.toml``:
+
+    * ``terminal_command`` (str): override the subprocess to spawn. Empty
+      string or missing key uses :data:`DEFAULT_TERMINAL_COMMAND`.
+    * ``terminal_enabled`` (bool): explicit kill switch. Defaults to True.
+      Setting this to ``false`` makes ``GET /ws/terminal`` return 403 and
+      hides the toggle in the viewer.
+
+    Parse failures degrade silently to the default, matching the
+    ``surface_trigger`` config in :mod:`extract` — a broken config never
+    blocks the viewer.
+    """
+    import tomllib
+
+    config_path = project_dir / ".review-config.toml"
+    if not config_path.exists():
+        return DEFAULT_TERMINAL_COMMAND, True
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return DEFAULT_TERMINAL_COMMAND, True
+    enabled = bool(data.get("terminal_enabled", True))
+    command = data.get("terminal_command")
+    if not isinstance(command, str) or not command.strip():
+        command = DEFAULT_TERMINAL_COMMAND
+    return command, enabled
+
+
 def build_server(
-    project_dir: Path, port: int, mode: str = "normal"
+    project_dir: Path,
+    port: int,
+    mode: str = "normal",
+    *,
+    terminal_command: str | None = None,
+    terminal_enabled: bool | None = None,
 ) -> http.server.HTTPServer:
     """Factory for the HTTPServer bound to ReviewHandler with closures over config.
 
-    Returns an HTTPServer ready to serve; the caller drives serve_forever().
+    Returns a :class:`ThreadingHTTPServer` so a long-lived WebSocket (the
+    embedded terminal pane, rev-dyn) doesn't block concurrent HTTP requests
+    on the same port. Caller drives ``serve_forever()``.
     """
+    resolved = Path(project_dir).resolve()
+    if terminal_command is None or terminal_enabled is None:
+        cfg_cmd, cfg_enabled = _load_terminal_command(resolved)
+        if terminal_command is None:
+            terminal_command = cfg_cmd
+        if terminal_enabled is None:
+            terminal_enabled = cfg_enabled
     handler_cls = type(
         "BoundReviewHandler",
         (ReviewHandler,),
-        {"project_dir": Path(project_dir).resolve(), "mode": mode},
+        {
+            "project_dir": resolved,
+            "mode": mode,
+            "terminal_command": terminal_command,
+            "terminal_enabled": terminal_enabled,
+        },
     )
-    return http.server.HTTPServer(("127.0.0.1", port), handler_cls)
+    return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
 
 
 _POLL_INTERVAL_SEC = 0.25

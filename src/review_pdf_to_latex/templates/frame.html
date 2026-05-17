@@ -14,8 +14,13 @@
       color: #e6e8eb;
       background: #1a1d23;
       display: grid;
-      grid-template-rows: 48px 1fr;
+      /* Row 3 is the terminal drawer; height is driven by JS via the
+         --terminal-height custom property. When the drawer is collapsed
+         the row collapses to 0px and the toggle button sits in the
+         topbar. */
+      grid-template-rows: 48px 1fr var(--terminal-height, 0px);
     }
+    body.terminal-open { --terminal-height: 320px; }
     code, pre { font-family: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace; }
 
     /* ───── Top bar ───── */
@@ -250,10 +255,68 @@
     .d2h-del, .d2h-del-line, td.d2h-del { background: #4a1820 !important; color: #f5c2c7 !important; }
     .d2h-emptyplaceholder { background: #14171c !important; border-color: #3a3f4a !important; }
     .d2h-info { background: #1f2229 !important; color: #a8aeb8 !important; }
+
+    /* ───── Terminal drawer (rev-dyn) ─────
+     * Bottom-of-page drawer hosting an xterm.js terminal connected to a
+     * subprocess via /ws/terminal. The toggle lives in the topbar so the
+     * 3-pane grid is unaffected when the drawer is closed.
+     */
+    .terminal-toggle {
+      background: #2c333d;
+      color: #e6e8eb;
+      border: 1px solid #4a5060;
+      border-radius: 3px;
+      padding: 2px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 12px;
+    }
+    .terminal-toggle:hover { background: #3a4150; }
+    .terminal-toggle[aria-expanded="true"] {
+      border-color: #42a5f5;
+      color: #42a5f5;
+    }
+    .terminal-drawer {
+      background: #0f1115;
+      border-top: 1px solid #000000;
+      display: none;
+      grid-template-rows: 28px 1fr;
+      overflow: hidden;
+    }
+    body.terminal-open .terminal-drawer { display: grid; }
+    .terminal-drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      background: #1a1d23;
+      border-bottom: 1px solid #3a3f4a;
+      font-size: 12px;
+      color: #a8aeb8;
+    }
+    .terminal-drawer-header code { font-size: 11px; color: #8a909a; }
+    .terminal-status {
+      font-style: italic;
+      font-size: 11px;
+    }
+    .terminal-status.error { color: #f5c2c7; }
+    .terminal-status.connected { color: #b9f1c5; }
+    .terminal-host {
+      padding: 4px 8px;
+      overflow: hidden;
+      background: #000000;
+    }
+    .terminal-host .xterm { height: 100%; }
+    .terminal-host .xterm-viewport { background: #000000 !important; }
   </style>
   {% if diff2html_present %}
   <link rel="stylesheet" href="/static/diff2html.min.css">
   <script src="/static/diff2html.min.js"></script>
+  {% endif %}
+  {% if terminal_enabled and xterm_present %}
+  <link rel="stylesheet" href="/static/xterm.css">
+  <script src="/static/xterm.js"></script>
+  <script src="/static/xterm-addon-fit.js"></script>
   {% endif %}
 </head>
 <body>
@@ -271,6 +334,16 @@
     </div>
     <div class="topbar-right">
       <span id="status" class="status-line">Ready.</span>
+      {% if terminal_enabled and xterm_present %}
+      <button type="button"
+              class="terminal-toggle"
+              id="terminal-toggle"
+              aria-expanded="false"
+              aria-controls="terminal-drawer"
+              title="Toggle embedded terminal (rev-dyn)">
+        ⌨ Terminal
+      </button>
+      {% endif %}
     </div>
   </header>
   <main>
@@ -340,6 +413,15 @@
       {% include "annotation.html" %}
     {% endif %}
   </main>
+  {% if terminal_enabled and xterm_present %}
+  <aside class="terminal-drawer" id="terminal-drawer" aria-label="Embedded terminal">
+    <div class="terminal-drawer-header">
+      <span>Embedded terminal &middot; <code>/ws/terminal</code></span>
+      <span id="terminal-status" class="terminal-status">disconnected</span>
+    </div>
+    <div class="terminal-host" id="terminal-host"></div>
+  </aside>
+  {% endif %}
   <script>
     "use strict";
 
@@ -496,6 +578,149 @@
         if (s) s.textContent = "Server unreachable.";
       }
     }, 500);
+
+    // ─────────────────────────────────────────────────────────────
+    // Embedded terminal pane (rev-dyn). xterm.js mounted in the
+    // bottom drawer; WebSocket to /ws/terminal carries pty bytes
+    // both directions. Resize messages tunneled as JSON text frames.
+    // ─────────────────────────────────────────────────────────────
+    (function setupTerminal() {
+      const toggle = document.getElementById("terminal-toggle");
+      const host = document.getElementById("terminal-host");
+      const statusEl = document.getElementById("terminal-status");
+      if (!toggle || !host || typeof Terminal === "undefined") return;
+
+      let term = null;
+      let fit = null;
+      let ws = null;
+      let resizeObserver = null;
+      const decoder = new TextDecoder("utf-8");
+
+      function setStatus(text, kind) {
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.className = "terminal-status" + (kind ? " " + kind : "");
+      }
+
+      function ensureTerminal() {
+        if (term) return;
+        term = new Terminal({
+          fontFamily: 'ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace',
+          fontSize: 13,
+          cursorBlink: true,
+          scrollback: 5000,
+          theme: {
+            background: "#000000",
+            foreground: "#e6e8eb",
+            cursor: "#42a5f5",
+            selectionBackground: "#42a5f560"
+          }
+        });
+        if (typeof FitAddon !== "undefined") {
+          fit = new FitAddon.FitAddon();
+          term.loadAddon(fit);
+        }
+        term.open(host);
+        if (fit) {
+          try { fit.fit(); } catch (e) { /* drawer not visible yet */ }
+        }
+      }
+
+      function sendResize() {
+        if (!ws || ws.readyState !== 1 || !term) return;
+        try {
+          ws.send(JSON.stringify({
+            t: "resize",
+            cols: term.cols,
+            rows: term.rows
+          }));
+        } catch (e) { /* socket may have just closed */ }
+      }
+
+      function connect() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const url = proto + "//" + location.host + "/ws/terminal";
+        setStatus("connecting...");
+        ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
+
+        ws.addEventListener("open", function () {
+          setStatus("connected", "connected");
+          if (fit) {
+            try { fit.fit(); } catch (e) { /* ignore */ }
+          }
+          sendResize();
+          term.focus();
+        });
+
+        ws.addEventListener("message", function (event) {
+          if (typeof event.data === "string") {
+            term.write(event.data);
+          } else {
+            term.write(decoder.decode(new Uint8Array(event.data)));
+          }
+        });
+
+        ws.addEventListener("close", function (event) {
+          setStatus("disconnected (" + (event.code || "?") + ")", "error");
+        });
+
+        ws.addEventListener("error", function () {
+          setStatus("error", "error");
+        });
+
+        term.onData(function (data) {
+          if (ws && ws.readyState === 1) ws.send(data);
+        });
+      }
+
+      function openDrawer() {
+        document.body.classList.add("terminal-open");
+        toggle.setAttribute("aria-expanded", "true");
+        ensureTerminal();
+        if (!ws || ws.readyState >= 2) {
+          connect();
+        }
+        // Defer fit until layout settles.
+        requestAnimationFrame(function () {
+          if (fit) {
+            try { fit.fit(); } catch (e) { /* ignore */ }
+            sendResize();
+          }
+          if (term) term.focus();
+        });
+        // Watch for drawer resize from window resizes / DevTools.
+        if (!resizeObserver && typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(function () {
+            if (!fit) return;
+            try { fit.fit(); } catch (e) { return; }
+            sendResize();
+          });
+          resizeObserver.observe(host);
+        }
+      }
+
+      function closeDrawer() {
+        document.body.classList.remove("terminal-open");
+        toggle.setAttribute("aria-expanded", "false");
+        // Keep the pty session alive; user often re-opens during a review.
+        // Closing the WS would kill the subprocess.
+      }
+
+      toggle.addEventListener("click", function () {
+        if (document.body.classList.contains("terminal-open")) {
+          closeDrawer();
+        } else {
+          openDrawer();
+        }
+      });
+
+      window.addEventListener("resize", function () {
+        if (!document.body.classList.contains("terminal-open") || !fit) return;
+        try { fit.fit(); } catch (e) { return; }
+        sendResize();
+      });
+    })();
   </script>
 </body>
 </html>
