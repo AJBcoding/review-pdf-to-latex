@@ -83,6 +83,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_extract.add_argument("--force", action="store_true")
+    p_extract.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress non-error stderr (e.g., the post-run summary line).",
+    )
     _add_global_args(p_extract, on_subparser=True)
 
     # 2. serve
@@ -231,6 +236,8 @@ def _handle_extract(args: argparse.Namespace) -> int:
         project_dir=Path(args.project_dir),
         surface_trigger=args.surface_trigger,
         force=bool(args.force),
+        quiet=bool(getattr(args, "quiet", False)),
+        json_output=bool(getattr(args, "json_output", False)),
     )
 
 
@@ -270,33 +277,89 @@ def _handle_wait_event(args: argparse.Namespace) -> int:
     )
 
 
-def _format_status_human(report: "_status.StatusReport") -> str:
-    """Render a :class:`StatusReport` as a multi-line human summary."""
-    lines: list[str] = []
-    lines.append(f"Phase: {report.phase}  (order: {report.order})")
+def _git_working_tree_state(project_dir: Path) -> str:
+    """Best-effort git working-tree summary: 'clean', 'dirty (N file(s))', or '(not a git repo)'.
+
+    Runs ``git status --porcelain``. Falls back to ``(unknown)`` on any
+    failure so ``status`` never crashes on environments without git.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "(unknown)"
+    if proc.returncode != 0:
+        return "(not a git repo)"
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return "clean"
+    n = len(lines)
+    return f"dirty ({n} file{'s' if n != 1 else ''})"
+
+
+def _format_status_human(
+    report: "_status.StatusReport", project_dir: Path
+) -> str:
+    """Render a :class:`StatusReport` as a compact 4-line summary.
+
+    The four lines are intentionally fixed so callers (and the polecat
+    skill) can grep deterministically:
+
+    1. Phase / order / current annotation.
+    2. Annotation counts (headline statuses; only nonzero ones shown).
+    3. Last build status.
+    4. Working-tree state (git porcelain).
+
+    Use ``--json`` for the full machine-readable structure.
+    """
+    # Line 1: phase + order + current annotation
     cur = report.current_annotation_id or "(none)"
-    lines.append(f"Current annotation: {cur}")
-    lines.append(
-        f"Annotations: {report.total} total "
-        f"({report.terminal_count} terminal, {report.non_terminal_count} non-terminal)"
+    line1 = (
+        f"Phase: {report.phase} (order: {report.order}) · current: {cur}"
     )
-    for status_name, count in report.counts.items():
-        if count > 0:
-            lines.append(f"    {status_name}: {count}")
+
+    # Line 2: compact counts. Show total plus every nonzero status, in
+    # the canonical order so users see headline numbers (applied, pending,
+    # needs_review, surfaced_pending) before terminal ones.
+    headline_order = (
+        "applied",
+        "pending",
+        "needs_review",
+        "surfaced_pending",
+        "accepted",
+        "rejected",
+        "redrafted",
+        "deferred",
+        "surfaced_resolved",
+    )
+    parts = [f"{report.total} total"]
+    for name in headline_order:
+        n = report.counts.get(name, 0)
+        if n > 0:
+            parts.append(f"{n} {name}")
+    line2 = "Counts: " + " · ".join(parts)
+
+    # Line 3: last build
     if report.most_recent_build is not None:
         b = report.most_recent_build
         ok_str = "ok" if b.get("ok") else "FAILED"
-        lines.append(
+        line3 = (
             f"Last build: {b.get('id')} — {ok_str}, "
-            f"{b.get('page_count')} pages (compiled {b.get('compiled_at')})"
+            f"{b.get('page_count')} pages ({b.get('compiled_at')})"
         )
     else:
-        lines.append("Last build: (none)")
-    if report.unresolved_needs_review > 0:
-        lines.append(
-            f"Unresolved needs_review: {report.unresolved_needs_review}"
-        )
-    return "\n".join(lines)
+        line3 = "Last build: (none)"
+
+    # Line 4: working-tree state
+    line4 = f"Working tree: {_git_working_tree_state(project_dir)}"
+
+    return "\n".join([line1, line2, line3, line4])
 
 
 def _handle_status(args: argparse.Namespace) -> int:
@@ -314,7 +377,7 @@ def _handle_status(args: argparse.Namespace) -> int:
     if args.json_output:
         print_json(report.to_dict())
     else:
-        print(_format_status_human(report))
+        print(_format_status_human(report, Path(args.project_dir)))
     return EXIT_OK
 
 

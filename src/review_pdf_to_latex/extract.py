@@ -646,8 +646,34 @@ def ensure_gitignore_entry(
 # ---- Task 4.7: extract CLI orchestrator -------------------------------------
 
 import hashlib
+import json as _json
+import logging as _logging
 import sys
 from importlib import metadata as _metadata
+
+
+def _silence_pdfminer_noise() -> None:
+    """Quiet pdfminer.six's chatty WARNING-level logs.
+
+    pdfminer (via pdfplumber's bbox text recovery) emits warnings like
+    "Cannot set gray non-stroke color" and "Could not find glyph for ..."
+    for almost any non-trivial PDF. They are not actionable for our use
+    case (we are extracting highlighted text, not faithfully rendering
+    fonts), and on a real run they drowned out the real progress output.
+    Bumping the package logger to ERROR is the standard fix.
+    """
+    for name in (
+        "pdfminer",
+        "pdfminer.pdfinterp",
+        "pdfminer.pdfdocument",
+        "pdfminer.pdffont",
+        "pdfminer.pdfpage",
+        "pdfminer.cmapdb",
+        "pdfminer.converter",
+        "pdfminer.psparser",
+        "pdfplumber",
+    ):
+        _logging.getLogger(name).setLevel(_logging.ERROR)
 
 
 def _compute_md5(path: Path) -> str:
@@ -672,12 +698,20 @@ def run_extract(
     project_dir: Path,
     surface_trigger: str | None = None,
     force: bool = False,
+    quiet: bool = False,
+    json_output: bool = False,
 ) -> int:
     """Execute the full Phase 0 pipeline. Returns a CLI exit code.
 
     Trigger precedence (highest first): explicit ``surface_trigger`` arg
     → ``.review-config.toml``'s ``surface_trigger`` key →
     :data:`DEFAULT_SURFACE_TRIGGER`.
+
+    ``quiet`` suppresses non-error stderr (currently only pdfminer noise,
+    which is already silenced unconditionally — the flag exists so future
+    verbose output respects it). ``json_output`` emits a one-line JSON
+    summary on stdout when the run succeeds; mutually orthogonal to
+    ``quiet``.
 
     Exit codes (per spec §8 extract row):
         0  ok
@@ -686,6 +720,8 @@ def run_extract(
         4  pdfannots failed to parse the PDF (or page rendering failed)
     """
     from review_pdf_to_latex.state import atomic_write_json  # local to avoid cycle
+
+    _silence_pdfminer_noise()
 
     pdf_path = Path(pdf_path)
     project_dir = Path(project_dir)
@@ -769,5 +805,30 @@ def run_extract(
 
     # 8. Patch .gitignore.
     ensure_gitignore_entry(project_dir, entry=".review-state/")
+
+    if json_output:
+        summary = {
+            "ok": True,
+            "annotation_count": len(annotations),
+            "needs_review": sum(
+                1 for m in mappings.values() if m.needs_review
+            ),
+            "surfaced_pending": sum(
+                1 for a in annotations if a.trigger_match
+            ),
+            "source_pdf_md5": annotations_doc["source_pdf_md5"],
+        }
+        sys.stdout.write(_json.dumps(summary, sort_keys=True) + "\n")
+        sys.stdout.flush()
+    elif not quiet:
+        # Friendly one-line summary on stderr so it doesn't pollute pipes.
+        n_total = len(annotations)
+        n_nr = sum(1 for m in mappings.values() if m.needs_review)
+        n_surf = sum(1 for a in annotations if a.trigger_match)
+        print(
+            f"extracted {n_total} annotation(s); {n_nr} needs_review, "
+            f"{n_surf} surfaced_pending",
+            file=sys.stderr,
+        )
 
     return 0
