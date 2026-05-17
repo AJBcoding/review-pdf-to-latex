@@ -50,3 +50,38 @@ def test_read_annotations_returns_list_with_correct_fields() -> None:
     assert [a.id for a in result] == expected_ids, (
         f"IDs must be sequential ann-001..ann-NNN; got {[a.id for a in result]}"
     )
+
+
+from review_pdf_to_latex.extract import is_trigger
+
+
+@pytest.mark.parametrize(
+    ("comment", "trigger", "expected"),
+    [
+        ("claude surface this", "claude surface this", True),
+        ("Claude Surface This", "claude surface this", True),
+        ("CLAUDE SURFACE THIS, please", "claude surface this", True),
+        ("Hey, claude surface this paragraph", "claude surface this", True),
+        ("tighten the prose", "claude surface this", False),
+        ("", "claude surface this", False),
+        ("claude surfacethis", "claude surface this", False),
+        ("anything goes", "anything goes", True),
+        ("anything", "anything goes", False),
+    ],
+    ids=[
+        "exact",
+        "title_case",
+        "uppercase_with_extra",
+        "embedded_in_longer",
+        "no_match",
+        "empty_comment",
+        "no_space_no_match",
+        "custom_trigger_match",
+        "custom_trigger_no_match",
+    ],
+)
+def test_is_trigger_case_insensitive_substring(
+    comment: str, trigger: str, expected: bool
+) -> None:
+    """is_trigger returns True iff the trigger phrase is a case-insensitive substring."""
+    assert is_trigger(comment, trigger) is expected

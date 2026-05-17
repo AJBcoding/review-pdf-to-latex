@@ -29,19 +29,34 @@ def _format_created(raw: object) -> str | None:
     return str(raw)
 
 
-def read_annotations(pdf_path: Path) -> list[Annotation]:
+def is_trigger(comment: str, trigger_phrase: str) -> bool:
+    """Return True iff `trigger_phrase` appears in `comment` (case-insensitive substring).
+
+    Per spec §7.1, the SURFACE trigger is a case-insensitive *substring* match,
+    not a word-boundary match. Empty comment is always False.
+    """
+    if not comment or not trigger_phrase:
+        return False
+    return trigger_phrase.casefold() in comment.casefold()
+
+
+def read_annotations(
+    pdf_path: Path,
+    trigger_phrase: str = "claude surface this",
+) -> list[Annotation]:
     """Parse PDF highlight annotations into a list of Annotation dataclasses.
 
     Uses pdfannots' Python API (not the CLI). Each annotation gets a sequential
-    zero-padded id `ann-001`, `ann-002`, ... in document order (page, then y
-    descending, which is what pdfannots yields natively).
+    zero-padded id `ann-001`, `ann-002`, ... in document order. `trigger_match`
+    is True iff the annotation's comment contains `trigger_phrase`
+    (case-insensitive substring).
 
     Args:
         pdf_path: Absolute or relative path to an annotated PDF.
+        trigger_phrase: SURFACE trigger phrase (default "claude surface this").
 
     Returns:
-        List of Annotation dataclasses in document order. May be empty if the
-        PDF has no annotations.
+        List of Annotation dataclasses in document order. May be empty.
 
     Raises:
         FileNotFoundError: pdf_path does not exist.
@@ -54,21 +69,18 @@ def read_annotations(pdf_path: Path) -> list[Annotation]:
     try:
         with pdf_path.open("rb") as fh:
             doc = pdfannots.process_file(fh, emit_progress_to=None)
-    except Exception as exc:  # noqa: BLE001 — pdfannots raises its own exception types
+    except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"pdfannots failed to parse {pdf_path}: {exc}") from exc
 
     annotations: list[Annotation] = []
     counter = 0
     for page in doc.pages:
-        # pdfannots stores annotations per page; page numbering is 1-based.
         page_number = page.pageno + 1
         for raw in page.annots:
             counter += 1
             highlighted_text = (raw.gettext() or "").strip()
             comment = (raw.contents or "").strip()
             author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
-            # Bounding box: pdfannots exposes .boxes (list of fitz-style rects).
-            # We use the union of all highlight quads as a single bbox.
             if raw.boxes:
                 xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
                 ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
@@ -89,7 +101,7 @@ def read_annotations(pdf_path: Path) -> list[Annotation]:
                     author=author,
                     comment=comment,
                     created=_format_created(getattr(raw, "created", None)),
-                    trigger_match=False,  # set later by is_trigger (Task 4.2)
+                    trigger_match=is_trigger(comment, trigger_phrase),
                 )
             )
 
