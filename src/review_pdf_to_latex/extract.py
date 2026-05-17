@@ -85,6 +85,38 @@ def load_project_config(project_dir: Path) -> dict:
         return {}
 
 
+def _bbox_recover_text(
+    plumb_pdf, page_index: int, bbox: tuple[float, float, float, float]
+) -> str:
+    """Extract text from a page region by cropping with pdfplumber.
+
+    Used as a fallback when ``pdfannots.gettext()`` returns empty for a
+    Highlight annotation — common for re-saved PDFs and "RESTORED" PDFs
+    where annotations were re-injected from a corrupted source, so the
+    annotation's quad points no longer line up with the page's text run
+    even though the underlying text is intact.
+
+    ``bbox`` is in pdfannots' PDF-coordinate frame: (left, bottom, right, top)
+    with origin at the page's bottom-left. pdfplumber uses (x0, top, x1, bottom)
+    with origin at the top-left, so we flip ``y`` against page height.
+
+    Returns the recovered text (stripped), or ``""`` if the crop is empty,
+    bbox is degenerate, or pdfplumber raises.
+    """
+    left, bottom, right, top = bbox
+    if right - left <= 0 or top - bottom <= 0:
+        return ""
+    try:
+        page = plumb_pdf.pages[page_index]
+        crop = page.within_bbox(
+            (left, page.height - top, right, page.height - bottom)
+        )
+        text = crop.extract_text() or ""
+    except Exception:  # noqa: BLE001 — recovery is best-effort by design
+        return ""
+    return text.strip()
+
+
 def read_annotations(
     pdf_path: Path,
     trigger_phrase: str = DEFAULT_SURFACE_TRIGGER,
@@ -95,6 +127,13 @@ def read_annotations(
     zero-padded id `ann-001`, `ann-002`, ... in document order. `trigger_match`
     is True iff the annotation's comment contains `trigger_phrase`
     (case-insensitive substring).
+
+    When ``pdfannots.gettext()`` returns empty for a Highlight (e.g. a
+    "RESTORED" PDF where re-injected annotation quad points no longer align
+    with the page's text run), this function falls back to a bbox-region
+    crop via pdfplumber so the highlighted text is preserved. Sticky-note
+    annotations with no underlying highlight remain ``highlighted_text == ""``
+    — there is no text to recover. See rev-fv6.
 
     Args:
         pdf_path: Absolute or relative path to an annotated PDF.
@@ -108,6 +147,8 @@ def read_annotations(
         FileNotFoundError: pdf_path does not exist.
         RuntimeError: pdfannots failed to parse the PDF.
     """
+    import pdfplumber
+
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -120,36 +161,47 @@ def read_annotations(
 
     annotations: list[Annotation] = []
     counter = 0
-    for page in doc.pages:
-        page_number = page.pageno + 1
-        for raw in page.annots:
-            counter += 1
-            highlighted_text = (raw.gettext() or "").strip()
-            comment = (raw.contents or "").strip()
-            author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
-            if raw.boxes:
-                xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
-                ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
-                bbox: tuple[float, float, float, float] = (
-                    float(min(xs)),
-                    float(min(ys)),
-                    float(max(xs)),
-                    float(max(ys)),
+    # Open the PDF once for the lifetime of the loop so we don't pay the
+    # pdfplumber open cost per annotation.
+    with pdfplumber.open(str(pdf_path)) as plumb:
+        for page in doc.pages:
+            page_number = page.pageno + 1
+            for raw in page.annots:
+                counter += 1
+                highlighted_text = (raw.gettext() or "").strip()
+                comment = (raw.contents or "").strip()
+                author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
+                if raw.boxes:
+                    xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
+                    ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
+                    bbox: tuple[float, float, float, float] = (
+                        float(min(xs)),
+                        float(min(ys)),
+                        float(max(xs)),
+                        float(max(ys)),
+                    )
+                else:
+                    bbox = (0.0, 0.0, 0.0, 0.0)
+
+                # Bbox fallback for Highlight annotations whose quad points
+                # no longer link to the page text run.
+                if not highlighted_text and bbox != (0.0, 0.0, 0.0, 0.0):
+                    highlighted_text = _bbox_recover_text(
+                        plumb, page.pageno, bbox
+                    )
+
+                annotations.append(
+                    Annotation(
+                        id=f"ann-{counter:03d}",
+                        page=page_number,
+                        bbox=bbox,
+                        highlighted_text=highlighted_text,
+                        author=author,
+                        comment=comment,
+                        created=_format_created(getattr(raw, "created", None)),
+                        trigger_match=is_trigger(comment, trigger_phrase),
+                    )
                 )
-            else:
-                bbox = (0.0, 0.0, 0.0, 0.0)
-            annotations.append(
-                Annotation(
-                    id=f"ann-{counter:03d}",
-                    page=page_number,
-                    bbox=bbox,
-                    highlighted_text=highlighted_text,
-                    author=author,
-                    comment=comment,
-                    created=_format_created(getattr(raw, "created", None)),
-                    trigger_match=is_trigger(comment, trigger_phrase),
-                )
-            )
 
     return annotations
 

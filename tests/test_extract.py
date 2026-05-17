@@ -562,6 +562,79 @@ def test_run_extract_uses_config_file_trigger_when_cli_arg_absent(
     )
 
 
+# ---- rev-fv6: bbox-region text fallback when pdfannots gettext is empty ----
+
+from review_pdf_to_latex.extract import _bbox_recover_text
+
+
+def test_bbox_recover_text_returns_text_in_region() -> None:
+    """Direct test: cropping the fixture's known highlight bbox returns the
+    same text that pdfannots' gettext gave us."""
+    import pdfannots
+    import pdfplumber
+
+    with FIXTURE_PDF.open("rb") as fh:
+        doc = pdfannots.process_file(fh, emit_progress_to=None)
+    first = next(iter(doc.pages[0].annots))
+    expected = (first.gettext() or "").strip()
+    assert expected, "fixture's first annotation should have extractable text"
+
+    xs = [b.x0 for b in first.boxes] + [b.x1 for b in first.boxes]
+    ys = [b.y0 for b in first.boxes] + [b.y1 for b in first.boxes]
+    bbox = (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys)))
+
+    with pdfplumber.open(str(FIXTURE_PDF)) as plumb:
+        recovered = _bbox_recover_text(plumb, 0, bbox)
+
+    # Bbox crop may include adjacent characters at the edges; the substring
+    # check tolerates that without making the test brittle to small differences.
+    assert expected in recovered or recovered in expected, (
+        f"bbox-recovered text does not align with pdfannots text:\n"
+        f"  expected: {expected!r}\n  recovered: {recovered!r}"
+    )
+
+
+def test_bbox_recover_text_degenerate_bbox_returns_empty() -> None:
+    """Empty/zero bbox can't anchor a text crop — must return empty string."""
+    import pdfplumber
+
+    with pdfplumber.open(str(FIXTURE_PDF)) as plumb:
+        assert _bbox_recover_text(plumb, 0, (0.0, 0.0, 0.0, 0.0)) == ""
+
+
+def test_read_annotations_falls_back_to_bbox_when_gettext_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When pdfannots.gettext() returns empty for a Highlight whose quad
+    points still cover real text (the RESTORED-PDF scenario), the engine
+    must recover the highlighted text from the bbox region."""
+    import pdfannots
+
+    real_process_file = pdfannots.process_file
+
+    def fake_process_file(fh, **kwargs):
+        doc = real_process_file(fh, **kwargs)
+        for page in doc.pages:
+            for raw in page.annots:
+                # Force gettext to return empty so the fallback fires.
+                raw.gettext = lambda: ""  # noqa: B023
+        return doc
+
+    monkeypatch.setattr(
+        "review_pdf_to_latex.extract.pdfannots.process_file", fake_process_file
+    )
+
+    result = read_annotations(FIXTURE_PDF)
+    assert len(result) >= 1
+    # Every annotation in the fixture has a real text region behind it,
+    # so the fallback must recover SOMETHING non-empty for each.
+    for ann in result:
+        assert ann.highlighted_text != "", (
+            f"{ann.id}: bbox fallback failed to recover any text "
+            f"(bbox={ann.bbox})"
+        )
+
+
 def test_run_extract_cli_arg_overrides_config_file(tmp_path: Path) -> None:
     """Precedence check: explicit surface_trigger arg wins over config file."""
     project = tmp_path / "proj"
