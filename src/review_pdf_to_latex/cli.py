@@ -192,6 +192,19 @@ def _handle_extract(args: argparse.Namespace) -> int:
     )
 
 
+def _handle_build(args: argparse.Namespace) -> int:
+    """Compile LaTeX; append a build record (spec §8 build row)."""
+    from review_pdf_to_latex.build import run_build_command
+
+    return run_build_command(
+        project_dir=Path(args.project_dir),
+        main_file=Path(args.main_file) if args.main_file else None,
+        engine=args.engine,
+        quiet=args.quiet,
+        benchmark=getattr(args, "benchmark", False),
+    )
+
+
 # String fallback for subcommands without a wired handler: the value is the
 # name passed to `_stub`, which raises NotImplementedError. Real handlers
 # registered in `_HANDLERS_TABLE` shadow these entries.
@@ -215,6 +228,7 @@ _HANDLERS: dict[str, str] = {
 
 _HANDLERS_TABLE: dict[str, "callable"] = {
     "extract": _handle_extract,
+    "build": _handle_build,
 }
 
 

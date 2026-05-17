@@ -225,3 +225,146 @@ def test_paginate_diff_cases(
     assert (diff.prev_count, diff.curr_count) == expected_count
     assert diff.first_changed_page == expected_first
     assert expected_summary_contains in diff.summary
+
+
+# ---- Task 5.4: discover_main_file + run_build_command -----------------------
+
+import json
+
+from review_pdf_to_latex.build import discover_main_file, run_build_command
+
+
+def test_discover_main_file_prefers_build_subdir(tmp_path: Path) -> None:
+    (tmp_path / "build").mkdir()
+    main = tmp_path / "build" / "full_report.tex"
+    main.write_text(
+        r"""\documentclass{article}
+\begin{document}
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    other = tmp_path / "other.tex"
+    other.write_text(
+        r"""\documentclass{article}
+\begin{document}
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    discovered = discover_main_file(tmp_path)
+    assert discovered == main
+
+
+def test_discover_main_file_falls_back_to_project_root(tmp_path: Path) -> None:
+    main = tmp_path / "report.tex"
+    main.write_text(
+        r"""\documentclass{article}
+\begin{document}
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    assert discover_main_file(tmp_path) == main
+
+
+def test_discover_main_file_raises_when_none_found(tmp_path: Path) -> None:
+    (tmp_path / "stub.tex").write_text("just a fragment", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        discover_main_file(tmp_path)
+
+
+@pdflatex
+@pdftoppm
+def test_run_build_command_appends_state_entry(tmp_path: Path) -> None:
+    # Construct a minimal project tree with .review-state already extracted.
+    project = tmp_path / "proj"
+    (project / "build").mkdir(parents=True)
+    main = project / "build" / "full_report.tex"
+    main.write_text(
+        r"""\documentclass{article}
+\begin{document}
+hello
+\end{document}
+""",
+        encoding="utf-8",
+    )
+
+    state_dir = project / ".review-state"
+    (state_dir / "builds").mkdir(parents=True)
+    state_path = state_dir / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = run_build_command(
+        project_dir=project,
+        main_file=None,
+        engine="auto",
+        quiet=True,
+        benchmark=False,
+    )
+
+    assert exit_code == 0
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert len(state["builds"]) == 1
+    entry = state["builds"][0]
+    assert entry["id"] == "build-001"
+    assert entry["ok"] is True
+    assert entry["page_count"] >= 1
+    assert isinstance(entry["page_md5"], list)
+    assert entry["pdf_path"].endswith("build-001.pdf")
+    assert entry["log_path"].endswith("build-001.log")
+    assert (state_dir / "builds" / "build-001.pdf").exists()
+    assert (state_dir / "builds" / "build-001.log").exists()
+
+
+def test_run_build_command_exits_12_when_main_missing(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    state_dir = project / ".review-state"
+    state_dir.mkdir()
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    exit_code = run_build_command(
+        project_dir=project,
+        main_file=None,
+        engine="auto",
+        quiet=True,
+        benchmark=False,
+    )
+    assert exit_code == 12
+
+
+def test_run_build_command_exits_6_when_state_missing(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    exit_code = run_build_command(
+        project_dir=project,
+        main_file=None,
+        engine="auto",
+        quiet=True,
+        benchmark=False,
+    )
+    assert exit_code == 6

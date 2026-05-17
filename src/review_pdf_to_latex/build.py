@@ -236,3 +236,164 @@ def paginate_diff(prev: list[str], curr: list[str]) -> PaginationDiff:
         # One is a strict prefix of the other; divergence is at min+1
         first = min(pc, cc) + 1
     return PaginationDiff(pc, cc, first, f"{pc} → {cc} pages, shift at p.{first}")
+
+
+# ---- Task 5.4: main-file discovery + CLI orchestration ----------------------
+
+# Spec §15-Q5: heuristic order is (1) any *.tex under build/ that contains
+# \documentclass, (2) any *.tex under project_root with \documentclass.
+# We additionally require \begin{document} to co-occur, matching §14-risk-7.
+_DOCCLASS_RE = re.compile(r"\\documentclass\b")
+_BEGINDOC_RE = re.compile(r"\\begin\{document\}")
+
+
+def _file_is_main(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(_DOCCLASS_RE.search(text) and _BEGINDOC_RE.search(text))
+
+
+def discover_main_file(project_dir: Path) -> Path:
+    """Find the LaTeX entry point under ``project_dir``.
+
+    Search order:
+        1. ``project_dir/build/*.tex`` with both ``\\documentclass`` and
+           ``\\begin{document}``.
+        2. ``project_dir/**/*.tex`` (recursive) with both markers, excluding
+           the ``.review-state`` directory and any ``*.tex`` under
+           ``templates/`` (those are typically ``\\input`` fragments).
+
+    Raises:
+        FileNotFoundError: no candidate file found.
+    """
+    project_dir = Path(project_dir)
+    build_dir = project_dir / "build"
+    if build_dir.is_dir():
+        for candidate in sorted(build_dir.glob("*.tex")):
+            if _file_is_main(candidate):
+                return candidate
+
+    for candidate in sorted(project_dir.rglob("*.tex")):
+        if ".review-state" in candidate.parts:
+            continue
+        if "templates" in candidate.parts:
+            continue
+        if _file_is_main(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        f"No LaTeX main file found under {project_dir!s}: looked for files "
+        "containing both \\documentclass and \\begin{document}"
+    )
+
+
+def run_build_command(
+    project_dir: Path,
+    main_file: Path | None,
+    engine: str,
+    quiet: bool,
+    benchmark: bool,
+) -> int:
+    """CLI handler for ``review-pdf build``. Returns the process exit code.
+
+    Side effects:
+        - Runs run_latex on the discovered (or supplied) main file.
+        - Copies output PDF + log into .review-state/builds/build-NNN.{pdf,log}.
+        - Computes per-page MD5s and pagination diff vs. previous successful build.
+        - Appends a build record to state.json.builds[] via atomic_write_json.
+        - Emits pagination summary to stdout (unless --quiet for ID-only output).
+
+    Exit codes per spec §8:
+        0: build succeeded.
+        11: build failed (log path printed to stderr).
+        12: main file not found.
+        6: state.json missing.
+    """
+    import sys
+
+    from review_pdf_to_latex.state import atomic_write_json, read_json
+
+    project_dir = Path(project_dir).resolve()
+    state_dir = project_dir / ".review-state"
+    state_path = state_dir / "state.json"
+    if not state_path.exists():
+        print(f"error: state.json not found at {state_path}", file=sys.stderr)
+        return 6
+
+    if main_file is None:
+        try:
+            main_file = discover_main_file(project_dir)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 12
+    else:
+        main_file = Path(main_file).resolve()
+        if not main_file.exists():
+            print(f"error: main file not found: {main_file}", file=sys.stderr)
+            return 12
+
+    state = read_json(state_path)
+    build_id = next_build_id(state)
+
+    builds_dir = state_dir / "builds"
+    builds_dir.mkdir(parents=True, exist_ok=True)
+    log_target = builds_dir / f"{build_id}.log"
+
+    start = time.monotonic()
+    ok, log_path = run_latex(
+        main_file=main_file,
+        engine=engine,
+        log_path=log_target,
+        timeout_sec=120,
+    )
+    elapsed = time.monotonic() - start
+
+    if benchmark:
+        print(f"Compile took {elapsed:.1f}s", file=sys.stderr)
+
+    pdf_target = builds_dir / f"{build_id}.pdf"
+    page_md5: list[str] = []
+    page_count = 0
+    if ok:
+        produced_pdf = main_file.with_suffix(".pdf")
+        if produced_pdf.exists():
+            shutil.copy2(produced_pdf, pdf_target)
+            page_md5 = compute_page_md5s(pdf_target)
+            page_count = len(page_md5)
+
+    prev_md5s: list[str] = []
+    for prior in reversed(state.get("builds", [])):
+        if prior.get("ok") and prior.get("page_md5"):
+            prev_md5s = list(prior["page_md5"])
+            break
+
+    diff = (
+        paginate_diff(prev_md5s, page_md5)
+        if ok
+        else PaginationDiff(len(prev_md5s), 0, None, "build failed")
+    )
+
+    entry = {
+        "id": build_id,
+        "pdf_path": (
+            str(pdf_target.relative_to(project_dir)) if pdf_target.exists() else None
+        ),
+        "log_path": str(log_path.relative_to(project_dir)),
+        "page_count": page_count,
+        "page_md5": page_md5,
+        "ok": ok,
+        "compiled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "elapsed_sec": round(elapsed, 3),
+        "pagination_summary": diff.summary,
+    }
+    state.setdefault("builds", []).append(entry)
+    atomic_write_json(state_path, state)
+
+    if not quiet:
+        print(f"{build_id}: {diff.summary}")
+    if not ok:
+        print(f"build failed; see {log_path}", file=sys.stderr)
+        return 11
+    return 0

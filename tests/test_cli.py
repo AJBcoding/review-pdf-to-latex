@@ -1,11 +1,24 @@
 """Tests for review_pdf_to_latex.cli — argparse router and subcommand dispatch."""
 
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from review_pdf_to_latex import cli
+
+
+pdflatex = pytest.mark.skipif(
+    shutil.which("pdflatex") is None,
+    reason="pdflatex not on PATH",
+)
+pdftoppm = pytest.mark.skipif(
+    shutil.which("pdftoppm") is None,
+    reason="pdftoppm not on PATH",
+)
 
 
 ALL_SUBCOMMANDS = [
@@ -159,6 +172,55 @@ def test_apply_subcommand_with_json_flag_still_raises(tmp_project: Path):
                 str(draft),
             ]
         )
+
+
+@pdflatex
+@pdftoppm
+def test_cli_build_subcommand_end_to_end(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    (project / "build").mkdir(parents=True)
+    main = project / "build" / "full_report.tex"
+    main.write_text(
+        r"""\documentclass{article}
+\begin{document}
+hi
+\end{document}
+""",
+        encoding="utf-8",
+    )
+    state_dir = project / ".review-state"
+    (state_dir / "builds").mkdir(parents=True)
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "review_pdf_to_latex",
+            "--project-dir",
+            str(project),
+            "build",
+            "--quiet",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert len(state["builds"]) == 1
+    assert state["builds"][0]["ok"] is True
 
 
 def test_exit_code_constants_match_spec():
