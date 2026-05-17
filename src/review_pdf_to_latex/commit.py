@@ -211,3 +211,144 @@ def next_phase(current: str) -> str:
             f"unknown phase {current!r}; expected one of {sorted(_PHASE_TRANSITIONS)}"
         )
     return _PHASE_TRANSITIONS[current]
+
+
+def _files_touched_by_state(state: dict, project_root: Path) -> list[Path]:
+    """Best-effort: every .tex file referenced indirectly by annotations with
+    a non-null applied_text. For v1 we don't have a reverse index from
+    annotation → file in state.json itself (mapping.json owns that), so we
+    read mapping.json and collect all latex_file entries whose annotation
+    has a status that implies the file was touched."""
+    state_dir = project_root / ".review-state"
+    mapping_path = state_dir / "mapping.json"
+    if not mapping_path.exists():
+        return []
+    with mapping_path.open("r", encoding="utf-8") as f:
+        mapping = json.load(f)
+    touched: set[str] = set()
+    annotation_states = state.get("annotations", {})
+    for ann_id, map_entry in mapping.get("mappings", {}).items():
+        ann = annotation_states.get(ann_id, {})
+        if ann.get("applied_text") is not None or ann.get("status") in (
+            "applied",
+            "accepted",
+            "redrafted",
+            "rejected",  # rejected means we reverted, which is also a write
+            "surfaced_resolved",
+        ):
+            if map_entry.get("latex_file"):
+                touched.add(map_entry["latex_file"])
+    return [project_root / f for f in sorted(touched)]
+
+
+def commit_phase(
+    state_dir: Path,
+    phase_arg: str,
+    message_suffix: str | None,
+    granularity: str,
+) -> str:
+    """Render the commit message, stage touched files + all four state files,
+    run `git commit`, then advance state.phase. Returns the new commit SHA.
+
+    Spec §8 commit-phase row, §13.
+
+    Args:
+        state_dir: Path to .review-state.
+        phase_arg: The SOURCE phase being committed; MUST equal state.phase.
+        message_suffix: Optional free-form project tag.
+        granularity: "phase" | "session" | "batch:N".
+
+    Returns:
+        The 40-char hex SHA of the new commit (from `git rev-parse HEAD`).
+
+    Raises:
+        IllegalPhaseError (exit 1): phase_arg != state.phase.
+        DirtyGitError (exit 15): dirty pre-phase-0 state.
+        CommitFailedError (exit 19): git add or git commit failed.
+        SourcePdfChangedCommitError (exit 21): PDF md5 mismatch.
+        LegacyStateCommitError (exit 22): annotations.json predates the guard.
+    """
+    state_dir = Path(state_dir)
+    project_root = state_dir.parent
+    # Spec §14 risk 9: refuse to commit against potentially stale state.
+    try:
+        assert_source_pdf_unchanged(StateDir(project_root))
+    except SourcePdfChangedError as exc:
+        raise SourcePdfChangedCommitError(str(exc)) from exc
+    except LegacyStateError as exc:
+        raise LegacyStateCommitError(str(exc)) from exc
+    state_path = state_dir / "state.json"
+    with state_path.open("r", encoding="utf-8") as f:
+        state = json.load(f)
+
+    current_phase = state.get("phase")
+    if phase_arg != current_phase:
+        raise IllegalPhaseError(
+            f"--phase {phase_arg!r} does not match current state.phase "
+            f"{current_phase!r}"
+        )
+
+    assert_clean_git(project_root=project_root, current_phase=current_phase)
+
+    message = render_commit_message(
+        phase=current_phase,
+        granularity=granularity,
+        message_suffix=message_suffix,
+        state=state,
+    )
+
+    # Stage .tex files touched by annotation activity + the four state files.
+    to_stage: list[str] = []
+    for tex_path in _files_touched_by_state(state, project_root):
+        try:
+            to_stage.append(str(tex_path.resolve().relative_to(project_root)))
+        except ValueError:
+            continue
+    for state_file in ("state.json", "mapping.json", "annotations.json"):
+        p = state_dir / state_file
+        if p.exists():
+            to_stage.append(str(p.resolve().relative_to(project_root)))
+    # Also stage state-events.jsonl if present (audit trail).
+    events_path = state_dir / "state-events.jsonl"
+    if events_path.exists():
+        to_stage.append(str(events_path.resolve().relative_to(project_root)))
+
+    if to_stage:
+        add_result = subprocess.run(
+            ["git", "add", "--", *to_stage],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if add_result.returncode != 0:
+            raise CommitFailedError(
+                f"git add failed: {add_result.stderr.strip()}"
+            )
+
+    commit_result = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if commit_result.returncode != 0:
+        raise CommitFailedError(
+            f"git commit failed: {commit_result.stderr.strip() or commit_result.stdout.strip()}"
+        )
+
+    sha_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    sha = sha_result.stdout.strip()
+
+    # Advance phase.
+    state["phase"] = next_phase(current_phase)
+    atomic_write_json(state_path, state)
+
+    return sha
