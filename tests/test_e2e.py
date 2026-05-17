@@ -73,6 +73,53 @@ def project_copy(tmp_path: Path) -> Path:
     return dest
 
 
+def _advance_phase(sd: state_mod.StateDir, target_phase: str) -> None:
+    """Bump ``state.json.phase`` to ``target_phase`` by direct write.
+
+    Phase 0 → Phase 1 is currently a gap in the engine wiring: ``apply``
+    does not advance phase, and the ``commit-phase`` CLI rejects
+    ``--phase 0``. The SKILL.md instructs operators NOT to call
+    ``commit-phase`` at the end of Phase 0 (it produces state, not a
+    commit). So the test moves the phase forward via a direct state-file
+    write -- mirroring whatever bridge the future skill/engine wiring
+    will implement.
+    """
+    state_doc = state_mod.read_json(sd.state_path)
+    state_doc["phase"] = target_phase
+    state_mod.atomic_write_json(sd.state_path, state_doc)
+
+
+def _allow_state_in_git(project_copy: Path) -> None:
+    """Strip ``.review-state/`` from the project's .gitignore.
+
+    ``extract`` auto-adds ``.review-state/`` to ``.gitignore`` (spec
+    expects the state dir to be locally ignored by default). But
+    ``commit-phase`` then needs to stage ``.review-state/state.json``
+    etc., and ``git add`` refuses to add ignored paths without ``-f``.
+    The engine doesn't pass ``-f`` (intentionally -- the user is
+    expected to opt in to versioning state). For the e2e tests, we
+    remove the ignore rule so commit-phase can succeed end-to-end.
+    """
+    gitignore = project_copy / ".gitignore"
+    if not gitignore.exists():
+        return
+    lines = [
+        line for line in gitignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() not in {".review-state/", ".review-state"}
+    ]
+    gitignore.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    # Stage and amend the baseline commit so .gitignore reflects this change
+    # without producing a separate dirty-state commit.
+    subprocess.run(["git", "add", ".gitignore"], cwd=project_copy, check=True)
+    # Use --amend so the baseline + .gitignore patch are a single commit;
+    # subsequent commit-phase calls then see a clean working tree.
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--amend", "--no-edit"],
+        cwd=project_copy, check=True,
+    )
+
+
 def test_phase_0_extract(project_copy: Path):
     """`review-pdf extract` produces the four artifacts and seeds state.json."""
     rc = cli.main(
@@ -120,3 +167,158 @@ def test_phase_0_extract(project_copy: Path):
     ann_by_id = {a["id"]: a for a in ann["annotations"]}
     assert ann_by_id["ann-003"]["trigger_match"] is True
     assert ann_by_id["ann-001"]["trigger_match"] is False
+
+
+def _proposal_for(ann_id: str) -> str:
+    """Return a deterministic mechanical proposal for a given annotation.
+
+    Used by the test to synthesize ``--new-text-file`` payloads without
+    invoking Claude. The proposals are designed to be valid LaTeX so the
+    build succeeds; they are not necessarily good editorial choices.
+    """
+    return {
+        "ann-001": (
+            "COTA enrollment grew significantly during the 2024--2025 cycle, "
+            "concentrated in studio art, theater, and dance.\n"
+        ),
+        "ann-002": (
+            "Completion rates rose noticeably across studio majors during "
+            "the prior cycle, with the strongest gains among transfer students.\n"
+        ),
+        "ann-005": (
+            "the priorities for the coming year include sustaining 12% "
+            "year-over-year growth, formalizing alumni engagement, and "
+            "expanding faculty hiring.\n"
+        ),
+    }[ann_id]
+
+
+def _phase_0_setup(project_copy: Path) -> state_mod.StateDir:
+    """Helper: run extract on the fixture project; return the state dir."""
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "extract",
+            "--pdf", str(ANNOTATED_PDF),
+        ]
+    )
+    assert rc == 0
+    return state_mod.StateDir(project_copy)
+
+
+def _override_ann_004_mapping(project_copy: Path, sd: state_mod.StateDir) -> None:
+    """Manually resolve ann-004's needs_review mapping to make Phase 1 runnable.
+
+    Maps ann-004 to a real line range inside table.tex so the apply call
+    is a no-op semantically (the test never asserts the table edit ended
+    up sensible -- only that the engine accepts the override).
+    """
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "override-mapping",
+            "--annotation-id", "ann-004",
+            "--file", "templates/table.tex",
+            "--lines", "4:4",
+        ]
+    )
+    assert rc == 0
+    mapping = state_mod.read_json(sd.mapping_path)
+    assert mapping["mappings"]["ann-004"]["needs_review"] is False
+    # State should now treat ann-004 as pending (chunk C's override-mapping
+    # contract per spec §10.6 transitions needs_review → pending).
+    st = state_mod.read_json(sd.state_path)
+    assert st["annotations"]["ann-004"]["status"] in {"pending", "needs_review"}
+
+
+def test_phase_1_batch_apply(project_copy: Path, tmp_path: Path):
+    """Simulate the skill's Phase 1 walk: apply + build for each pending ann.
+
+    SURFACE-flagged ann-003 is set to surfaced_pending instead of applied.
+    Phase ends with `commit-phase --phase 1`; state advances to 2a-ratify.
+    """
+    sd = _phase_0_setup(project_copy)
+    _override_ann_004_mapping(project_copy, sd)
+
+    # Allow .review-state/ to be committed; bridge phase 0 -> 1.
+    _allow_state_in_git(project_copy)
+    _advance_phase(sd, "1-batch")
+
+    # Mark ann-003 as surfaced_pending (trigger_match is true; the skill
+    # skips it during Phase 1).
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "set-status",
+            "--annotation-id", "ann-003",
+            "--status", "surfaced_pending",
+        ]
+    )
+    assert rc == 0
+
+    # Apply mechanical edits for ann-001, ann-002, ann-005, ann-004.
+    # We walk in reverse line order to mimic spec §9.2's discipline,
+    # but for the test the order is incidental as long as overlap is
+    # absent.
+    for ann_id in ("ann-005", "ann-002", "ann-001", "ann-004"):
+        proposal_path = tmp_path / f"proposal-{ann_id}.tex"
+        if ann_id == "ann-004":
+            # Table cell -- proposal is a benign change to one row.
+            proposal_path.write_text(
+                "Studio Art & 142 & 170 \\\\\n", encoding="utf-8"
+            )
+        else:
+            proposal_path.write_text(_proposal_for(ann_id), encoding="utf-8")
+        rc = cli.main(
+            [
+                "--project-dir", str(project_copy),
+                "apply",
+                "--annotation-id", ann_id,
+                "--new-text-file", str(proposal_path),
+            ]
+        )
+        assert rc == 0, f"apply failed for {ann_id} (rc={rc})"
+        rc = cli.main(
+            [
+                "--project-dir", str(project_copy),
+                "build",
+            ]
+        )
+        assert rc == 0, f"build failed after applying {ann_id} (rc={rc})"
+
+    # Verify state.json shape after the walk.
+    st = state_mod.read_json(sd.state_path)
+    for ann_id in ("ann-001", "ann-002", "ann-004", "ann-005"):
+        entry = st["annotations"][ann_id]
+        assert entry["status"] == "applied", (
+            f"expected {ann_id} applied, got {entry['status']}"
+        )
+        assert entry["applied_text"] is not None
+        assert entry["before_text"] is not None
+    assert st["annotations"]["ann-003"]["status"] == "surfaced_pending"
+    assert len(st["builds"]) >= 4  # one per applied edit
+
+    # commit-phase --phase 1
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "commit-phase",
+            "--phase", "1",
+        ]
+    )
+    assert rc == 0
+
+    # State advances to 2a-ratify (default order).
+    st = state_mod.read_json(sd.state_path)
+    assert st["phase"] == "2a-ratify"
+
+    # git log shows exactly one commit beyond the baseline.
+    log = subprocess.run(
+        ["git", "log", "--oneline"],
+        cwd=project_copy,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip().splitlines()
+    assert len(log) == 2, f"expected 2 commits (baseline + phase 1), got: {log}"
+    assert "phase 1" in log[0].lower() or "phase 1" in log[0]
