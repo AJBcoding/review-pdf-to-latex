@@ -747,3 +747,49 @@ def _install_wait_event_signal_handlers() -> tuple[Any, Any]:
     prev_term = signal.signal(signal.SIGTERM, _sigterm)
     prev_int = signal.signal(signal.SIGINT, _sigint)
     return prev_term, prev_int
+
+
+def handle_wait_event(
+    *,
+    project_dir: Path,
+    since: str | None,
+    timeout: int,
+) -> int:
+    """Implement ``review-pdf wait-event``. Returns exit code.
+
+    Spec §10.5 lifecycle handling:
+    - Idle timeout: wait_for_events returns []; exit 20.
+    - Browser closed mid-wait: invisible (we tail a file, not a socket).
+    - Context compaction (SIGTERM): exit 0, no stdout. Post-compaction
+      skill re-call with --since picks up any concurrent event.
+    - User Ctrl-C (SIGINT): exit 130 (standard, 128 + SIGINT=2).
+    """
+    project_dir = Path(project_dir).resolve()
+    state_path = project_dir / STATE_DIR_NAME / "state.json"
+    if not state_path.exists():
+        sys.stderr.write("state missing; run 'review-pdf extract' first\n")
+        return 6
+
+    events_path = project_dir / STATE_DIR_NAME / EVENTS_FILENAME
+
+    prev_term, prev_int = _install_wait_event_signal_handlers()
+    try:
+        try:
+            events = wait_for_events(
+                events_path, since_ts=since, timeout_sec=timeout,
+            )
+        except _SigTermExit:
+            return 0
+        except _SigIntExit:
+            return 130
+        if not events:
+            return 20
+        for event in events:
+            sys.stdout.write(
+                json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n"
+            )
+        sys.stdout.flush()
+        return 0
+    finally:
+        signal.signal(signal.SIGTERM, prev_term)
+        signal.signal(signal.SIGINT, prev_int)

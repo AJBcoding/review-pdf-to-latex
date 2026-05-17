@@ -222,6 +222,17 @@ def _handle_serve(args: argparse.Namespace) -> int:
     )
 
 
+def _handle_wait_event(args: argparse.Namespace) -> int:
+    """Block until state-events.jsonl grows (spec §8 wait-event row)."""
+    from review_pdf_to_latex.server import handle_wait_event
+
+    return handle_wait_event(
+        project_dir=Path(args.project_dir),
+        since=args.since,
+        timeout=args.timeout,
+    )
+
+
 # String fallback for subcommands without a wired handler: the value is the
 # name passed to `_stub`, which raises NotImplementedError. Real handlers
 # registered in `_HANDLERS_TABLE` shadow these entries.
@@ -247,6 +258,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "extract": _handle_extract,
     "build": _handle_build,
     "serve": _handle_serve,
+    "wait-event": _handle_wait_event,
 }
 
 

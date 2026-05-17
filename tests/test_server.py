@@ -838,3 +838,130 @@ def test_serve_subcommand_records_order_in_state(minimal_project: Path) -> None:
     finally:
         proc.send_signal(_signal.SIGINT)
         proc.wait(timeout=5)
+
+
+# ---- Task 8.6 / 8.7: wait-event CLI subcommand + signal lifecycle ----------
+
+
+def test_wait_event_cli_prints_event_then_exits_0(minimal_project: Path) -> None:
+    events_path = minimal_project / ".review-state" / "state-events.jsonl"
+    proc = _run_cli_in_background(
+        [
+            "--project-dir",
+            str(minimal_project),
+            "wait-event",
+            "--since",
+            "1970-01-01T00:00:00Z",
+            "--timeout",
+            "5",
+        ]
+    )
+    try:
+        def writer():
+            time.sleep(0.3)
+            with events_path.open("a") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": "2026-05-16T20:47:11Z",
+                            "annotation_id": "ann-001",
+                            "action": "approve",
+                        }
+                    )
+                    + "\n"
+                )
+
+        t = threading.Thread(target=writer, daemon=True)
+        t.start()
+
+        rc = proc.wait(timeout=8)
+        stdout = proc.stdout.read()
+        stderr = proc.stderr.read()
+        t.join(timeout=2)
+
+        assert rc == 0, f"unexpected exit code; stderr={stderr!r}"
+        lines = [line for line in stdout.splitlines() if line.strip()]
+        assert len(lines) == 1
+        rec = json.loads(lines[0])
+        assert rec["annotation_id"] == "ann-001"
+        assert rec["action"] == "approve"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_wait_event_cli_timeout_exits_20(minimal_project: Path) -> None:
+    proc = _run_cli_in_background(
+        [
+            "--project-dir",
+            str(minimal_project),
+            "wait-event",
+            "--since",
+            "1970-01-01T00:00:00Z",
+            "--timeout",
+            "1",
+        ]
+    )
+    rc = proc.wait(timeout=5)
+    stdout = proc.stdout.read()
+    assert rc == 20
+    assert stdout == "" or stdout.strip() == ""
+
+
+def test_wait_event_cli_state_missing_exits_6(tmp_path: Path) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    proc = _run_cli_in_background(
+        [
+            "--project-dir",
+            str(bare),
+            "wait-event",
+            "--timeout",
+            "1",
+        ]
+    )
+    rc = proc.wait(timeout=5)
+    stderr = proc.stderr.read()
+    assert rc == 6
+    assert "state missing" in stderr
+
+
+def test_wait_event_cli_sigterm_exits_0_no_output(minimal_project: Path) -> None:
+    proc = _run_cli_in_background(
+        [
+            "--project-dir",
+            str(minimal_project),
+            "wait-event",
+            "--since",
+            "1970-01-01T00:00:00Z",
+            "--timeout",
+            "30",
+        ]
+    )
+    time.sleep(0.3)
+    proc.send_signal(_signal.SIGTERM)
+    rc = proc.wait(timeout=5)
+    stdout = proc.stdout.read()
+    assert rc == 0, f"SIGTERM should produce rc=0, got {rc}"
+    assert stdout.strip() == "", f"SIGTERM must produce no stdout, got {stdout!r}"
+
+
+def test_wait_event_cli_sigint_exits_130_no_output(minimal_project: Path) -> None:
+    proc = _run_cli_in_background(
+        [
+            "--project-dir",
+            str(minimal_project),
+            "wait-event",
+            "--since",
+            "1970-01-01T00:00:00Z",
+            "--timeout",
+            "30",
+        ]
+    )
+    time.sleep(0.3)
+    proc.send_signal(_signal.SIGINT)
+    rc = proc.wait(timeout=5)
+    stdout = proc.stdout.read()
+    assert rc == 130, f"SIGINT should produce rc=130, got {rc}"
+    assert stdout.strip() == "", f"SIGINT must produce no stdout, got {stdout!r}"
