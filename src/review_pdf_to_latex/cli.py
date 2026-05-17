@@ -311,6 +311,29 @@ def _handle_apply(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_revert(args: argparse.Namespace) -> int:
+    """``revert`` subcommand handler (spec §8 exit codes 0, 7, 9, 10, 18, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, revert_edit
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    failure_log = Path(args.failure_log) if args.failure_log else None
+    try:
+        revert_edit(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+            status=args.status,
+            failure_log=failure_log,
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except ValueError as exc:
+        # revert_edit raises ValueError for bad --status / failure-log combos.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ILLEGAL_STATUS_TRANSITION
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -368,6 +391,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "status": _handle_status,
     "migrate-state": _handle_migrate_state,
     "apply": _handle_apply,
+    "revert": _handle_revert,
 }
 
 

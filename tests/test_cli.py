@@ -51,6 +51,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "wait-event",
         "migrate-state",
         "apply",
+        "revert",
     }
 )
 
@@ -314,6 +315,49 @@ def test_cli_apply_subcommand_unknown_annotation_exits_7(tmp_path: Path) -> None
         ]
     )
     assert r.returncode == 7, r.stderr
+
+
+def test_cli_revert_subcommand(tmp_path: Path) -> None:
+    """apply then revert restores the .tex contents and marks status rejected."""
+    project, state_dir, tex = _bootstrap_minimal_project(tmp_path)
+    nt = tmp_path / "d.txt"
+    nt.write_text("X\n", encoding="utf-8")
+    apply_run = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(nt),
+        ]
+    )
+    assert apply_run.returncode == 0, apply_run.stderr
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "revert",
+            "--annotation-id", "ann-001",
+            "--status", "rejected",
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    assert tex.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\ndelta\nepsilon\n"
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["annotations"]["ann-001"]["status"] == "rejected"
+
+
+def test_cli_revert_subcommand_no_prior_apply_exits_10(tmp_path: Path) -> None:
+    """revert without a prior apply returns exit code 10."""
+    project, _, _ = _bootstrap_minimal_project(tmp_path)
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "revert",
+            "--annotation-id", "ann-001",
+            "--status", "rejected",
+        ]
+    )
+    assert r.returncode == 10, r.stderr
 
 
 @pdflatex
