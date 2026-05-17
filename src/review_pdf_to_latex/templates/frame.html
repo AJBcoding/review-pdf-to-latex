@@ -212,6 +212,10 @@
     }
     .mapping-row form.manual-override input[type="number"] { width: 70px; }
   </style>
+  {% if diff2html_present %}
+  <link rel="stylesheet" href="/static/diff2html.min.css">
+  <script src="/static/diff2html.min.js"></script>
+  {% endif %}
 </head>
 <body>
   <header class="topbar">

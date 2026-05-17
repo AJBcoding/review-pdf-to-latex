@@ -321,3 +321,19 @@ def test_mapping_renders_excerpt_and_comment():
     out = tpl.render(**mapping_context())
     assert "The college experienced a substantial increase" in out
     assert "Tighten this" in out
+
+
+def test_frame_emits_diff2html_link_when_present():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context(diff2html_present=True))
+    assert 'href="/static/diff2html.min.css"' in out
+    assert 'src="/static/diff2html.min.js"' in out
+
+
+def test_frame_omits_diff2html_link_when_absent():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context(diff2html_present=False))
+    assert "diff2html.min.css" not in out
+    assert "diff2html.min.js" not in out
