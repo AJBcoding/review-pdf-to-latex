@@ -669,3 +669,71 @@ def record_proposal(
         raise AnnotationNotFoundError(annotation_id)
     state["annotations"][annotation_id]["proposed_text"] = proposed_text
     atomic_write_json(state_path, state)
+
+
+def override_mapping(
+    state_dir: Path,
+    annotation_id: str,
+    file: str,
+    lines: tuple[int, int],
+) -> None:
+    """Manually pin a mapping. Spec §8 override-mapping row + §10.6.
+
+    Validates that `file` exists under the project root and that `lines` is
+    in bounds for that file. Replaces the mapping with method='manual',
+    confidence=1.0, needs_review=False, and clears any candidates[].
+
+    Args:
+        state_dir: .review-state directory.
+        annotation_id: Target annotation.
+        file: Project-relative path of the LaTeX file.
+        lines: (start, end) inclusive 1-indexed.
+
+    Raises:
+        AnnotationNotFoundError: annotation_id not present in mapping.json.
+        FileMutationError: file does not exist under project_root.
+        InvalidLineRangeError: start < 1, end < start, or end > file line count.
+        SourcePdfChangedApplyError / LegacyStateApplyError: source PDF guard.
+    """
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)  # spec §14 risk 9
+    project_root = _project_root_from_state_dir(state_dir)
+    mapping_path = state_dir / "mapping.json"
+    if not mapping_path.exists():
+        raise FileMutationError(f"mapping.json not found at {mapping_path}")
+    mapping = _read_json(mapping_path)
+    if annotation_id not in mapping.get("mappings", {}):
+        raise AnnotationNotFoundError(annotation_id)
+
+    start, end = int(lines[0]), int(lines[1])
+    if start < 1 or end < start:
+        raise InvalidLineRangeError(
+            f"invalid line range [{start},{end}]: start must be >= 1 and end >= start"
+        )
+
+    target = (project_root / file).resolve()
+    try:
+        target.relative_to(project_root)
+    except ValueError as exc:
+        raise FileMutationError(
+            f"file {file!r} resolves outside the project root"
+        ) from exc
+    if not target.exists():
+        raise FileMutationError(f"file not found: {target}")
+
+    with target.open("r", encoding="utf-8") as f:
+        line_count = sum(1 for _ in f)
+    if end > line_count:
+        raise InvalidLineRangeError(
+            f"line range [{start},{end}] exceeds file length {line_count}"
+        )
+
+    entry = mapping["mappings"][annotation_id]
+    entry["latex_file"] = file
+    entry["line_range"] = [start, end]
+    entry["confidence"] = 1.0
+    entry["method"] = "manual"
+    entry["needs_review"] = False
+    entry["candidates"] = None
+
+    atomic_write_json(mapping_path, mapping)

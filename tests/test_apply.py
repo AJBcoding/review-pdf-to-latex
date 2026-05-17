@@ -526,3 +526,55 @@ def test_record_proposal_writes_state_but_not_tex(tmp_path: Path) -> None:
     assert entry["proposed_text"] == "stashed proposal\n"
     assert entry["applied_text"] is None
     assert entry["status"] == "pending"
+
+
+from review_pdf_to_latex.apply import (
+    FileMutationError,
+    InvalidLineRangeError,
+    override_mapping,
+)
+
+
+def test_override_mapping_writes_manual_method(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    # Add a second file to the project to override into.
+    other = proj.project / "templates" / "other.tex"
+    other.write_text("o1\no2\no3\no4\n", encoding="utf-8")
+
+    override_mapping(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        file="templates/other.tex",
+        lines=(2, 3),
+    )
+
+    mapping = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
+    entry = mapping["mappings"]["ann-001"]
+    assert entry["latex_file"] == "templates/other.tex"
+    assert entry["line_range"] == [2, 3]
+    assert entry["confidence"] == 1.0
+    assert entry["method"] == "manual"
+    assert entry["needs_review"] is False
+    assert entry.get("candidates") is None
+
+
+def test_override_mapping_out_of_bounds_raises(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)  # section.tex has 5 lines
+    with pytest.raises(InvalidLineRangeError):
+        override_mapping(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            file="templates/section.tex",
+            lines=(3, 99),
+        )
+
+
+def test_override_mapping_nonexistent_file_raises(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    with pytest.raises(FileMutationError):
+        override_mapping(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            file="templates/does-not-exist.tex",
+            lines=(1, 1),
+        )
