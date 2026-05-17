@@ -80,3 +80,10 @@ def test_skill_phase2a_section_has_wait_event_loop(skill_text: str) -> None:
         assert action in skill_text.lower(), f"missing action: {action}"
     # commit-phase boundary:
     assert "commit-phase --phase 2a" in skill_text
+
+
+def test_skill_phase2b_section_present(skill_text: str) -> None:
+    assert "## Phase 2b — Surface" in skill_text
+    assert "review-pdf append-chat" in skill_text
+    assert "surfaced_resolved" in skill_text
+    assert "commit-phase --phase 2b" in skill_text
