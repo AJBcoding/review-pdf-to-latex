@@ -67,6 +67,68 @@ def test_subcommand_help_exits_zero(
     assert subcommand in out
 
 
+@pytest.mark.parametrize("subcommand", ALL_SUBCOMMANDS)
+def test_global_args_accepted_after_subcommand(subcommand: str) -> None:
+    """`--project-dir` and `--json` parse cleanly when placed after the subcommand.
+
+    Regression for rev-16m: the skill documents post-subcommand placement
+    but argparse used to reject it because the flags were only on the
+    top-level parser.
+    """
+    parser = cli._build_parser()
+    # Build a minimal valid argv per subcommand (just the required args).
+    extra: dict[str, list[str]] = {
+        "extract": ["--pdf", "x.pdf"],
+        "apply": ["--annotation-id", "a", "--new-text-file", "x.txt"],
+        "revert": ["--annotation-id", "a"],
+        "preview": ["--annotation-id", "a", "--new-text-file", "x.txt"],
+        "override-mapping": ["--annotation-id", "a", "--file", "x.tex", "--lines", "1:2"],
+        "set-status": ["--annotation-id", "a", "--status", "accepted"],
+        "append-chat": ["--annotation-id", "a", "--role", "user", "--text-file", "x.txt"],
+        "record-proposal": ["--annotation-id", "a", "--text-file", "x.txt"],
+        "commit-phase": ["--phase", "1"],
+        "migrate-state": ["--from", "1", "--to", "2"],
+    }
+    argv = [subcommand] + extra.get(subcommand, []) + [
+        "--project-dir", "/some/proj",
+        "--json",
+    ]
+    args = parser.parse_args(argv)
+    assert str(args.project_dir) == "/some/proj"
+    assert args.json_output is True
+
+
+def test_global_args_after_subcommand_override_before() -> None:
+    """When supplied in both positions, the subcommand-level value wins."""
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "--project-dir", "/before",
+            "status",
+            "--project-dir", "/after",
+        ]
+    )
+    assert str(args.project_dir) == "/after"
+
+
+def test_global_args_before_subcommand_still_work() -> None:
+    """Pre-subcommand placement remains valid (regression guard)."""
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        ["--project-dir", "/proj", "--json", "status"]
+    )
+    assert str(args.project_dir) == "/proj"
+    assert args.json_output is True
+
+
+def test_global_args_default_when_neither_position_used() -> None:
+    """With no `--project-dir`, the default is the current working directory."""
+    parser = cli._build_parser()
+    args = parser.parse_args(["status"])
+    assert args.project_dir == Path.cwd()
+    assert args.json_output is False
+
+
 def test_print_json_writes_single_line(capsys: pytest.CaptureFixture):
     """print_json writes a single newline-terminated JSON object to stdout."""
     cli.print_json({"ok": True, "count": 3})

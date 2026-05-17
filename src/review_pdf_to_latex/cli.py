@@ -20,18 +20,38 @@ from typing import Sequence
 PROG = "review-pdf"
 
 
-def _add_global_args(parser: argparse.ArgumentParser) -> None:
-    """Attach ``--project-dir`` and ``--json`` to the top-level parser."""
+def _add_global_args(
+    parser: argparse.ArgumentParser, *, on_subparser: bool = False
+) -> None:
+    """Attach ``--project-dir`` and ``--json`` to ``parser``.
+
+    Called once on the top-level parser and once per subparser. On
+    subparsers the defaults are :data:`argparse.SUPPRESS` so the
+    subparser only writes the namespace when the user actually passes
+    the flag — otherwise the top-level value (or its default) wins.
+    This lets users place these flags either before or after the
+    subcommand:
+
+        review-pdf --project-dir P extract --pdf F   # before
+        review-pdf extract --pdf F --project-dir P   # after
+
+    When both positions supply the flag, the subcommand value wins
+    (argparse parses subparsers after the parent, so it overwrites).
+    """
     parser.add_argument(
         "--project-dir",
         type=Path,
-        default=Path.cwd(),
-        help="Project root containing .review-state/ (default: $PWD).",
+        default=argparse.SUPPRESS if on_subparser else Path.cwd(),
+        help=(
+            "Project root containing .review-state/ "
+            "(default: $PWD; accepted before or after the subcommand)."
+        ),
     )
     parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
+        default=argparse.SUPPRESS if on_subparser else False,
         help="Emit machine-consumable JSON on stdout where supported.",
     )
 
@@ -63,6 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_extract.add_argument("--force", action="store_true")
+    _add_global_args(p_extract, on_subparser=True)
 
     # 2. serve
     p_serve = sub.add_parser("serve", help="Start the local HTTP viewer.")
@@ -73,12 +94,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default="mechanical-first",
     )
     p_serve.add_argument("--mapping-mode", action="store_true")
+    _add_global_args(p_serve, on_subparser=True)
 
     # 3. apply
     p_apply = sub.add_parser("apply", help="Apply an edit to a .tex file.")
     p_apply.add_argument("--annotation-id", required=True)
     p_apply.add_argument("--new-text-file", type=Path, required=True)
     p_apply.add_argument("--dry-run", action="store_true")
+    _add_global_args(p_apply, on_subparser=True)
 
     # 4. revert
     p_revert = sub.add_parser("revert", help="Restore before_text for an annotation.")
@@ -89,11 +112,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="rejected",
     )
     p_revert.add_argument("--failure-log", type=Path, default=None)
+    _add_global_args(p_revert, on_subparser=True)
 
     # 5. preview
     p_preview = sub.add_parser("preview", help="Speculative compile with snapshot/restore.")
     p_preview.add_argument("--annotation-id", required=True)
     p_preview.add_argument("--new-text-file", type=Path, required=True)
+    _add_global_args(p_preview, on_subparser=True)
 
     # 6. build
     p_build = sub.add_parser("build", help="Run pdflatex/xelatex; append build record.")
@@ -109,9 +134,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print 'Compile took X.Xs' to stderr (spec §11.3).",
     )
+    _add_global_args(p_build, on_subparser=True)
 
     # 7. status
-    sub.add_parser("status", help="Report counts and current state.")
+    p_status = sub.add_parser("status", help="Report counts and current state.")
+    _add_global_args(p_status, on_subparser=True)
 
     # 8. override-mapping
     p_om = sub.add_parser(
@@ -120,6 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_om.add_argument("--annotation-id", required=True)
     p_om.add_argument("--file", required=True)
     p_om.add_argument("--lines", required=True, help="START:END")
+    _add_global_args(p_om, on_subparser=True)
 
     # 9. set-status
     p_ss = sub.add_parser(
@@ -142,6 +170,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ],
     )
     p_ss.add_argument("--reason", default=None)
+    _add_global_args(p_ss, on_subparser=True)
 
     # 10. append-chat
     p_ac = sub.add_parser(
@@ -150,6 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ac.add_argument("--annotation-id", required=True)
     p_ac.add_argument("--role", choices=["user", "claude"], required=True)
     p_ac.add_argument("--text-file", type=Path, required=True)
+    _add_global_args(p_ac, on_subparser=True)
 
     # 11. record-proposal
     p_rp = sub.add_parser(
@@ -158,6 +188,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_rp.add_argument("--annotation-id", required=True)
     p_rp.add_argument("--text-file", type=Path, required=True)
+    _add_global_args(p_rp, on_subparser=True)
 
     # 12. commit-phase
     p_cp = sub.add_parser(
@@ -170,6 +201,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="phase",
         help="phase | session | batch:N (default: phase)",
     )
+    _add_global_args(p_cp, on_subparser=True)
 
     # 13. wait-event
     p_we = sub.add_parser(
@@ -177,6 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_we.add_argument("--since", default=None)
     p_we.add_argument("--timeout", type=int, default=60)
+    _add_global_args(p_we, on_subparser=True)
 
     # 14. migrate-state
     p_ms = sub.add_parser(
@@ -184,6 +217,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_ms.add_argument("--from", dest="from_version", type=int, required=True)
     p_ms.add_argument("--to", dest="to_version", type=int, required=True)
+    _add_global_args(p_ms, on_subparser=True)
 
     return parser
 
