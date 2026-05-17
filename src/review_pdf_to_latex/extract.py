@@ -478,3 +478,120 @@ def ensure_gitignore_entry(
     else:
         new_text = existing + entry + "\n"
     gi.write_text(new_text, encoding="utf-8")
+
+
+# ---- Task 4.7: extract CLI orchestrator -------------------------------------
+
+import hashlib
+import sys
+from importlib import metadata as _metadata
+
+
+def _compute_md5(path: Path) -> str:
+    """Compute MD5 of a file. Used as ``source_pdf_md5`` per spec §7.1."""
+    h = hashlib.md5()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _pdfannots_version() -> str:
+    """Return e.g. 'pdfannots-0.4.1' for the ``extractor`` field in annotations.json."""
+    try:
+        return f"pdfannots-{_metadata.version('pdfannots')}"
+    except _metadata.PackageNotFoundError:
+        return "pdfannots-unknown"
+
+
+def run_extract(
+    pdf_path: Path,
+    project_dir: Path,
+    surface_trigger: str = "claude surface this",
+    force: bool = False,
+) -> int:
+    """Execute the full Phase 0 pipeline. Returns a CLI exit code.
+
+    Exit codes (per spec §8 extract row):
+        0  ok
+        2  pdf missing
+        3  existing state without --force
+        4  pdfannots failed to parse the PDF (or page rendering failed)
+    """
+    from review_pdf_to_latex.state import atomic_write_json  # local to avoid cycle
+
+    pdf_path = Path(pdf_path)
+    project_dir = Path(project_dir)
+
+    if not pdf_path.exists():
+        print(f"error: PDF not found: {pdf_path}", file=sys.stderr)
+        return 2
+
+    state_dir = project_dir / ".review-state"
+    annotations_path = state_dir / "annotations.json"
+    mapping_path = state_dir / "mapping.json"
+    state_path = state_dir / "state.json"
+    pages_dir = state_dir / "pages"
+
+    if not force and any(
+        p.exists() for p in (annotations_path, mapping_path, state_path)
+    ):
+        print(
+            "error: .review-state/ already contains annotations.json, mapping.json, "
+            "or state.json; pass --force to overwrite",
+            file=sys.stderr,
+        )
+        return 3
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    pages_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Read annotations.
+    try:
+        annotations = read_annotations(pdf_path, trigger_phrase=surface_trigger)
+    except RuntimeError as exc:
+        print(f"error: pdfannots failed: {exc}", file=sys.stderr)
+        return 4
+
+    # 2. Render pages.
+    try:
+        render_pages(pdf_path, pages_dir)
+    except RuntimeError as exc:
+        print(f"error: page rendering failed: {exc}", file=sys.stderr)
+        return 4
+
+    # 3. Fuzzy-map every annotation.
+    mappings: dict[str, Mapping] = {}
+    for ann in annotations:
+        mappings[ann.id] = fuzzy_map(ann, project_dir)
+
+    # 4. Bootstrap state.
+    state = bootstrap_state(annotations, mappings)
+
+    # 5. Write annotations.json (immutable; spec §7.1).
+    annotations_doc = {
+        "schema_version": 1,
+        "source_pdf": str(pdf_path.resolve()),
+        "source_pdf_md5": _compute_md5(pdf_path),
+        "extracted_at": datetime.now(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "extractor": _pdfannots_version(),
+        "annotations": [a.to_dict() for a in annotations],
+    }
+    atomic_write_json(annotations_path, annotations_doc)
+
+    # 6. Write mapping.json (spec §7.2).
+    mapping_doc = {
+        "schema_version": 1,
+        "mappings": {ann_id: m.to_dict() for ann_id, m in mappings.items()},
+    }
+    atomic_write_json(mapping_path, mapping_doc)
+
+    # 7. Write initial state.json (spec §7.3).
+    atomic_write_json(state_path, state.to_dict())
+
+    # 8. Patch .gitignore.
+    ensure_gitignore_entry(project_dir, entry=".review-state/")
+
+    return 0

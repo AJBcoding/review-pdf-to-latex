@@ -26,6 +26,21 @@ ALL_SUBCOMMANDS = [
 ]
 
 
+# Subcommands whose handlers are wired (no longer raise NotImplementedError).
+# Stubs remaining in cli.py are the Wave-3 set (apply, revert, preview,
+# commit-phase, set-status, append-chat, record-proposal, override-mapping).
+_WIRED_SUBCOMMANDS = frozenset(
+    {
+        "extract",
+        "serve",
+        "build",
+        "status",
+        "wait-event",
+        "migrate-state",
+    }
+)
+
+
 def test_top_level_help_exits_zero(capsys: pytest.CaptureFixture):
     """`review-pdf --help` exits with code 0 and prints the program name."""
     with pytest.raises(SystemExit) as exc:
@@ -54,11 +69,13 @@ def test_subcommand_help_exits_zero(
     assert subcommand in out
 
 
-@pytest.mark.parametrize("subcommand", ALL_SUBCOMMANDS)
+@pytest.mark.parametrize(
+    "subcommand", [s for s in ALL_SUBCOMMANDS if s not in _WIRED_SUBCOMMANDS]
+)
 def test_subcommand_stub_raises_not_implemented(
     subcommand: str, tmp_project: Path
 ):
-    """Each of the 14 subcommand stubs raises NotImplementedError until implemented.
+    """Wave-3 subcommand stubs still raise NotImplementedError until implemented.
 
     We supply the bare-minimum flags each stub requires to satisfy argparse;
     the stub raises BEFORE doing any real work.
@@ -125,10 +142,23 @@ def test_print_json_serializes_sort_keys(capsys: pytest.CaptureFixture):
     assert out == '{"a": 2, "z": 1}'
 
 
-def test_status_subcommand_with_json_flag_still_raises(tmp_project: Path):
-    """`--json status` propagates through to the stub (not yet implemented)."""
-    with pytest.raises(NotImplementedError, match="subcommand status"):
-        cli.main(["--project-dir", str(tmp_project), "--json", "status"])
+def test_apply_subcommand_with_json_flag_still_raises(tmp_project: Path):
+    """`--json apply` propagates through to a Wave-3 stub (not yet implemented)."""
+    draft = tmp_project / "draft.tex"
+    draft.write_text("hello", encoding="utf-8")
+    with pytest.raises(NotImplementedError, match="subcommand apply"):
+        cli.main(
+            [
+                "--project-dir",
+                str(tmp_project),
+                "--json",
+                "apply",
+                "--annotation-id",
+                "ann-001",
+                "--new-text-file",
+                str(draft),
+            ]
+        )
 
 
 def test_exit_code_constants_match_spec():

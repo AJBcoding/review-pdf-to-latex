@@ -180,6 +180,21 @@ def _stub(name: str) -> None:
     raise NotImplementedError(f"subcommand {name} not yet implemented")
 
 
+def _handle_extract(args: argparse.Namespace) -> int:
+    """Phase 0: extract annotations, render pages, build initial state."""
+    from review_pdf_to_latex.extract import run_extract
+
+    return run_extract(
+        pdf_path=Path(args.pdf),
+        project_dir=Path(args.project_dir),
+        surface_trigger=args.surface_trigger,
+        force=bool(args.force),
+    )
+
+
+# String fallback for subcommands without a wired handler: the value is the
+# name passed to `_stub`, which raises NotImplementedError. Real handlers
+# registered in `_HANDLERS_TABLE` shadow these entries.
 _HANDLERS: dict[str, str] = {
     "extract": "extract",
     "serve": "serve",
@@ -198,6 +213,11 @@ _HANDLERS: dict[str, str] = {
 }
 
 
+_HANDLERS_TABLE: dict[str, "callable"] = {
+    "extract": _handle_extract,
+}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point. Returns an exit code (or raises SystemExit for --help).
 
@@ -212,6 +232,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.subcommand is None:
         parser.print_usage(sys.stderr)
         raise SystemExit(2)
+    handler = _HANDLERS_TABLE.get(args.subcommand)
+    if handler is not None:
+        return handler(args)
     _stub(_HANDLERS[args.subcommand])
     return 0  # unreachable until stubs are replaced
 
