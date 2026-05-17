@@ -103,3 +103,9 @@ def test_skill_resumption_section_present(skill_text: str) -> None:
     assert "state.json" in skill_text and "phase" in skill_text
     # Context compaction explicitly covered:
     assert "compaction" in skill_text.lower() or "compact" in skill_text.lower()
+
+
+def test_skill_installation_note_present(skill_text: str) -> None:
+    assert "## Installation" in skill_text
+    assert "pip install" in skill_text
+    assert "review-pdf status --help" in skill_text
