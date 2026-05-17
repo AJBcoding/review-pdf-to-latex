@@ -337,3 +337,71 @@ def test_apply_batch_reverse_order_keeps_earlier_lines_valid(tmp_path: Path) -> 
     state = json.loads(proj.state_path.read_text(encoding="utf-8"))
     for ann_id in ("ann-A", "ann-B", "ann-C"):
         assert state["annotations"][ann_id]["status"] == "applied"
+
+
+from review_pdf_to_latex.apply import (
+    NoPriorApplyError,
+    revert_edit,
+)
+
+
+def test_revert_edit_restores_before_text_and_sets_status_rejected(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="X\n")
+
+    revert_edit(state_dir=proj.state_dir, annotation_id="ann-001", status="rejected")
+
+    # File restored to original two lines at positions 2-3.
+    text = proj.tex_path.read_text(encoding="utf-8")
+    assert text == "line one\nline two\nline three\nline four\nline five\n"
+
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    entry = state["annotations"]["ann-001"]
+    assert entry["status"] == "rejected"
+    assert entry["applied_text"] is None
+    assert entry["before_text"] == "line two\nline three\n"  # preserved
+
+
+def test_revert_edit_with_failure_log_sets_needs_review_and_log_path(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="Y\n")
+
+    log_path = proj.state_dir / "builds" / "build-007.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("LaTeX Error: Undefined control sequence\n", encoding="utf-8")
+
+    revert_edit(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        status="needs_review",
+        failure_log=log_path,
+    )
+
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    entry = state["annotations"]["ann-001"]
+    assert entry["status"] == "needs_review"
+    assert entry["failure_log_path"] == str(log_path.relative_to(proj.project))
+    assert entry["failure_edit_text"] == "Y\n"
+
+
+def test_revert_edit_rejects_invalid_status(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="X\n")
+
+    with pytest.raises(ValueError):
+        revert_edit(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            status="accepted",  # not a valid revert target
+        )
+
+
+def test_revert_edit_raises_when_no_prior_apply(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    # No apply called; applied_text is None.
+    with pytest.raises(NoPriorApplyError):
+        revert_edit(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            status="rejected",
+        )

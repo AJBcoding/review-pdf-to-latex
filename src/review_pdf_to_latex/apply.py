@@ -396,3 +396,135 @@ def apply_batch(
         result = apply_edit(state_dir=state_dir, annotation_id=ann_id, new_text=new_text)
         results.append(result)
     return results
+
+
+# Allowed revert-target statuses per spec §8 revert row.
+_REVERT_STATUSES: frozenset[str] = frozenset({"rejected", "needs_review"})
+
+
+def revert_edit(
+    state_dir: Path,
+    annotation_id: str,
+    status: str = "rejected",
+    failure_log: Path | None = None,
+) -> None:
+    """Restore before_text to the .tex file and update status.
+
+    Spec §8 revert row + §12.2 failure-log handling.
+
+    Args:
+        state_dir: The .review-state directory of the project.
+        annotation_id: The annotation to revert.
+        status: One of "rejected" or "needs_review" (spec §8 revert row).
+        failure_log: If provided AND status == "needs_review", record
+            failure_log_path (project-relative) and copy proposed_text into
+            failure_edit_text. Spec §12.2.
+
+    Side effects:
+        - Mutates the .tex file (writes before_text back into the recorded location).
+        - Updates state.json atomically.
+        - Updates mapping.json: subsequent mappings in the same file shift by
+          the inverse of the original apply's line_shift.
+
+    Raises:
+        ValueError: status not in _REVERT_STATUSES.
+        ValueError: failure_log provided with status != "needs_review".
+        NoPriorApplyError: applied_text is None (nothing to revert).
+        AnnotationNotFoundError, FileMutationError, MappingUnresolvedError as
+        in apply_edit.
+    """
+    if status not in _REVERT_STATUSES:
+        raise ValueError(
+            f"revert_edit status must be one of {sorted(_REVERT_STATUSES)}; got {status!r}"
+        )
+    if failure_log is not None and status != "needs_review":
+        raise ValueError(
+            "failure_log may only be supplied with status='needs_review'"
+        )
+
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)  # spec §14 risk 9
+    project_root = _project_root_from_state_dir(state_dir)
+    state_path, state, mapping_path, mapping = _load_state_and_mapping(state_dir)
+
+    if annotation_id not in state.get("annotations", {}):
+        raise AnnotationNotFoundError(annotation_id)
+    ann_entry = state["annotations"][annotation_id]
+    if ann_entry.get("applied_text") is None:
+        raise NoPriorApplyError(
+            f"annotation {annotation_id!r} has no applied_text; nothing to revert"
+        )
+    before_text = ann_entry.get("before_text")
+    if before_text is None:
+        raise NoPriorApplyError(
+            f"annotation {annotation_id!r} has no before_text; cannot revert"
+        )
+
+    map_entry = mapping["mappings"][annotation_id]
+    latex_file = map_entry["latex_file"]
+    line_range = map_entry["line_range"]
+    if latex_file is None or line_range is None:
+        raise MappingUnresolvedError(annotation_id)
+    start, end = int(line_range[0]), int(line_range[1])
+
+    tex_path = (project_root / latex_file).resolve()
+    if not tex_path.exists():
+        raise FileMutationError(f"latex file not found: {tex_path}")
+
+    with tex_path.open("r", encoding="utf-8") as f:
+        all_lines = f.readlines()
+    if end > len(all_lines):
+        raise InvalidLineRangeError(
+            f"line range [{start},{end}] exceeds file length {len(all_lines)}"
+        )
+
+    before_lines = _split_text_to_lines(before_text)
+    # current applied range covers (end - start + 1) lines; reverting replaces
+    # those with before_lines.
+    current_count = end - start + 1
+    new_all = all_lines[: start - 1] + before_lines + all_lines[end:]
+
+    try:
+        with tex_path.open("w", encoding="utf-8") as f:
+            f.writelines(new_all)
+    except OSError as exc:
+        raise FileMutationError(f"failed writing {tex_path}: {exc}") from exc
+
+    line_shift = len(before_lines) - current_count
+
+    # Update mapping for this annotation: line_range now covers before_lines.
+    if before_lines:
+        map_entry["line_range"] = [start, start + len(before_lines) - 1]
+    else:
+        map_entry["line_range"] = [start, start]
+
+    _recompute_subsequent_mappings(
+        mapping, latex_file, edited_range_end=end,
+        line_shift=line_shift, skip_annotation_id=annotation_id,
+    )
+
+    # Update state entry. Derive action from target status: a revert that
+    # lands at "rejected" is the Reject button (action="reject"); a revert
+    # that lands at "needs_review" is the Phase-1 failure recovery, which
+    # spec §10.3's table encodes under the "redraft" action (see chunk A's
+    # (applied, redraft) → {needs_review} row and the explanatory comment).
+    action = "reject" if status == "rejected" else "redraft"
+    try:
+        validate_status_transition(
+            ann_entry.get("status", "pending"), status, action,
+        )
+    except ValueError as exc:
+        raise IllegalStatusTransitionError(str(exc)) from exc
+    ann_entry["status"] = status
+    ann_entry["applied_text"] = None
+
+    if failure_log is not None:
+        try:
+            rel_log = Path(failure_log).resolve().relative_to(project_root)
+        except ValueError:
+            rel_log = Path(failure_log)
+        ann_entry["failure_log_path"] = str(rel_log)
+        ann_entry["failure_edit_text"] = ann_entry.get("proposed_text")
+
+    atomic_write_json(state_path, state)
+    atomic_write_json(mapping_path, mapping)
