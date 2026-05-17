@@ -850,6 +850,59 @@ def test_cli_status_exits_6_when_state_missing(
     assert "state.json" in err
 
 
+def test_cli_status_human_output_is_compact_four_lines(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """Default ``status`` output is a fixed 4-line summary (rev-hgj).
+
+    The skill greps these lines deterministically; reserve ``--json``
+    for full machine output.
+    """
+    _seed_state_for_cli(tmp_project, phase="2a-ratify")
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == 0
+    out = capsys.readouterr().out.rstrip("\n")
+    lines = out.split("\n")
+    assert len(lines) == 4, f"expected 4 lines, got {len(lines)}: {out!r}"
+    assert lines[0].startswith("Phase: 2a-ratify")
+    assert lines[1].startswith("Counts: ")
+    assert "2 total" in lines[1]
+    assert "1 applied" in lines[1]
+    assert "1 accepted" in lines[1]
+    assert lines[2].startswith("Last build: ")
+    assert lines[3].startswith("Working tree: ")
+
+
+def test_cli_status_human_output_working_tree_clean_in_fresh_repo(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """Working-tree line reports 'clean' for an empty git repo and
+    '(not a git repo)' for a non-git directory.
+    """
+    import subprocess as _sp
+
+    _seed_state_for_cli(tmp_project)
+    # Non-git directory → "(not a git repo)" path.
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Working tree: (not a git repo)" in out
+
+    # Initialise a git repo, commit the state file, expect "clean".
+    _sp.run(["git", "init", "-q"], cwd=tmp_project, check=True)
+    _sp.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit",
+         "--allow-empty", "-q", "-m", "init"],
+        cwd=tmp_project,
+        check=True,
+    )
+    # The .review-state/ tree is now untracked, so working tree is dirty.
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Working tree: dirty" in out
+
+
 # ---- Task 13.2: migrate-state subcommand -----------------------------------
 
 

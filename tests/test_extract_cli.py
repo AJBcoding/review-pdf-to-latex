@@ -167,3 +167,75 @@ def test_extract_pdfannots_failure_exits_4(tmp_path: Path) -> None:
         ["--project-dir", str(project), "extract", "--pdf", str(fake)]
     )
     assert exit_code == 4
+
+
+def test_extract_quiet_suppresses_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`extract --quiet` writes no non-error output to stderr (rev-hgj)."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    _make_minimal_project(project)
+
+    exit_code = cli.main(
+        [
+            "--project-dir",
+            str(project),
+            "extract",
+            "--pdf",
+            str(FIXTURE_PDF),
+            "--quiet",
+        ]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+
+
+def test_extract_json_emits_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`extract --json` emits a one-line JSON summary on stdout (rev-hgj)."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    _make_minimal_project(project)
+
+    exit_code = cli.main(
+        [
+            "--project-dir",
+            str(project),
+            "--json",
+            "extract",
+            "--pdf",
+            str(FIXTURE_PDF),
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    summary = json.loads(out)
+    assert summary["ok"] is True
+    assert isinstance(summary["annotation_count"], int)
+    assert summary["annotation_count"] >= 1
+    assert "needs_review" in summary
+    assert "surfaced_pending" in summary
+    assert summary["source_pdf_md5"] == hashlib.md5(
+        FIXTURE_PDF.read_bytes()
+    ).hexdigest()
+
+
+def test_extract_default_prints_summary_on_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Default extract (no --quiet / --json) prints a one-line summary on stderr."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    _make_minimal_project(project)
+
+    exit_code = cli.main(
+        ["--project-dir", str(project), "extract", "--pdf", str(FIXTURE_PDF)]
+    )
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "extracted" in err
+    assert "annotation" in err
