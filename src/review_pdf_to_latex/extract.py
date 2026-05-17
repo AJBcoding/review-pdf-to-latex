@@ -6,6 +6,7 @@ The functions in this module are wired together by `cli.py`'s `extract` handler
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -84,6 +85,29 @@ def load_project_config(project_dir: Path) -> dict:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return {}
+
+
+class _DedupePdfannotsWarnings(logging.Filter):
+    """Drop duplicate 'pdfannots' warnings within a single extract pass.
+
+    pdfannots calls ``Annotation.gettext()`` once during ``process_file``
+    (inside ``Annotation.resolve()``, to deduplicate Skim-style ``contents``
+    that equal the highlighted text — see pdfannots ``types.py``) and our
+    per-annotation loop calls it again. Both invocations emit
+    ``Missing text for ... annotation at ...`` for the same annotation,
+    doubling the warning count on real review PDFs (rev-fpe).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: set[str] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if msg in self._seen:
+            return False
+        self._seen.add(msg)
+        return True
 
 
 def _bbox_recover_text(
@@ -175,60 +199,66 @@ def read_annotations(
     # loop body because the failure point varies: structurally-broken PDFs fail
     # in process_file, while individual broken annotations fail in raw.gettext()
     # or raw.boxes access. Both paths surface the same user-facing guidance.
+    pdfannots_logger = logging.getLogger("pdfannots")
+    dedupe_filter = _DedupePdfannotsWarnings()
+    pdfannots_logger.addFilter(dedupe_filter)
     try:
-        with pdf_path.open("rb") as fh:
-            doc = pdfannots.process_file(fh, emit_progress_to=None)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(_corrupt_pdf_message(pdf_path, exc)) from exc
+        try:
+            with pdf_path.open("rb") as fh:
+                doc = pdfannots.process_file(fh, emit_progress_to=None)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(_corrupt_pdf_message(pdf_path, exc)) from exc
 
-    annotations: list[Annotation] = []
-    counter = 0
-    # Open the PDF once for the lifetime of the loop so we don't pay the
-    # pdfplumber open cost per annotation.
-    with pdfplumber.open(str(pdf_path)) as plumb:
-        for page in doc.pages:
-            page_number = page.pageno + 1
-            for raw in page.annots:
-                counter += 1
-                try:
-                    highlighted_text = (raw.gettext() or "").strip()
-                    comment = (raw.contents or "").strip()
-                    author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
-                    if raw.boxes:
-                        xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
-                        ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
-                        bbox: tuple[float, float, float, float] = (
-                            float(min(xs)),
-                            float(min(ys)),
-                            float(max(xs)),
-                            float(max(ys)),
+        annotations: list[Annotation] = []
+        counter = 0
+        # Open the PDF once for the lifetime of the loop so we don't pay the
+        # pdfplumber open cost per annotation.
+        with pdfplumber.open(str(pdf_path)) as plumb:
+            for page in doc.pages:
+                page_number = page.pageno + 1
+                for raw in page.annots:
+                    counter += 1
+                    try:
+                        highlighted_text = (raw.gettext() or "").strip()
+                        comment = (raw.contents or "").strip()
+                        author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
+                        if raw.boxes:
+                            xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
+                            ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
+                            bbox: tuple[float, float, float, float] = (
+                                float(min(xs)),
+                                float(min(ys)),
+                                float(max(xs)),
+                                float(max(ys)),
+                            )
+                        else:
+                            bbox = (0.0, 0.0, 0.0, 0.0)
+                    except Exception as exc:  # noqa: BLE001
+                        raise RuntimeError(
+                            _corrupt_pdf_message(pdf_path, exc, page=page_number)
+                        ) from exc
+
+                    # Bbox fallback for Highlight annotations whose quad points
+                    # no longer link to the page text run.
+                    if not highlighted_text and bbox != (0.0, 0.0, 0.0, 0.0):
+                        highlighted_text = _bbox_recover_text(
+                            plumb, page.pageno, bbox
                         )
-                    else:
-                        bbox = (0.0, 0.0, 0.0, 0.0)
-                except Exception as exc:  # noqa: BLE001
-                    raise RuntimeError(
-                        _corrupt_pdf_message(pdf_path, exc, page=page_number)
-                    ) from exc
 
-                # Bbox fallback for Highlight annotations whose quad points
-                # no longer link to the page text run.
-                if not highlighted_text and bbox != (0.0, 0.0, 0.0, 0.0):
-                    highlighted_text = _bbox_recover_text(
-                        plumb, page.pageno, bbox
+                    annotations.append(
+                        Annotation(
+                            id=f"ann-{counter:03d}",
+                            page=page_number,
+                            bbox=bbox,
+                            highlighted_text=highlighted_text,
+                            author=author,
+                            comment=comment,
+                            created=_format_created(getattr(raw, "created", None)),
+                            trigger_match=is_trigger(comment, trigger_phrase),
+                        )
                     )
-
-                annotations.append(
-                    Annotation(
-                        id=f"ann-{counter:03d}",
-                        page=page_number,
-                        bbox=bbox,
-                        highlighted_text=highlighted_text,
-                        author=author,
-                        comment=comment,
-                        created=_format_created(getattr(raw, "created", None)),
-                        trigger_match=is_trigger(comment, trigger_phrase),
-                    )
-                )
+    finally:
+        pdfannots_logger.removeFilter(dedupe_filter)
 
     return annotations
 

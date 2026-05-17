@@ -859,3 +859,78 @@ def test_run_extract_corrupt_pdf_exits_4_with_guidance(
     assert "ERROR: AssertionError:\n" not in err, (
         f"raw pdfannots noise leaked through to user: {err!r}"
     )
+
+
+# ---- rev-fpe: pdfannots "Missing text" warnings must not duplicate ----
+
+
+def test_read_annotations_deduplicates_pdfannots_warnings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """pdfannots emits 'Missing text for ... annotation at ...' from inside
+    Annotation.gettext() whenever an annotation has boxes but no captured
+    text. The library also calls gettext() internally during process_file
+    (in Annotation.resolve, to dedupe Skim-style contents), so the warning
+    fires once during parse and once again in our per-annotation loop —
+    doubling the noise on real review PDFs. Verify the dedupe filter
+    suppresses the second emission so each distinct annotation surfaces
+    exactly one warning (rev-fpe).
+    """
+    import logging
+
+    pdfannots_logger = logging.getLogger("pdfannots")
+
+    # Drive the warning manually as if pdfannots had logged it twice for
+    # the same annotation (the real pattern: once in resolve(), once in
+    # our gettext call). The dedupe filter is only active during
+    # read_annotations, so we attach it the same way and assert that the
+    # second emission is dropped.
+    from review_pdf_to_latex.extract import _DedupePdfannotsWarnings
+
+    dedupe_filter = _DedupePdfannotsWarnings()
+    pdfannots_logger.addFilter(dedupe_filter)
+    try:
+        with caplog.at_level(logging.WARNING, logger="pdfannots"):
+            pdfannots_logger.warning(
+                "Missing text for %s annotation at %s", "Highlight", "page 2"
+            )
+            pdfannots_logger.warning(
+                "Missing text for %s annotation at %s", "Highlight", "page 2"
+            )
+            # Distinct messages survive — only exact duplicates are dropped.
+            pdfannots_logger.warning(
+                "Missing text for %s annotation at %s", "Highlight", "page 3"
+            )
+    finally:
+        pdfannots_logger.removeFilter(dedupe_filter)
+
+    missing_records = [
+        r for r in caplog.records if r.getMessage().startswith("Missing text for")
+    ]
+    assert len(missing_records) == 2, (
+        f"expected 2 deduped 'Missing text' records (one per distinct annotation), "
+        f"got {len(missing_records)}: {[r.getMessage() for r in missing_records]}"
+    )
+
+
+def test_read_annotations_attaches_then_removes_dedupe_filter() -> None:
+    """The dedupe filter must be removed after read_annotations returns so
+    it doesn't leak into other extract calls or unrelated pdfannots use."""
+    import logging
+
+    from review_pdf_to_latex.extract import _DedupePdfannotsWarnings
+
+    pdfannots_logger = logging.getLogger("pdfannots")
+    before = [
+        f for f in pdfannots_logger.filters if isinstance(f, _DedupePdfannotsWarnings)
+    ]
+
+    read_annotations(FIXTURE_PDF)
+
+    after = [
+        f for f in pdfannots_logger.filters if isinstance(f, _DedupePdfannotsWarnings)
+    ]
+    assert len(after) == len(before), (
+        f"dedupe filter leaked onto pdfannots logger: "
+        f"before={len(before)} after={len(after)}"
+    )
