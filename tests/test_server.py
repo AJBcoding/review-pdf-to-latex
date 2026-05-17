@@ -131,3 +131,257 @@ def test_invalid_build_id_returns_404(running_server) -> None:
     base_url, _ = running_server
     status, _, _ = _get(base_url, "/builds/not_a_build/page-1.png")
     assert status == HTTPStatus.NOT_FOUND
+
+
+# ---- Task 8.2: POST /api/events tests ----------------------------------------
+
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+
+def _post_json(
+    base_url: str,
+    path: str,
+    payload: dict | None,
+    raw_body: bytes | None = None,
+) -> tuple[int, bytes]:
+    body = raw_body if raw_body is not None else json.dumps(payload).encode()
+    req = urllib.request.Request(
+        base_url + path,
+        method="POST",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read()
+    except HTTPError as e:
+        return e.code, e.read()
+
+
+def test_post_events_happy_path_returns_204(running_server) -> None:
+    base_url, project_dir = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {"annotation_id": "ann-001", "action": "approve"},
+    )
+    assert status == HTTPStatus.NO_CONTENT
+    assert body == b""
+    events_path = project_dir / ".review-state" / "state-events.jsonl"
+    assert events_path.exists()
+    lines = events_path.read_text().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["annotation_id"] == "ann-001"
+    assert rec["action"] == "approve"
+    assert rec["ts"].endswith("Z")  # ISO8601 UTC with Z suffix
+    assert "speculative_text" not in rec  # omitted when not supplied
+
+
+def test_post_events_with_speculative_text(running_server) -> None:
+    base_url, project_dir = running_server
+    status, _ = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-001",
+            "action": "preview",
+            "speculative_text": "COTA enrollment grew 12% YoY.",
+        },
+    )
+    assert status == HTTPStatus.NO_CONTENT
+    events_path = project_dir / ".review-state" / "state-events.jsonl"
+    rec = json.loads(events_path.read_text().splitlines()[-1])
+    assert rec["speculative_text"] == "COTA enrollment grew 12% YoY."
+
+
+@pytest.mark.parametrize(
+    "action", ["approve", "reject", "redraft", "preview", "skip", "surface"]
+)
+def test_post_events_accepts_six_status_only_actions(running_server, action: str) -> None:
+    base_url, _ = running_server
+    status, _ = _post_json(
+        base_url,
+        "/api/events",
+        {"annotation_id": "ann-001", "action": action},
+    )
+    assert status == HTTPStatus.NO_CONTENT
+
+
+def test_post_events_override_mapping_roundtrip(running_server) -> None:
+    """override-mapping requires file/line_start/line_end and persists them."""
+    base_url, project_dir = running_server
+    payload = {
+        "annotation_id": "ann-007",
+        "action": "override-mapping",
+        "file": "src/coverletter.tex",
+        "line_start": 42,
+        "line_end": 47,
+    }
+    status, _ = _post_json(base_url, "/api/events", payload)
+    assert status == HTTPStatus.NO_CONTENT
+    events_path = project_dir / ".review-state" / "state-events.jsonl"
+    rec = json.loads(events_path.read_text().splitlines()[-1])
+    assert rec["annotation_id"] == "ann-007"
+    assert rec["action"] == "override-mapping"
+    assert rec["file"] == "src/coverletter.tex"
+    assert rec["line_start"] == 42
+    assert rec["line_end"] == 47
+
+
+def test_post_events_override_mapping_missing_file_rejected(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-007",
+            "action": "override-mapping",
+            "line_start": 42,
+            "line_end": 47,
+        },
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"file" in body
+
+
+def test_post_events_override_mapping_missing_line_start_rejected(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-007",
+            "action": "override-mapping",
+            "file": "src/coverletter.tex",
+            "line_end": 47,
+        },
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"line_start" in body
+
+
+def test_post_events_override_mapping_bad_line_end_rejected(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-007",
+            "action": "override-mapping",
+            "file": "src/coverletter.tex",
+            "line_start": 50,
+            "line_end": 47,
+        },
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"line_end" in body
+
+
+def test_post_events_rejects_invalid_action(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {"annotation_id": "ann-001", "action": "yeet"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"invalid action" in body
+
+
+def test_post_events_rejects_missing_annotation_id(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(base_url, "/api/events", {"action": "approve"})
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"annotation_id" in body
+
+
+def test_post_events_rejects_missing_action(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(base_url, "/api/events", {"annotation_id": "ann-001"})
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"action" in body
+
+
+def test_post_events_rejects_non_json_body(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(base_url, "/api/events", None, raw_body=b"not json")
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"invalid JSON" in body
+
+
+def test_post_events_rejects_oversized_body(running_server) -> None:
+    base_url, _ = running_server
+    big = "x" * (64 * 1024 + 1)
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-001",
+            "action": "preview",
+            "speculative_text": big,
+        },
+    )
+    assert status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    assert b"body too large" in body
+
+
+def test_post_events_rejects_non_string_speculative_text(running_server) -> None:
+    base_url, _ = running_server
+    status, body = _post_json(
+        base_url,
+        "/api/events",
+        {"annotation_id": "ann-001", "action": "preview", "speculative_text": 42},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert b"speculative_text" in body
+
+
+def test_post_events_concurrent_appends_do_not_tear(running_server) -> None:
+    base_url, project_dir = running_server
+    N = 16
+    payloads = [
+        {"annotation_id": f"ann-{i:03d}", "action": "approve"} for i in range(N)
+    ]
+    with ThreadPoolExecutor(max_workers=N) as pool:
+        results = list(
+            pool.map(lambda p: _post_json(base_url, "/api/events", p), payloads)
+        )
+    assert all(s == HTTPStatus.NO_CONTENT for s, _ in results)
+    events_path = project_dir / ".review-state" / "state-events.jsonl"
+    lines = events_path.read_text().splitlines()
+    assert len(lines) == N
+    seen_ids = set()
+    for line in lines:
+        rec = json.loads(line)  # must parse cleanly — no torn writes
+        seen_ids.add(rec["annotation_id"])
+    assert seen_ids == {f"ann-{i:03d}" for i in range(N)}
+
+
+def test_post_unknown_path_returns_404(running_server) -> None:
+    base_url, _ = running_server
+    status, _ = _post_json(base_url, "/api/nope", {"x": 1})
+    assert status == HTTPStatus.NOT_FOUND
+
+
+def test_post_events_503_when_state_dir_missing(tmp_path) -> None:
+    # Bare project with no .review-state/
+    project = tmp_path / "bare"
+    project.mkdir()
+    port = _pick_port()
+    httpd = server_mod.build_server(project, port, mode="normal")
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(
+            f"http://127.0.0.1:{port}",
+            "/api/events",
+            {"annotation_id": "ann-001", "action": "approve"},
+        )
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert b"no review state" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)

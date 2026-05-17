@@ -14,10 +14,13 @@ See spec sections:
 
 from __future__ import annotations
 
+import fcntl
 import http.server
 import json
 import mimetypes
+import os
 import re
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -43,6 +46,115 @@ _jinja_env = jinja2.Environment(
     autoescape=jinja2.select_autoescape(["html"]),
     undefined=jinja2.StrictUndefined,
 )
+
+_VALID_ACTIONS = frozenset(
+    {
+        "approve",
+        "reject",
+        "redraft",
+        "preview",
+        "skip",
+        "surface",
+        "override-mapping",
+    }
+)
+_MAX_BODY_BYTES = 64 * 1024
+
+
+class _BadRequest(Exception):
+    """Raised by validation helpers to short-circuit do_POST with a 400 body."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _utc_now_iso() -> str:
+    """ISO8601 UTC timestamp matching the spec §7.4 examples (Z suffix, seconds)."""
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _validate_event(payload: object) -> dict[str, Any]:
+    """Validate a parsed JSON payload against the §7.4 schema.
+
+    Returns the cleaned record (no ts).
+
+    For action == "override-mapping" (spec §10.6), the payload MUST also
+    include `file: str`, `line_start: int`, `line_end: int`. These are
+    threaded through into the JSONL record so the consuming skill (via
+    `review-pdf wait-event`) can reconstruct the override and invoke
+    `review-pdf override-mapping --file <f> --lines START:END`.
+    """
+    if not isinstance(payload, dict):
+        raise _BadRequest("body must be a JSON object")
+    ann = payload.get("annotation_id")
+    if not isinstance(ann, str) or not ann:
+        raise _BadRequest("missing field: annotation_id")
+    action = payload.get("action")
+    if not isinstance(action, str) or not action:
+        raise _BadRequest("missing field: action")
+    if action not in _VALID_ACTIONS:
+        raise _BadRequest(f"invalid action: {action}")
+    record: dict[str, Any] = {"annotation_id": ann, "action": action}
+    if "speculative_text" in payload:
+        spec_text = payload["speculative_text"]
+        if not isinstance(spec_text, str):
+            raise _BadRequest("speculative_text must be a string")
+        record["speculative_text"] = spec_text
+    if action == "override-mapping":
+        # Required override-mapping fields per spec §10.6.
+        file_val = payload.get("file")
+        if not isinstance(file_val, str) or not file_val:
+            raise _BadRequest(
+                "missing field: file (required for override-mapping)"
+            )
+        line_start = payload.get("line_start")
+        if (
+            not isinstance(line_start, int)
+            or isinstance(line_start, bool)
+            or line_start < 1
+        ):
+            raise _BadRequest(
+                "missing field: line_start (positive int required for override-mapping)"
+            )
+        line_end = payload.get("line_end")
+        if (
+            not isinstance(line_end, int)
+            or isinstance(line_end, bool)
+            or line_end < line_start
+        ):
+            raise _BadRequest(
+                "missing field: line_end (int >= line_start required for override-mapping)"
+            )
+        record["file"] = file_val
+        record["line_start"] = line_start
+        record["line_end"] = line_end
+    return record
+
+
+def _append_event_line(events_path: Path, record: dict[str, Any]) -> None:
+    """Append one JSONL line to events_path; fcntl.flock-serialized."""
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
+    data = line.encode("utf-8")
+    fd = os.open(str(events_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            written = 0
+            while written < len(data):
+                n = os.write(fd, data[written:])
+                if n <= 0:
+                    raise OSError("short write to state-events.jsonl")
+                written += n
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 class ReviewHandler(http.server.SimpleHTTPRequestHandler):
@@ -72,8 +184,62 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._send_404()
 
-    def do_POST(self) -> None:  # noqa: N802 (stdlib name)
-        raise NotImplementedError  # filled in by Task 8.2
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlsplit(self.path).path
+        if path != "/api/events":
+            self._send_404()
+            return
+        self._handle_events_post()
+
+    def _handle_events_post(self) -> None:
+        # Enforce the body-size cap BEFORE reading so a malicious client can't OOM us.
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_simple(HTTPStatus.BAD_REQUEST, b"invalid Content-Length\n")
+            return
+        if content_length > _MAX_BODY_BYTES:
+            self._send_simple(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE, b"body too large\n"
+            )
+            return
+
+        events_path = self.project_dir / STATE_DIR_NAME / EVENTS_FILENAME
+        if not events_path.parent.exists():
+            self._send_simple(
+                HTTPStatus.SERVICE_UNAVAILABLE, b"no review state\n"
+            )
+            return
+
+        raw = self.rfile.read(content_length) if content_length > 0 else b""
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_simple(HTTPStatus.BAD_REQUEST, b"invalid JSON\n")
+            return
+
+        try:
+            record = _validate_event(payload)
+        except _BadRequest as e:
+            self._send_simple(
+                HTTPStatus.BAD_REQUEST, (e.message + "\n").encode("utf-8")
+            )
+            return
+
+        # Build the on-disk record: ts first, then annotation_id/action/speculative_text.
+        full_record = {"ts": _utc_now_iso(), **record}
+        try:
+            _append_event_line(events_path, full_record)
+        except OSError as e:
+            self._send_simple(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"append failed: {e}\n".encode(),
+            )
+            return
+
+        self.send_response(int(HTTPStatus.NO_CONTENT))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     # ---- per-route helpers --------------------------------------------------
 
