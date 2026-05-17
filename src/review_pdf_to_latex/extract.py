@@ -14,7 +14,13 @@ from pathlib import Path
 import pdfannots
 from rapidfuzz import fuzz
 
-from review_pdf_to_latex.state import Annotation, Mapping, MappingCandidate
+from review_pdf_to_latex.state import (
+    Annotation,
+    AnnotationState,
+    Mapping,
+    MappingCandidate,
+    StateFile,
+)
 
 
 def _format_created(raw: object) -> str | None:
@@ -385,4 +391,49 @@ def fuzzy_map(
         method="fuzzy_text",
         needs_review=True,
         candidates=candidates,
+    )
+
+
+def bootstrap_state(
+    annotations: list[Annotation],
+    mappings: dict[str, Mapping],
+) -> StateFile:
+    """Build the initial state.json contents for a freshly-extracted project.
+
+    Phase is "0-setup"; order is "mechanical-first"; no current annotation;
+    no builds yet. Per-annotation status is "needs_review" when the mapping
+    requires review, otherwise "pending". All other annotation fields are
+    None (no text captured, no build yet).
+
+    Args:
+        annotations: The list returned by read_annotations.
+        mappings: dict keyed by annotation id; produced by fuzzy_map.
+
+    Returns:
+        A StateFile suitable for atomic_write_json to the project's
+        .review-state/state.json.
+    """
+    ann_states: dict[str, AnnotationState] = {}
+    for ann in annotations:
+        m = mappings.get(ann.id)
+        needs_review = bool(m and m.needs_review)
+        ann_states[ann.id] = AnnotationState(
+            status="needs_review" if needs_review else "pending",
+            before_text=None,
+            proposed_text=None,
+            applied_text=None,
+            applied_at=None,
+            last_build_id=None,
+            surface_chat_log=None,
+            failure_log_path=None,
+            failure_edit_text=None,
+        )
+
+    return StateFile(
+        schema_version=1,
+        phase="0-setup",
+        order="mechanical-first",
+        current_annotation_id=None,
+        annotations=ann_states,
+        builds=[],
     )

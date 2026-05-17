@@ -339,3 +339,68 @@ def test_fuzzy_map_failed_match_below_threshold(sample_project: Path) -> None:
         # Borderline case: rapidfuzz might still find a weak partial match.
         # Either way needs_review must be True.
         assert result.method == "fuzzy_text"
+
+
+from review_pdf_to_latex.extract import bootstrap_state
+from review_pdf_to_latex.state import StateFile
+
+
+def test_bootstrap_state_phase_and_defaults() -> None:
+    """bootstrap_state produces a StateFile with phase=0-setup and clean defaults."""
+    anns = [
+        _ann("alpha", "ann-001"),
+        _ann("beta", "ann-002"),
+    ]
+    mappings = {
+        "ann-001": Mapping(
+            latex_file="a.tex",
+            line_range=(1, 3),
+            confidence=0.9,
+            method="fuzzy_text",
+            needs_review=False,
+            candidates=[],
+        ),
+        "ann-002": Mapping(
+            latex_file=None,
+            line_range=None,
+            confidence=0.1,
+            method="failed",
+            needs_review=True,
+            candidates=[],
+        ),
+    }
+
+    state = bootstrap_state(anns, mappings)
+
+    assert isinstance(state, StateFile)
+    assert state.schema_version == 1
+    assert state.phase == "0-setup"
+    assert state.order == "mechanical-first"
+    assert state.current_annotation_id is None
+    assert state.builds == []
+    assert set(state.annotations.keys()) == {"ann-001", "ann-002"}
+
+    a1 = state.annotations["ann-001"]
+    assert a1.status == "pending"
+    assert a1.before_text is None
+    assert a1.proposed_text is None
+    assert a1.applied_text is None
+    assert a1.applied_at is None
+    assert a1.last_build_id is None
+    assert a1.surface_chat_log is None
+    assert a1.failure_log_path is None
+    assert a1.failure_edit_text is None
+
+    a2 = state.annotations["ann-002"]
+    assert a2.status == "needs_review"
+    assert a2.before_text is None
+    assert a2.proposed_text is None
+    assert a2.applied_text is None
+
+
+def test_bootstrap_state_handles_empty_annotation_list() -> None:
+    """Empty annotations list yields a valid StateFile with no annotations."""
+    state = bootstrap_state([], {})
+    assert state.phase == "0-setup"
+    assert state.annotations == {}
+    assert state.builds == []
