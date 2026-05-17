@@ -118,3 +118,199 @@ def test_with_in_place_edit_restore_failure_writes_recovery_file(
     msg = str(exc_info.value)
     assert str(target) in msg
     assert str(recovery_files[0]) in msg
+
+
+from unittest.mock import patch
+
+from review_pdf_to_latex import state as state_mod
+
+
+def _seed_minimal_project(tmp_project: Path) -> None:
+    """Seed a project root with one .tex file, plus mapping.json and state.json.
+
+    Layout:
+        tmp_project/templates/intro.tex
+        tmp_project/source.pdf
+        tmp_project/.review-state/annotations.json
+        tmp_project/.review-state/mapping.json
+        tmp_project/.review-state/state.json
+    """
+    import hashlib
+
+    tex = tmp_project / "templates" / "intro.tex"
+    tex.parent.mkdir(parents=True, exist_ok=True)
+    tex.write_text(
+        "intro line 1\nintro line 2\nintro line 3\nintro line 4\n",
+        encoding="utf-8",
+    )
+
+    # Seed a source PDF + annotations.json so assert_source_pdf_unchanged
+    # has a matching MD5 to verify.
+    source_pdf = tmp_project / "source.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4 fake pdf content\n")
+    pdf_md5 = hashlib.md5(source_pdf.read_bytes()).hexdigest()
+
+    sd = state_mod.StateDir(tmp_project)
+    state_mod.atomic_write_json(
+        sd.annotations_path,
+        {
+            "schema_version": 1,
+            "source_pdf": str(source_pdf),
+            "source_pdf_md5": pdf_md5,
+            "annotations": [],
+        },
+    )
+    state_mod.atomic_write_json(
+        sd.mapping_path,
+        {
+            "schema_version": 1,
+            "mappings": {
+                "ann-001": {
+                    "latex_file": "templates/intro.tex",
+                    "line_range": [2, 3],
+                    "confidence": 0.9,
+                    "method": "fuzzy_text",
+                    "needs_review": False,
+                    "candidates": [],
+                },
+            },
+        },
+    )
+    state_mod.atomic_write_json(
+        sd.state_path,
+        {
+            "schema_version": 1,
+            "phase": "2a-ratify",
+            "order": "mechanical-first",
+            "current_annotation_id": "ann-001",
+            "annotations": {
+                "ann-001": {
+                    "status": "applied",
+                    "before_text": "intro line 2\nintro line 3",
+                    "proposed_text": "intro line 2\nintro line 3",
+                    "applied_text": "intro line 2\nintro line 3",
+                    "applied_at": "2026-05-16T20:00:00Z",
+                    "last_build_id": "build-001",
+                    "surface_chat_log": None,
+                    "failure_log_path": None,
+                    "failure_edit_text": None,
+                },
+            },
+            "builds": [],
+        },
+    )
+
+
+def test_preview_appends_build_and_restores_tex_file(tmp_project: Path):
+    """preview() runs build inside the snapshot/restore context, returns the
+    build ID, and leaves the .tex file byte-identical."""
+    _seed_minimal_project(tmp_project)
+    sd = state_mod.StateDir(tmp_project)
+    tex = tmp_project / "templates" / "intro.tex"
+    original = tex.read_bytes()
+
+    # Stub out build.build so this test does not invoke pdflatex.
+    # The contract: build.build mutates state.json.builds[] and returns
+    # the new build ID. Preview must invoke it inside the `with` block.
+    def fake_build(state_dir, **kwargs):  # type: ignore[no-untyped-def]
+        # Verify the .tex file IS mutated at the moment build runs.
+        current = tex.read_text(encoding="utf-8")
+        assert "HYPOTHETICAL" in current, (
+            "build must run with the speculative edit in place"
+        )
+        # Append a build record (mimicking chunk C's behavior).
+        payload = state_mod.read_json(state_dir.state_path)
+        payload["builds"].append(
+            {
+                "id": "build-002",
+                "pdf_path": ".review-state/builds/build-002.pdf",
+                "page_count": 1,
+                "compiled_at": "2026-05-16T20:05:00Z",
+                "log_path": ".review-state/builds/build-002.log",
+                "ok": True,
+                "page_md5": ["deadbeef"],
+            }
+        )
+        state_mod.atomic_write_json(state_dir.state_path, payload)
+        return "build-002"
+
+    with patch.object(preview, "_invoke_build", side_effect=fake_build):
+        build_id = preview.preview(
+            sd, annotation_id="ann-001", new_text="HYPOTHETICAL line\n"
+        )
+
+    assert build_id == "build-002"
+
+    # The .tex file is byte-identical to its pre-preview state.
+    assert tex.read_bytes() == original
+
+    # state.json.annotations[ann-001] is unchanged.
+    final = state_mod.read_json(sd.state_path)
+    ann = final["annotations"]["ann-001"]
+    assert ann["status"] == "applied"
+    assert ann["applied_text"] == "intro line 2\nintro line 3"
+    assert ann["last_build_id"] == "build-001"  # NOT updated to build-002
+
+    # state.json.builds[] grew by one entry.
+    assert [b["id"] for b in final["builds"]] == ["build-002"]
+
+
+def test_preview_raises_mapping_unresolved_when_mapping_is_null(tmp_project: Path):
+    """If the annotation has no latex_file / line_range, preview raises
+    MappingUnresolvedError (mapped to exit code 8 by the CLI)."""
+    _seed_minimal_project(tmp_project)
+    sd = state_mod.StateDir(tmp_project)
+
+    # Overwrite mapping.json so ann-001 has no resolved location.
+    state_mod.atomic_write_json(
+        sd.mapping_path,
+        {
+            "schema_version": 1,
+            "mappings": {
+                "ann-001": {
+                    "latex_file": None,
+                    "line_range": None,
+                    "confidence": 0.0,
+                    "method": "failed",
+                    "needs_review": True,
+                    "candidates": [],
+                },
+            },
+        },
+    )
+
+    with pytest.raises(preview.MappingUnresolvedError):
+        preview.preview(sd, annotation_id="ann-001", new_text="...")
+
+
+def test_preview_raises_annotation_not_found_for_unknown_id(tmp_project: Path):
+    """An unknown annotation ID raises AnnotationNotFoundError."""
+    _seed_minimal_project(tmp_project)
+    sd = state_mod.StateDir(tmp_project)
+
+    with pytest.raises(preview.AnnotationNotFoundError):
+        preview.preview(sd, annotation_id="ann-999", new_text="...")
+
+
+def test_preview_propagates_build_failure(tmp_project: Path):
+    """If the speculative build fails, preview re-raises (the CLI maps it
+    to exit code 11). The .tex file is still restored."""
+    _seed_minimal_project(tmp_project)
+    sd = state_mod.StateDir(tmp_project)
+    tex = tmp_project / "templates" / "intro.tex"
+    original = tex.read_bytes()
+
+    class _BuildFailed(Exception):
+        pass
+
+    def fake_build(state_dir, **kwargs):  # type: ignore[no-untyped-def]
+        raise _BuildFailed("pdflatex exit code 1")
+
+    with patch.object(preview, "_invoke_build", side_effect=fake_build):
+        with pytest.raises(_BuildFailed):
+            preview.preview(
+                sd, annotation_id="ann-001", new_text="WILL_FAIL\n"
+            )
+
+    # File restored even though build crashed.
+    assert tex.read_bytes() == original

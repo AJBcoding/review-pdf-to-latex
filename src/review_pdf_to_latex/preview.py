@@ -150,3 +150,102 @@ def with_in_place_edit(
                 f"(error: {restore_err}); the original contents have been "
                 f"saved to {recovery_path} — copy them back manually"
             ) from restore_err
+
+
+from review_pdf_to_latex import state as _state
+
+
+class AnnotationNotFoundError(Exception):
+    """Raised when ``preview()`` is asked about an unknown annotation ID.
+
+    CLI handler maps this to exit code 7 (``EXIT_ANNOTATION_NOT_FOUND``).
+    """
+
+
+class MappingUnresolvedError(Exception):
+    """Raised when an annotation's mapping has no ``latex_file`` or ``line_range``.
+
+    CLI handler maps this to exit code 8 (``EXIT_MAPPING_UNRESOLVED``).
+    """
+
+
+def _invoke_build(state_dir: _state.StateDir, **kwargs):  # type: ignore[no-untyped-def]
+    """Indirection seam so tests can stub the LaTeX compile out.
+
+    The real implementation is :func:`review_pdf_to_latex.build.run_build_command`
+    (chunk C). We import it lazily so this module does not fail to load
+    if the build module is still being scaffolded.
+
+    Returns the build ID assigned to the speculative build. The build
+    module appends an entry to ``state.json.builds[]`` as a side effect.
+    """
+    from review_pdf_to_latex import build as build_mod
+
+    # Read state to discover the build ID that the build module will assign
+    # next, then drive run_build_command.
+    state = _state.read_json(state_dir.state_path)
+    build_id = build_mod.next_build_id(state)
+    build_mod.run_build_command(
+        state_dir.project_root,
+        main_file=kwargs.get("main_file"),
+        engine=kwargs.get("engine", "auto"),
+        quiet=kwargs.get("quiet", True),
+        benchmark=kwargs.get("benchmark", False),
+    )
+    return build_id
+
+
+def preview(
+    state_dir: _state.StateDir,
+    annotation_id: str,
+    new_text: str,
+) -> str:
+    """Run a speculative compile for ``annotation_id`` with ``new_text``.
+
+    Reads ``mapping.json`` to find the annotation's ``latex_file`` and
+    ``line_range``. Snapshots the file, writes the new text in place,
+    invokes :func:`_invoke_build`, and restores the file. Returns the
+    build ID of the speculative build.
+
+    Side effects:
+    - ``state.json.builds[]`` gains one entry (via the build module).
+    - ``state.json.annotations[annotation_id]`` is UNCHANGED.
+    - ``.review-state/builds/build-NNN/`` is created (the viewer reads it).
+
+    Raises
+    ------
+    AnnotationNotFoundError
+        ``annotation_id`` is not present in ``mapping.json``.
+    MappingUnresolvedError
+        The annotation's mapping has no ``latex_file`` or ``line_range``.
+    InPlaceRestoreError
+        Restore of the snapshot failed (recovery file path is in message).
+    _state.SourcePdfChangedError, _state.LegacyStateError
+        Source PDF guard refused the operation (spec §14 risk 9).
+    """
+    # Spec §14 risk 9: refuse to compile against potentially stale annotation
+    # coordinates if the source PDF has changed since extract.
+    _state.assert_source_pdf_unchanged(state_dir)
+    mapping_doc = _state.read_json(state_dir.mapping_path)
+    mappings = mapping_doc.get("mappings", {})
+    if annotation_id not in mappings:
+        raise AnnotationNotFoundError(
+            f"annotation {annotation_id!r} not present in mapping.json"
+        )
+    m = mappings[annotation_id]
+    latex_file_rel = m.get("latex_file")
+    line_range = m.get("line_range")
+    if latex_file_rel is None or line_range is None:
+        raise MappingUnresolvedError(
+            f"annotation {annotation_id!r} has unresolved mapping "
+            f"(latex_file={latex_file_rel!r}, line_range={line_range!r}); "
+            f"run `review-pdf override-mapping` first"
+        )
+
+    latex_path = state_dir.project_root / latex_file_rel
+    lr = (int(line_range[0]), int(line_range[1]))
+
+    with with_in_place_edit(latex_path, lr, new_text):
+        build_id = _invoke_build(state_dir)
+
+    return build_id
