@@ -43,3 +43,12 @@ def test_skill_overview_sections_present(skill_text: str) -> None:
     ]
     for heading in required_headings:
         assert heading in skill_text, f"missing heading: {heading}"
+
+
+def test_skill_phase0_section_present_and_invocations_correct(skill_text: str) -> None:
+    assert "## Phase 0 — Setup" in skill_text
+    # The exact invocations must appear verbatim:
+    assert "review-pdf extract --pdf" in skill_text
+    assert "review-pdf serve --project-dir" in skill_text and "--mapping-mode" in skill_text
+    # Must instruct Claude to check needs_review before advancing:
+    assert "needs_review" in skill_text
