@@ -663,7 +663,21 @@ def test_source_pdf_mutated_mid_review_blocks_apply_with_exit_21(
     project_copy: Path, tmp_path: Path
 ):
     """Mutating the source PDF after extract must block subsequent apply (spec §14 risk 9)."""
-    sd = _phase_0_setup(project_copy)
+    # Copy the committed fixture PDF into tmp_path so the test can mutate it
+    # in place without touching the committed e2e-annotated.pdf bytes
+    # (which would break test_fixtures.py's hash check).
+    pdf_copy = tmp_path / "annotated.pdf"
+    pdf_copy.write_bytes(ANNOTATED_PDF.read_bytes())
+
+    rc = cli.main(
+        [
+            "--project-dir", str(project_copy),
+            "extract",
+            "--pdf", str(pdf_copy),
+        ]
+    )
+    assert rc == 0
+    sd = state_mod.StateDir(project_copy)
     _override_ann_004_mapping(project_copy, sd)
 
     # Sanity: annotations.json carries the source_pdf_md5 field after extract.
@@ -681,6 +695,7 @@ def test_source_pdf_mutated_mid_review_blocks_apply_with_exit_21(
     # the MD5 is guaranteed to differ from `original_md5`.
     pdf_path = Path(ann_doc["source_pdf"])
     assert pdf_path.exists(), "source_pdf path in annotations.json must resolve"
+    assert pdf_path == pdf_copy.resolve(), "expected the tmp copy to be the source"
     with pdf_path.open("ab") as f:
         f.write(b"\n% mutated-after-extract\n")
 
