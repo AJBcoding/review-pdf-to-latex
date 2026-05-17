@@ -405,3 +405,50 @@ def test_revert_edit_raises_when_no_prior_apply(tmp_path: Path) -> None:
             annotation_id="ann-001",
             status="rejected",
         )
+
+
+from review_pdf_to_latex.apply import (
+    IllegalStatusTransitionError,
+    set_annotation_status,
+)
+
+
+def test_set_status_legal_transition_applied_to_accepted(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="X\n")
+    set_annotation_status(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        status="accepted",
+        reason="looks good",
+    )
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    entry = state["annotations"]["ann-001"]
+    assert entry["status"] == "accepted"
+    assert entry["last_status_reason"] == "looks good"
+
+
+def test_set_status_illegal_transition_raises(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    # pending → accepted is illegal per spec §10.3 (must go pending → applied → accepted)
+    with pytest.raises(IllegalStatusTransitionError):
+        set_annotation_status(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            status="accepted",
+        )
+
+
+def test_set_status_no_reason_does_not_set_field(tmp_path: Path) -> None:
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="X\n")
+    set_annotation_status(
+        state_dir=proj.state_dir,
+        annotation_id="ann-001",
+        status="accepted",
+    )
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    entry = state["annotations"]["ann-001"]
+    assert entry["status"] == "accepted"
+    # When no reason is supplied, field is omitted or None — accept either.
+    assert entry.get("last_status_reason") in (None,)

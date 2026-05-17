@@ -528,3 +528,74 @@ def revert_edit(
 
     atomic_write_json(state_path, state)
     atomic_write_json(mapping_path, mapping)
+
+
+_STATUS_TO_ACTION: dict[str, str] = {
+    # Map a target status to the engine-internal action that produces it.
+    # Used by set_annotation_status when the caller does not pass an
+    # explicit action (the common case — CLI users do not think in action
+    # terms, they pass --status). Each target maps to exactly one action.
+    "accepted": "approve",          # Approve button
+    "rejected": "reject",           # Reject button (status-only path via set-status)
+    "redrafted": "redraft",         # Redraft button concluding a re-apply
+    "deferred": "skip",             # Skip button
+    "surfaced_pending": "surface",  # Surface button
+    "surfaced_resolved": "resolve-surface",  # Phase 2b conclusion (spec §9.4)
+    "needs_review": "redraft",      # Phase 1 failure encoded under redraft
+    "applied": "apply",             # Engine-internal apply path
+    "pending": "override-mapping",  # status-neutral; no real transition
+}
+
+
+def set_annotation_status(
+    state_dir: Path,
+    annotation_id: str,
+    status: str,
+    reason: str | None = None,
+    action: str | None = None,
+) -> None:
+    """Transition annotation_id to `status` without touching any .tex file.
+
+    Spec §8 set-status row + §10.3 transition table. Used for Approve, Skip,
+    Surface, marking surfaced_resolved, marking redrafted after a successful
+    redraft build, and other status moves that do not themselves mutate text.
+
+    Args:
+        state_dir: .review-state directory.
+        annotation_id: Target annotation.
+        status: New status (must be in the spec §7.3 status enum).
+        reason: Optional free-form reason; stored as last_status_reason.
+        action: Optional engine-internal action label for transition validation.
+            If None, derived from the target ``status`` via _STATUS_TO_ACTION.
+            Callers (e.g., the CLI `set-status` handler) normally let it
+            default; pass it explicitly only when disambiguating a target
+            status that is reachable via more than one action.
+
+    Raises:
+        AnnotationNotFoundError: if annotation_id not present.
+        IllegalStatusTransitionError: if validate_status_transition rejects the move.
+        SourcePdfChangedApplyError / LegacyStateApplyError: source PDF guard (spec §14).
+    """
+    state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)  # spec §14 risk 9
+    state_path = state_dir / "state.json"
+    if not state_path.exists():
+        raise FileMutationError(f"state.json not found at {state_path}")
+    state = _read_json(state_path)
+
+    if annotation_id not in state.get("annotations", {}):
+        raise AnnotationNotFoundError(annotation_id)
+
+    entry = state["annotations"][annotation_id]
+    current = entry.get("status", "pending")
+    resolved_action = action if action is not None else _STATUS_TO_ACTION.get(status, "skip")
+    try:
+        validate_status_transition(current, status, resolved_action)
+    except ValueError as exc:
+        raise IllegalStatusTransitionError(str(exc)) from exc
+
+    entry["status"] = status
+    if reason is not None:
+        entry["last_status_reason"] = reason
+
+    atomic_write_json(state_path, state)
