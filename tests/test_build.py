@@ -125,3 +125,40 @@ hi
 
     assert ok is True
     assert captured["engine"] == "xelatex"
+
+
+import warnings as _warnings
+
+from review_pdf_to_latex.build import next_build_id
+
+
+def _state_with_builds(n: int) -> dict:
+    """Synthesize a state dict with n build entries; only the .id field
+    matters for the next_build_id contract."""
+    width = 3 if n < 999 else 4
+    return {
+        "builds": [
+            {"id": f"build-{i + 1:0{width}d}"} for i in range(n)
+        ]
+    }
+
+
+def test_next_build_id_empty() -> None:
+    state = {"builds": []}
+    assert next_build_id(state) == "build-001"
+
+
+def test_next_build_id_after_five() -> None:
+    state = _state_with_builds(5)
+    assert next_build_id(state) == "build-006"
+
+
+def test_next_build_id_widens_past_999() -> None:
+    state = _state_with_builds(999)
+    with _warnings.catch_warnings(record=True) as captured:
+        _warnings.simplefilter("always")
+        result = next_build_id(state)
+    assert result == "build-1000"
+    assert any("widening" in str(w.message).lower() for w in captured), (
+        f"expected widening warning, got {[str(w.message) for w in captured]}"
+    )

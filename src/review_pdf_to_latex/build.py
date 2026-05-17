@@ -117,3 +117,22 @@ def run_latex(
 
     log_path.write_bytes(b"".join(log_chunks))
     return ok, log_path
+
+
+def next_build_id(state: dict) -> str:
+    """Return the next zero-padded build ID for the given state file.
+
+    IDs are 3-digit decimal (`build-001` .. `build-999`). On the 1000th build
+    we widen to 4 digits (`build-1000`) and emit a UserWarning per spec §8
+    `build` row commentary / §19 Glossary "Build ID".
+    """
+    existing = state.get("builds") or []
+    n = len(existing)
+    next_n = n + 1
+    if next_n >= 1000:
+        warnings.warn(
+            "Project exceeded 999 builds; widening to 4-digit IDs",
+            stacklevel=2,
+        )
+        return f"build-{next_n:04d}"
+    return f"build-{next_n:03d}"
