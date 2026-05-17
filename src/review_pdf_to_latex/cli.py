@@ -1,9 +1,9 @@
 """CLI entry point — argparse router for the 14 ``review-pdf`` subcommands.
 
-Each subcommand handler is a stub that raises ``NotImplementedError`` until
-the corresponding feature task lands. The router itself, ``--project-dir``,
-the ``--json`` global flag, and the exit-code constants are all wired up
-here so feature tasks can drop in implementations without touching argparse.
+All 14 subcommands are wired to real handlers (see ``_HANDLERS_TABLE``
+below). Adding a new subcommand requires: (1) an ``argparse`` subparser
+in ``_build_parser``, (2) a ``_handle_<name>`` function, and (3) an entry
+in ``_HANDLERS_TABLE``.
 
 See spec §8 for the full per-command contract and exit codes.
 """
@@ -178,11 +178,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ms.add_argument("--to", dest="to_version", type=int, required=True)
 
     return parser
-
-
-def _stub(name: str) -> None:
-    """Raise NotImplementedError for an unimplemented subcommand."""
-    raise NotImplementedError(f"subcommand {name} not yet implemented")
 
 
 def _handle_extract(args: argparse.Namespace) -> int:
@@ -466,6 +461,44 @@ def _handle_commit_phase(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_preview(args: argparse.Namespace) -> int:
+    """``preview`` subcommand handler (spec §8 exit codes 0, 7, 8, 11, 17, 21, 22)."""
+    from review_pdf_to_latex import preview as _preview
+    from review_pdf_to_latex import state as _state
+
+    state_dir = _state.StateDir(args.project_dir)
+    try:
+        new_text = Path(args.new_text_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read --new-text-file: {exc}", file=sys.stderr)
+        return EXIT_FILE_MUTATION_FAILED
+    try:
+        build_id = _preview.preview(state_dir, args.annotation_id, new_text)
+    except _state.SourcePdfChangedError as exc:
+        print(f"source PDF changed since extract: {exc}", file=sys.stderr)
+        return EXIT_SOURCE_PDF_CHANGED
+    except _state.LegacyStateError as exc:
+        print(f"legacy state (no source_pdf_md5): {exc}", file=sys.stderr)
+        return EXIT_LEGACY_STATE
+    except _preview.AnnotationNotFoundError as exc:
+        print(f"annotation not found: {exc}", file=sys.stderr)
+        return EXIT_ANNOTATION_NOT_FOUND
+    except _preview.MappingUnresolvedError as exc:
+        print(f"mapping unresolved: {exc}", file=sys.stderr)
+        return EXIT_MAPPING_UNRESOLVED
+    except _preview.InPlaceRestoreError as exc:
+        # Preserve the recovery-file instructions verbatim (spec §8 exit 17).
+        print(f"in-place restore failed: {exc}", file=sys.stderr)
+        print(
+            "  recovery: copy the contents of the recovery file back over "
+            "the original .tex location.",
+            file=sys.stderr,
+        )
+        return EXIT_RESTORE_FAILED
+    print(build_id)
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -494,27 +527,9 @@ def _handle_migrate_state(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-# String fallback for subcommands without a wired handler: the value is the
-# name passed to `_stub`, which raises NotImplementedError. Real handlers
-# registered in `_HANDLERS_TABLE` shadow these entries.
-_HANDLERS: dict[str, str] = {
-    "extract": "extract",
-    "serve": "serve",
-    "apply": "apply",
-    "revert": "revert",
-    "preview": "preview",
-    "build": "build",
-    "status": "status",
-    "override-mapping": "override-mapping",
-    "set-status": "set-status",
-    "append-chat": "append-chat",
-    "record-proposal": "record-proposal",
-    "commit-phase": "commit-phase",
-    "wait-event": "wait-event",
-    "migrate-state": "migrate-state",
-}
-
-
+# Dispatch table: every subcommand → its handler. Adding a new subcommand
+# requires an entry here plus a matching argparse subparser in _build_parser
+# and a _handle_<name> function defined above.
 _HANDLERS_TABLE: dict[str, "callable"] = {
     "extract": _handle_extract,
     "build": _handle_build,
@@ -529,6 +544,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "record-proposal": _handle_record_proposal,
     "override-mapping": _handle_override_mapping,
     "commit-phase": _handle_commit_phase,
+    "preview": _handle_preview,
 }
 
 
@@ -546,11 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.subcommand is None:
         parser.print_usage(sys.stderr)
         raise SystemExit(2)
-    handler = _HANDLERS_TABLE.get(args.subcommand)
-    if handler is not None:
-        return handler(args)
-    _stub(_HANDLERS[args.subcommand])
-    return 0  # unreachable until stubs are replaced
+    handler = _HANDLERS_TABLE[args.subcommand]
+    return handler(args)
 
 
 def print_json(data: object) -> None:

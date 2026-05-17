@@ -39,28 +39,6 @@ ALL_SUBCOMMANDS = [
 ]
 
 
-# Subcommands whose handlers are wired (no longer raise NotImplementedError).
-# Wave-3.5 wires the remaining 8: apply, revert, preview, commit-phase,
-# set-status, append-chat, record-proposal, override-mapping.
-_WIRED_SUBCOMMANDS = frozenset(
-    {
-        "extract",
-        "serve",
-        "build",
-        "status",
-        "wait-event",
-        "migrate-state",
-        "apply",
-        "revert",
-        "set-status",
-        "append-chat",
-        "record-proposal",
-        "override-mapping",
-        "commit-phase",
-    }
-)
-
-
 def test_top_level_help_exits_zero(capsys: pytest.CaptureFixture):
     """`review-pdf --help` exits with code 0 and prints the program name."""
     with pytest.raises(SystemExit) as exc:
@@ -87,63 +65,6 @@ def test_subcommand_help_exits_zero(
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert subcommand in out
-
-
-@pytest.mark.parametrize(
-    "subcommand", [s for s in ALL_SUBCOMMANDS if s not in _WIRED_SUBCOMMANDS]
-)
-def test_subcommand_stub_raises_not_implemented(
-    subcommand: str, tmp_project: Path
-):
-    """Wave-3 subcommand stubs still raise NotImplementedError until implemented.
-
-    We supply the bare-minimum flags each stub requires to satisfy argparse;
-    the stub raises BEFORE doing any real work.
-    """
-    # Per-subcommand minimum required args so argparse does not exit first.
-    args_by_cmd: dict[str, list[str]] = {
-        "extract": ["--pdf", str(tmp_project / "fake.pdf")],
-        "serve": [],
-        "apply": [
-            "--annotation-id", "ann-001",
-            "--new-text-file", str(tmp_project / "draft.tex"),
-        ],
-        "revert": ["--annotation-id", "ann-001"],
-        "preview": [
-            "--annotation-id", "ann-001",
-            "--new-text-file", str(tmp_project / "draft.tex"),
-        ],
-        "build": [],
-        "status": [],
-        "override-mapping": [
-            "--annotation-id", "ann-001",
-            "--file", "templates/x.tex",
-            "--lines", "10:20",
-        ],
-        "set-status": [
-            "--annotation-id", "ann-001",
-            "--status", "accepted",
-        ],
-        "append-chat": [
-            "--annotation-id", "ann-001",
-            "--role", "user",
-            "--text-file", str(tmp_project / "turn.txt"),
-        ],
-        "record-proposal": [
-            "--annotation-id", "ann-001",
-            "--text-file", str(tmp_project / "draft.tex"),
-        ],
-        "commit-phase": ["--phase", "1"],
-        "wait-event": [],
-        "migrate-state": ["--from", "1", "--to", "1"],
-    }
-    argv = [
-        "--project-dir", str(tmp_project),
-        subcommand,
-        *args_by_cmd[subcommand],
-    ]
-    with pytest.raises(NotImplementedError, match=f"subcommand {subcommand}"):
-        cli.main(argv)
 
 
 def test_print_json_writes_single_line(capsys: pytest.CaptureFixture):
@@ -580,6 +501,123 @@ def test_cli_commit_phase_subcommand(tmp_path: Path) -> None:
     ).stdout
     assert sha_printed in log
     assert "smoke test" in log
+
+
+# ---- Task 10.3: preview subcommand -----------------------------------------
+
+from unittest.mock import patch as _patch
+
+from review_pdf_to_latex import preview as _preview_mod
+
+
+def _make_new_text_file(tmp_path: Path, content: str) -> Path:
+    p = tmp_path / "new_text.tex"
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
+def test_cli_preview_prints_build_id_and_exits_zero(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """Successful preview prints the build ID to stdout and returns 0."""
+    new_text_file = _make_new_text_file(tmp_project, "speculative text\n")
+
+    def fake_preview(state_dir, annotation_id, new_text):  # type: ignore[no-untyped-def]
+        assert annotation_id == "ann-001"
+        assert new_text == "speculative text\n"
+        return "build-042"
+
+    with _patch.object(_preview_mod, "preview", side_effect=fake_preview):
+        rc = cli.main(
+            [
+                "--project-dir", str(tmp_project),
+                "preview",
+                "--annotation-id", "ann-001",
+                "--new-text-file", str(new_text_file),
+            ]
+        )
+
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert out == "build-042"
+
+
+def test_cli_preview_exits_7_for_unknown_annotation(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """AnnotationNotFoundError → exit code 7."""
+    new_text_file = _make_new_text_file(tmp_project, "x\n")
+
+    with _patch.object(
+        _preview_mod,
+        "preview",
+        side_effect=_preview_mod.AnnotationNotFoundError("ann-999 not found"),
+    ):
+        rc = cli.main(
+            [
+                "--project-dir", str(tmp_project),
+                "preview",
+                "--annotation-id", "ann-999",
+                "--new-text-file", str(new_text_file),
+            ]
+        )
+
+    assert rc == cli.EXIT_ANNOTATION_NOT_FOUND == 7
+    err = capsys.readouterr().err
+    assert "ann-999" in err
+
+
+def test_cli_preview_exits_8_for_unresolved_mapping(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """MappingUnresolvedError → exit code 8."""
+    new_text_file = _make_new_text_file(tmp_project, "x\n")
+
+    with _patch.object(
+        _preview_mod,
+        "preview",
+        side_effect=_preview_mod.MappingUnresolvedError(
+            "ann-001 mapping unresolved"
+        ),
+    ):
+        rc = cli.main(
+            [
+                "--project-dir", str(tmp_project),
+                "preview",
+                "--annotation-id", "ann-001",
+                "--new-text-file", str(new_text_file),
+            ]
+        )
+
+    assert rc == cli.EXIT_MAPPING_UNRESOLVED == 8
+
+
+def test_cli_preview_exits_17_on_in_place_restore_failure(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """InPlaceRestoreError → exit code 17 with recovery instructions on stderr."""
+    new_text_file = _make_new_text_file(tmp_project, "x\n")
+
+    with _patch.object(
+        _preview_mod,
+        "preview",
+        side_effect=_preview_mod.InPlaceRestoreError(
+            "failed to restore /tmp/foo.tex; "
+            "recovery at .review-state/preview-recovery-20260516T200000.txt"
+        ),
+    ):
+        rc = cli.main(
+            [
+                "--project-dir", str(tmp_project),
+                "preview",
+                "--annotation-id", "ann-001",
+                "--new-text-file", str(new_text_file),
+            ]
+        )
+
+    assert rc == cli.EXIT_RESTORE_FAILED == 17
+    err = capsys.readouterr().err
+    assert "recovery" in err.lower()
 
 
 @pdflatex
