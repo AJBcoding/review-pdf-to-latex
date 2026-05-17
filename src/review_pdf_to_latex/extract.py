@@ -97,25 +97,39 @@ def _bbox_recover_text(
     annotation's quad points no longer line up with the page's text run
     even though the underlying text is intact.
 
+    Uses ``page.crop`` (intersection semantics) rather than
+    ``page.within_bbox`` (strict containment). Tight-fitting annotation
+    rectangles never fully contain a character's bounding box — character
+    glyphs leak above/below the visible highlight by a pixel or two — so
+    ``within_bbox`` returns empty for ~every real annotation regardless
+    of ``strict=False``. ``crop`` returns any character whose box overlaps
+    the region, which is what we want for "what text was highlighted?".
+
     ``bbox`` is in pdfannots' PDF-coordinate frame: (left, bottom, right, top)
     with origin at the page's bottom-left. pdfplumber uses (x0, top, x1, bottom)
     with origin at the top-left, so we flip ``y`` against page height.
 
-    Returns the recovered text (stripped), or ``""`` if the crop is empty,
-    bbox is degenerate, or pdfplumber raises.
+    A small minority of PDFs (or pdfannots variants) report bbox in the
+    top-left frame already; for those the flipped crop falls in dead space.
+    If the flipped crop is empty, we fall back to the raw bbox — costs one
+    extra crop but converts misses into hits.
+
+    Returns the recovered text (stripped), or ``""`` if both crops are
+    empty, the bbox is degenerate, or pdfplumber raises.
     """
     left, bottom, right, top = bbox
     if right - left <= 0 or top - bottom <= 0:
         return ""
     try:
         page = plumb_pdf.pages[page_index]
-        crop = page.within_bbox(
-            (left, page.height - top, right, page.height - bottom)
-        )
-        text = crop.extract_text() or ""
+        flipped = (left, page.height - top, right, page.height - bottom)
+        text = (page.crop(flipped).extract_text() or "").strip()
+        if text:
+            return text
+        # Some PDFs disagree on the y-axis origin; try the raw bbox.
+        return (page.crop((left, bottom, right, top)).extract_text() or "").strip()
     except Exception:  # noqa: BLE001 — recovery is best-effort by design
         return ""
-    return text.strip()
 
 
 def read_annotations(
