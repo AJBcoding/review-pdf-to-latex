@@ -50,6 +50,7 @@ htmlcov/
 
 # Project-specific
 .superpowers/
+.claude/
 *.log
 
 # Build / cache directories the engine will create at runtime
