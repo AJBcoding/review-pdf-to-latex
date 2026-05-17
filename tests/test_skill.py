@@ -52,3 +52,17 @@ def test_skill_phase0_section_present_and_invocations_correct(skill_text: str) -
     assert "review-pdf serve --project-dir" in skill_text and "--mapping-mode" in skill_text
     # Must instruct Claude to check needs_review before advancing:
     assert "needs_review" in skill_text
+
+
+def test_skill_phase1_section_present_and_loop_correct(skill_text: str) -> None:
+    assert "## Phase 1 — Batch pre-apply" in skill_text
+    # Reverse-line-order is the single most important sequencing rule:
+    assert "reverse" in skill_text.lower() and "line" in skill_text.lower()
+    # The four core CLI calls must each appear:
+    for cli in ("review-pdf apply", "review-pdf build", "review-pdf revert", "review-pdf commit-phase --phase 1"):
+        assert cli in skill_text, f"missing CLI invocation: {cli}"
+    # SURFACE handling: trigger_match annotations are surfaced_pending:
+    assert "trigger_match" in skill_text
+    assert "surfaced_pending" in skill_text
+    # Clean-git precondition mentioned:
+    assert "git status" in skill_text or "clean" in skill_text.lower()
