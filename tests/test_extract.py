@@ -659,3 +659,110 @@ def test_run_extract_cli_arg_overrides_config_file(tmp_path: Path) -> None:
     assert any(a["trigger_match"] for a in annotations_doc["annotations"]), (
         "explicit surface_trigger arg failed to override config-file value"
     )
+
+
+# ---- rev-ze1: corrupt PDF surfaces helpful guidance, not bare AssertionError ----
+
+
+def _assert_helpful_corruption_message(message: str) -> None:
+    """Shared shape check for the user-facing corrupt-PDF error."""
+    assert "pdfannots failed to parse" in message, (
+        f"missing failure prefix in: {message!r}"
+    )
+    assert "AssertionError" in message, (
+        f"missing exception type for diagnosis in: {message!r}"
+    )
+    # Concrete recovery steps the user can actually take.
+    assert "Preview" in message and "Acrobat" in message, (
+        f"missing recovery guidance in: {message!r}"
+    )
+    assert "corrupted content streams" in message, (
+        f"missing root-cause hint in: {message!r}"
+    )
+
+
+def test_read_annotations_assertion_in_process_file_becomes_helpful_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare AssertionError from pdfannots.process_file must be re-raised as
+    RuntimeError with user-facing recovery guidance (rev-ze1)."""
+    import pdfannots
+
+    def boom(fh, **kwargs):
+        raise AssertionError  # bare — no message, as pdfannots emits
+
+    monkeypatch.setattr(
+        "review_pdf_to_latex.extract.pdfannots.process_file", boom
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        read_annotations(FIXTURE_PDF)
+    _assert_helpful_corruption_message(str(excinfo.value))
+    # The originating exception should be chained for debugging.
+    assert isinstance(excinfo.value.__cause__, AssertionError)
+    # Suppress unused-import warning while keeping the dependency explicit.
+    _ = pdfannots
+
+
+def test_read_annotations_assertion_inside_loop_becomes_helpful_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An AssertionError raised mid-iteration (e.g. raw.gettext() on a
+    broken highlight) must be caught and re-raised with the same guidance,
+    including the page number where the failure occurred (rev-ze1)."""
+    import pdfannots
+
+    real_process_file = pdfannots.process_file
+
+    def fake_process_file(fh, **kwargs):
+        doc = real_process_file(fh, **kwargs)
+        for page in doc.pages:
+            for raw in page.annots:
+                def explode():
+                    raise AssertionError
+                raw.gettext = explode
+        return doc
+
+    monkeypatch.setattr(
+        "review_pdf_to_latex.extract.pdfannots.process_file", fake_process_file
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        read_annotations(FIXTURE_PDF)
+    message = str(excinfo.value)
+    _assert_helpful_corruption_message(message)
+    assert "page " in message, (
+        f"loop-body failure should report which page failed: {message!r}"
+    )
+
+
+def test_run_extract_corrupt_pdf_exits_4_with_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End-to-end: when pdfannots blows up, the CLI exits with the pdfannots
+    failure code AND the user sees actionable guidance on stderr (rev-ze1)."""
+    from review_pdf_to_latex.extract import run_extract
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\end{document}\n",
+        encoding="utf-8",
+    )
+
+    def boom(fh, **kwargs):
+        raise AssertionError
+
+    monkeypatch.setattr(
+        "review_pdf_to_latex.extract.pdfannots.process_file", boom
+    )
+
+    rc = run_extract(pdf_path=FIXTURE_PDF, project_dir=project)
+    assert rc == 4
+
+    err = capsys.readouterr().err
+    _assert_helpful_corruption_message(err)
+    # Should not surface the bare "AssertionError:" line that triggered the bug.
+    assert "ERROR: AssertionError:\n" not in err, (
+        f"raw pdfannots noise leaked through to user: {err!r}"
+    )

@@ -145,7 +145,9 @@ def read_annotations(
 
     Raises:
         FileNotFoundError: pdf_path does not exist.
-        RuntimeError: pdfannots failed to parse the PDF.
+        RuntimeError: pdfannots failed to parse the PDF or one of its
+            annotations. The message includes guidance on recovering from
+            a structurally-corrupt PDF (rev-ze1).
     """
     import pdfplumber
 
@@ -153,11 +155,16 @@ def read_annotations(
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
+    # pdfannots raises bare AssertionError (subclass of Exception) from corrupt
+    # content streams. We catch broadly here and again around the per-annotation
+    # loop body because the failure point varies: structurally-broken PDFs fail
+    # in process_file, while individual broken annotations fail in raw.gettext()
+    # or raw.boxes access. Both paths surface the same user-facing guidance.
     try:
         with pdf_path.open("rb") as fh:
             doc = pdfannots.process_file(fh, emit_progress_to=None)
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"pdfannots failed to parse {pdf_path}: {exc}") from exc
+        raise RuntimeError(_corrupt_pdf_message(pdf_path, exc)) from exc
 
     annotations: list[Annotation] = []
     counter = 0
@@ -168,20 +175,25 @@ def read_annotations(
             page_number = page.pageno + 1
             for raw in page.annots:
                 counter += 1
-                highlighted_text = (raw.gettext() or "").strip()
-                comment = (raw.contents or "").strip()
-                author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
-                if raw.boxes:
-                    xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
-                    ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
-                    bbox: tuple[float, float, float, float] = (
-                        float(min(xs)),
-                        float(min(ys)),
-                        float(max(xs)),
-                        float(max(ys)),
-                    )
-                else:
-                    bbox = (0.0, 0.0, 0.0, 0.0)
+                try:
+                    highlighted_text = (raw.gettext() or "").strip()
+                    comment = (raw.contents or "").strip()
+                    author = (getattr(raw, "author", None) or "anonymous").strip() or "anonymous"
+                    if raw.boxes:
+                        xs = [b.x0 for b in raw.boxes] + [b.x1 for b in raw.boxes]
+                        ys = [b.y0 for b in raw.boxes] + [b.y1 for b in raw.boxes]
+                        bbox: tuple[float, float, float, float] = (
+                            float(min(xs)),
+                            float(min(ys)),
+                            float(max(xs)),
+                            float(max(ys)),
+                        )
+                    else:
+                        bbox = (0.0, 0.0, 0.0, 0.0)
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        _corrupt_pdf_message(pdf_path, exc, page=page_number)
+                    ) from exc
 
                 # Bbox fallback for Highlight annotations whose quad points
                 # no longer link to the page text run.
@@ -204,6 +216,34 @@ def read_annotations(
                 )
 
     return annotations
+
+
+def _corrupt_pdf_message(
+    pdf_path: Path, exc: BaseException, page: int | None = None
+) -> str:
+    """Build the user-facing error string for a pdfannots parse failure.
+
+    pdfannots raises bare ``AssertionError`` (often with no message) on
+    structurally-corrupt PDFs — e.g., Adobe-edited files round-tripped through
+    multiple tools. Surface the file, the failure location, and concrete
+    recovery steps so the user knows what to try next instead of staring at
+    ``ERROR: AssertionError:`` (rev-ze1).
+    """
+    exc_type = type(exc).__name__
+    detail = str(exc).strip() or "(no message)"
+    where = f" while reading page {page}" if page is not None else ""
+    return (
+        f"pdfannots failed to parse {pdf_path}{where}: {exc_type}: {detail}\n"
+        "The PDF may have corrupted content streams (common after multiple "
+        "Adobe/Preview round-trips).\n"
+        "Try one of:\n"
+        "  1. Re-save the PDF via Preview ('Export as PDF') or Acrobat "
+        "('Save As Other > Optimized PDF')\n"
+        "  2. Print to PDF, then re-apply highlight annotations onto the "
+        "clean copy\n"
+        "  3. Reconstruct annotations onto a fresh export from the source "
+        "document"
+    )
 
 
 def render_pages(pdf_path: Path, out_dir: Path, dpi: int = 150) -> list[Path]:
@@ -650,7 +690,9 @@ def run_extract(
     try:
         annotations = read_annotations(pdf_path, trigger_phrase=effective_trigger)
     except RuntimeError as exc:
-        print(f"error: pdfannots failed: {exc}", file=sys.stderr)
+        # read_annotations already formats a multi-line user-facing message
+        # (see _corrupt_pdf_message); print it as-is rather than re-prefixing.
+        print(f"error: {exc}", file=sys.stderr)
         return 4
 
     # 2. Render pages.
