@@ -223,3 +223,39 @@ def test_frame_has_no_external_stylesheet_link():
     tpl = env.get_template("frame.html")
     out = tpl.render(**normal_context())
     assert 'rel="stylesheet"' not in out
+
+
+def test_frame_script_posts_to_api_events():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    assert 'fetch("/api/events"' in out
+    assert '"method": "POST"' in out or "method: \"POST\"" in out
+
+
+def test_frame_script_handles_redraft_with_prompt():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    # The handler must prompt when action is "redraft" and send speculative_text.
+    assert "redraft" in out
+    assert "prompt(" in out
+    assert "speculative_text" in out
+
+
+def test_frame_script_polls_state_and_reloads_on_change():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    assert "setInterval" in out
+    assert '"/api/state"' in out or "'/api/state'" in out
+    assert "location.reload" in out
+
+
+def test_frame_script_disables_buttons_after_send():
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    # After a successful POST, buttons should be disabled so the user can't double-click.
+    assert "button[data-action]" in out
+    assert "disabled = true" in out or "b.disabled" in out

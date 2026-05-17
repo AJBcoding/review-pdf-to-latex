@@ -246,8 +246,161 @@
     {% endif %}
   </main>
   <script>
-    // Body filled by Task 9.4 — placeholder so the file parses and the test passes.
-    async function sendAction() { /* implemented in Task 9.4 */ }
+    "use strict";
+
+    // ─────────────────────────────────────────────────────────────
+    // Click handler: POST to /api/events, then wait for state.json
+    // to change (the 1s poll below picks that up and reloads).
+    // Spec §10.5.
+    // ─────────────────────────────────────────────────────────────
+    async function sendAction(annotationId, action, extra) {
+      const body = Object.assign(
+        {annotation_id: annotationId, action: action},
+        extra || {}
+      );
+      let r;
+      try {
+        r = await fetch("/api/events", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body)
+        });
+      } catch (netErr) {
+        alert("Network error contacting viewer: " + netErr);
+        return;
+      }
+      if (r.status !== 204) {
+        const err = await r.text();
+        alert("Server rejected action (" + r.status + "): " + err);
+        return;
+      }
+      // Disable the button row so the user can't double-click while the
+      // engine processes. The state poll will reload the page once the
+      // engine writes state.json, which restores button state.
+      document.querySelectorAll("button[data-action]").forEach(function (b) {
+        b.disabled = true;
+      });
+      const s = document.getElementById("status");
+      if (s) s.textContent = "Waiting for engine...";
+    }
+
+    document.querySelectorAll("button[data-action]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const action = btn.dataset.action;
+        const annotationId = btn.dataset.annotationId;
+        const extra = {};
+        if (action === "redraft") {
+          const t = window.prompt("Redraft text (leave empty to cancel):", "");
+          if (!t) return;
+          extra.speculative_text = t;
+        } else if (action === "preview") {
+          const t = window.prompt("Preview hypothetical text:", "");
+          if (!t) return;
+          extra.speculative_text = t;
+        }
+        sendAction(annotationId, action, extra);
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // Mapping-mode form handler: POST manual override, then reload.
+    // Form fields: file (select), line_start (number), line_end (number),
+    // and a hidden annotation_id.
+    // ─────────────────────────────────────────────────────────────
+    document.querySelectorAll("form.manual-override").forEach(function (form) {
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const body = {
+          annotation_id: fd.get("annotation_id"),
+          action: "override-mapping",
+          file: fd.get("file"),
+          line_start: parseInt(fd.get("line_start"), 10),
+          line_end: parseInt(fd.get("line_end"), 10)
+        };
+        if (!body.file || isNaN(body.line_start) || isNaN(body.line_end)) {
+          alert("Pick a file and enter integer line numbers.");
+          return;
+        }
+        if (body.line_start < 1 || body.line_end < body.line_start) {
+          alert("Line range must satisfy 1 <= start <= end.");
+          return;
+        }
+        let r;
+        try {
+          r = await fetch("/api/events", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body)
+          });
+        } catch (netErr) {
+          alert("Network error: " + netErr);
+          return;
+        }
+        if (r.status !== 204) {
+          const err = await r.text();
+          alert("Override-mapping rejected (" + r.status + "): " + err);
+          return;
+        }
+        // Successful POST: disable this form's button row while we wait.
+        form.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // Candidate-confirm buttons in mapping mode: clicking a candidate
+    // POSTs the same payload using the candidate's file/lines.
+    // ─────────────────────────────────────────────────────────────
+    document.querySelectorAll("button[data-confirm-candidate]").forEach(function (btn) {
+      btn.addEventListener("click", async function () {
+        const body = {
+          annotation_id: btn.dataset.annotationId,
+          action: "override-mapping",
+          file: btn.dataset.file,
+          line_start: parseInt(btn.dataset.lineStart, 10),
+          line_end: parseInt(btn.dataset.lineEnd, 10)
+        };
+        let r;
+        try {
+          r = await fetch("/api/events", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body)
+          });
+        } catch (netErr) {
+          alert("Network error: " + netErr);
+          return;
+        }
+        if (r.status !== 204) {
+          const err = await r.text();
+          alert("Override-mapping rejected (" + r.status + "): " + err);
+          return;
+        }
+        btn.disabled = true;
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // Auto-reload when state.json changes. Polls HEAD /api/state every
+    // 500ms (spec §10.2); on Last-Modified change, reloads.
+    // Server contract (chunk D): HEAD /api/state must set Last-Modified
+    // to the state.json mtime, or ETag to its md5.
+    // ─────────────────────────────────────────────────────────────
+    var lastTag = null;
+    setInterval(async function () {
+      try {
+        const r = await fetch("/api/state", {method: "HEAD"});
+        const tag = r.headers.get("etag") || r.headers.get("last-modified") || "";
+        if (lastTag !== null && lastTag !== tag) {
+          location.reload();
+        }
+        lastTag = tag;
+      } catch (e) {
+        // Server went away; surface in status line but don't reload.
+        const s = document.getElementById("status");
+        if (s) s.textContent = "Server unreachable.";
+      }
+    }, 500);
   </script>
 </body>
 </html>
