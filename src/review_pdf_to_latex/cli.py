@@ -352,6 +352,33 @@ def _handle_set_status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_append_chat(args: argparse.Namespace) -> int:
+    """``append-chat`` subcommand handler (spec §8 exit codes 0, 7, 21, 22)."""
+    from review_pdf_to_latex.apply import ApplyError, append_chat_turn
+
+    state_dir = Path(args.project_dir) / ".review-state"
+    try:
+        text = Path(args.text_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read --text-file: {exc}", file=sys.stderr)
+        return EXIT_FILE_MUTATION_FAILED
+    try:
+        append_chat_turn(
+            state_dir=state_dir,
+            annotation_id=args.annotation_id,
+            role=args.role,
+            text=text,
+        )
+    except ApplyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except ValueError as exc:
+        # Invalid role (already restricted by argparse, but defend in depth).
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ILLEGAL_STATUS_TRANSITION
+    return EXIT_OK
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -411,6 +438,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "apply": _handle_apply,
     "revert": _handle_revert,
     "set-status": _handle_set_status,
+    "append-chat": _handle_append_chat,
 }
 
 

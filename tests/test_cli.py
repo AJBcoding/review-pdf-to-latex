@@ -53,6 +53,7 @@ _WIRED_SUBCOMMANDS = frozenset(
         "apply",
         "revert",
         "set-status",
+        "append-chat",
     }
 )
 
@@ -388,6 +389,26 @@ def test_cli_set_status_subcommand(tmp_path: Path) -> None:
     state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
     assert state["annotations"]["ann-001"]["status"] == "accepted"
     assert state["annotations"]["ann-001"]["last_status_reason"] == "looks good"
+
+
+def test_cli_append_chat_subcommand(tmp_path: Path) -> None:
+    project, state_dir, _ = _bootstrap_minimal_project(tmp_path)
+    tf = tmp_path / "msg.txt"
+    tf.write_text("How does this paragraph land?", encoding="utf-8")
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "append-chat",
+            "--annotation-id", "ann-001",
+            "--role", "user",
+            "--text-file", str(tf),
+        ]
+    )
+    assert r.returncode == 0, r.stderr
+    state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    log = state["annotations"]["ann-001"]["surface_chat_log"]
+    assert log[0]["text"] == "How does this paragraph land?"
+    assert log[0]["role"] == "user"
 
 
 @pdflatex
