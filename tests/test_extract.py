@@ -85,3 +85,105 @@ def test_is_trigger_case_insensitive_substring(
 ) -> None:
     """is_trigger returns True iff the trigger phrase is a case-insensitive substring."""
     assert is_trigger(comment, trigger) is expected
+
+
+from review_pdf_to_latex.extract import render_pages
+
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_pages_emits_unpadded_png_files(tmp_path: Path) -> None:
+    """render_pages produces page-1.png, page-2.png... with valid PNG magic bytes."""
+    out_dir = tmp_path / "pages"
+    out_dir.mkdir()
+
+    paths = render_pages(FIXTURE_PDF, out_dir, dpi=72)
+
+    assert isinstance(paths, list), "expected a list of Paths"
+    assert len(paths) >= 1, "fixture PDF must have at least one page"
+
+    for i, p in enumerate(paths, start=1):
+        assert p.name == f"page-{i}.png", (
+            f"page {i} named {p.name!r}; expected page-{i}.png (no zero-padding)"
+        )
+        assert p.exists(), f"{p} not written"
+        with p.open("rb") as fh:
+            header = fh.read(8)
+        assert header == PNG_MAGIC, f"{p} not a valid PNG (header={header!r})"
+
+
+def test_render_pages_raises_on_pdftoppm_failure(tmp_path: Path) -> None:
+    """render_pages raises RuntimeError when pdftoppm exits non-zero."""
+    bogus = tmp_path / "not-a-pdf.pdf"
+    bogus.write_bytes(b"this is not a PDF")
+
+    out_dir = tmp_path / "pages"
+    out_dir.mkdir()
+
+    with pytest.raises(RuntimeError, match="pdftoppm"):
+        render_pages(bogus, out_dir, dpi=72)
+
+
+def test_render_pages_caches_when_pngs_newer_than_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §15 Q9 lazy cache: skip pdftoppm if every page-N.png is newer than the PDF."""
+    import subprocess as _subprocess
+    from review_pdf_to_latex import extract as _extract
+
+    pdf = tmp_path / "fixture.pdf"
+    pdf.write_bytes(FIXTURE_PDF.read_bytes())
+    out_dir = tmp_path / "pages"
+    out_dir.mkdir()
+
+    # First pass: actually rasterize.
+    paths = render_pages(pdf, out_dir, dpi=72)
+    assert paths, "first pass must produce PNGs"
+
+    # Touch every PNG so its mtime is strictly newer than the PDF.
+    import os as _os
+    import time as _time
+    later = _time.time() + 10
+    for p in paths:
+        _os.utime(p, (later, later))
+
+    # Second pass: monkey-patch subprocess.run to assert pdftoppm is NOT invoked.
+    calls: list[list[str]] = []
+    real_run = _subprocess.run
+
+    def _fail_if_pdftoppm(cmd, *a, **kw):
+        if isinstance(cmd, list) and cmd and "pdftoppm" in cmd[0]:
+            calls.append(cmd)
+            raise AssertionError("pdftoppm should not be invoked on cache hit")
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(_extract, "subprocess", _subprocess)
+    monkeypatch.setattr(_subprocess, "run", _fail_if_pdftoppm)
+
+    paths2 = render_pages(pdf, out_dir, dpi=72)
+    assert paths2 == paths, "cache hit must return the same paths"
+    assert calls == [], "pdftoppm was invoked despite a fresh cache"
+
+
+def test_render_pages_reinvokes_pdftoppm_when_pdf_newer_than_pngs(
+    tmp_path: Path,
+) -> None:
+    """Cache is invalidated if the PDF is touched after the PNGs are rendered."""
+    import os as _os
+    import time as _time
+
+    pdf = tmp_path / "fixture.pdf"
+    pdf.write_bytes(FIXTURE_PDF.read_bytes())
+    out_dir = tmp_path / "pages"
+    out_dir.mkdir()
+
+    paths = render_pages(pdf, out_dir, dpi=72)
+    assert paths
+    # Make the PDF newer than every PNG.
+    later = _time.time() + 10
+    _os.utime(pdf, (later, later))
+
+    # render_pages must re-rasterize without raising (the PNGs get overwritten).
+    paths2 = render_pages(pdf, out_dir, dpi=72)
+    assert paths2 == paths

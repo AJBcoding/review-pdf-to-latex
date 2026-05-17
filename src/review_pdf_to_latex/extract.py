@@ -6,6 +6,8 @@ The functions in this module are wired together by `cli.py`'s `extract` handler
 
 from __future__ import annotations
 
+import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -106,3 +108,96 @@ def read_annotations(
             )
 
     return annotations
+
+
+def render_pages(pdf_path: Path, out_dir: Path, dpi: int = 150) -> list[Path]:
+    """Render every page of a PDF to a PNG in `out_dir`, named `page-N.png`.
+
+    Shells out to `pdftoppm -r {dpi} -png {pdf_path} {out_dir}/page`. pdftoppm
+    zero-pads filenames to the digit count of the total page count; this
+    function renames them to drop the padding so that downstream code can
+    address pages by 1-based index without knowing the total.
+
+    Lazy cache (spec §15 Q9): if `out_dir` already contains at least one
+    `page-N.png` AND every such PNG's mtime is >= the PDF's mtime, skip the
+    subprocess and return the existing paths in order. The cache is
+    invalidated whenever the PDF is re-saved (mtime advances).
+
+    Args:
+        pdf_path: Path to source PDF.
+        out_dir: Directory to write PNGs into. Must already exist.
+        dpi: Render resolution (default 150).
+
+    Returns:
+        List of resulting `Path` objects in page order (page 1 first).
+
+    Raises:
+        FileNotFoundError: pdf_path or out_dir missing.
+        RuntimeError: pdftoppm exited non-zero (stderr captured in message).
+    """
+    pdf_path = Path(pdf_path)
+    out_dir = Path(out_dir)
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    if not out_dir.is_dir():
+        raise FileNotFoundError(f"output directory not found: {out_dir}")
+
+    # Cache check: collect existing page-N.png files and compare mtimes.
+    cache_pattern = re.compile(r"^page-(\d+)\.png$")
+    existing: list[tuple[int, Path]] = []
+    for entry in out_dir.iterdir():
+        m = cache_pattern.match(entry.name)
+        if m:
+            existing.append((int(m.group(1)), entry))
+    if existing:
+        pdf_mtime = pdf_path.stat().st_mtime
+        if all(p.stat().st_mtime >= pdf_mtime for _, p in existing):
+            existing.sort(key=lambda t: t[0])
+            return [p for _, p in existing]
+
+    cmd = [
+        "pdftoppm",
+        "-r",
+        str(dpi),
+        "-png",
+        str(pdf_path),
+        str(out_dir / "page"),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "pdftoppm binary not found on PATH; install Poppler"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"pdftoppm exited {exc.returncode}: {exc.stderr.strip() or exc.stdout.strip()}"
+        ) from exc
+
+    # Collect outputs. pdftoppm produces page-NN.png (zero-padded to total
+    # digit count). Parse the numeric suffix and rename to page-N.png.
+    # Reuse cache_pattern compiled at the top of the function.
+    discovered: list[tuple[int, Path]] = []
+    for entry in out_dir.iterdir():
+        m = cache_pattern.match(entry.name)
+        if m:
+            discovered.append((int(m.group(1)), entry))
+    if not discovered:
+        raise RuntimeError(
+            f"pdftoppm produced no PNG files in {out_dir} "
+            f"(stdout={proc.stdout!r}, stderr={proc.stderr!r})"
+        )
+
+    discovered.sort(key=lambda t: t[0])
+    renamed: list[Path] = []
+    for n, padded_path in discovered:
+        target = out_dir / f"page-{n}.png"
+        if padded_path != target:
+            padded_path.replace(target)
+        renamed.append(target)
+    return renamed
