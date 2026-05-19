@@ -72,6 +72,7 @@ _VALID_ACTIONS = frozenset(
     }
 )
 _VALID_NAVIGATE_DIRECTIONS = frozenset({"next", "previous"})
+_VALID_NAVIGATE_VIEWS = frozenset({"unresolved", "all"})
 _MAX_BODY_BYTES = 64 * 1024
 
 
@@ -129,6 +130,14 @@ def _validate_event(payload: object) -> dict[str, Any]:
                 "missing field: direction (must be 'next' or 'previous' for navigate)"
             )
         record["direction"] = direction
+        # Optional view filter (rev-3pm). 'unresolved' (default) walks the
+        # non-terminal subset to match the viewer's default counter; 'all'
+        # walks every annotation in extraction order. Anything else falls
+        # back to 'unresolved' to keep the silent-no-op contract closed.
+        view = payload.get("view", "unresolved")
+        if not isinstance(view, str) or view not in _VALID_NAVIGATE_VIEWS:
+            view = "unresolved"
+        record["view"] = view
     if action == "override-mapping":
         # Required override-mapping fields per spec §10.6.
         file_val = payload.get("file")
@@ -158,6 +167,68 @@ def _validate_event(payload: object) -> dict[str, Any]:
         record["line_start"] = line_start
         record["line_end"] = line_end
     return record
+
+
+def _resolve_navigate_target(
+    state_dir: Path,
+    from_id: str,
+    direction: str,
+    view: str = "unresolved",
+) -> str | None:
+    """Return the annotation_id that a navigate event should land on.
+
+    rev-3pm: status-neutral navigation is auto-dispatched server-side so the
+    viewer's Prev/Next buttons work without a Claude consumer attached. The
+    resolver reads annotations.json + state.json, builds the visible set
+    (per ``view``: "unresolved" excludes spec §7.3 terminal statuses, "all"
+    includes them), and walks one step from ``from_id``.
+
+    Returns ``None`` when no movement is possible — empty visible set,
+    ``from_id`` already at the requested boundary, or state files missing.
+    Returning None means "do nothing"; the caller must not call
+    ``set_current_annotation``.
+    """
+    annotations_path = state_dir / "annotations.json"
+    state_path = state_dir / "state.json"
+    try:
+        annotations = json.loads(annotations_path.read_text()).get("annotations", [])
+        state = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    ann_state = state.get("annotations", {})
+
+    if view == "unresolved":
+        def _visible(ann_id: str) -> bool:
+            status = ann_state.get(ann_id, {}).get("status", "pending")
+            try:
+                return not status_is_terminal(status)
+            except ValueError:
+                # Unknown status — keep visible so it isn't silently skipped.
+                return True
+
+        visible_ids = [a["id"] for a in annotations if _visible(a["id"])]
+    else:
+        visible_ids = [a["id"] for a in annotations]
+
+    if not visible_ids:
+        return None
+
+    if from_id not in visible_ids:
+        # from_id is filtered out (e.g., terminal under unresolved view) or
+        # unknown. Land on the first visible so Next/Prev always advances
+        # somewhere useful rather than no-op'ing.
+        return visible_ids[0]
+
+    idx = visible_ids.index(from_id)
+    if direction == "next":
+        if idx + 1 < len(visible_ids):
+            return visible_ids[idx + 1]
+        return None
+    if direction == "previous":
+        if idx > 0:
+            return visible_ids[idx - 1]
+        return None
+    return None
 
 
 def _append_event_line(events_path: Path, record: dict[str, Any]) -> None:
@@ -281,6 +352,24 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
 
+        # rev-3pm: auto-dispatch status-neutral navigation server-side so the
+        # Prev/Next buttons don't silently no-op when no Claude consumer is
+        # attached. Resolved BEFORE the event is appended so the audit line
+        # can carry the resolved target. State-mutating actions (approve /
+        # reject / redraft / preview / skip / surface) still require a
+        # consumer; the frontend surfaces a "no consumer attached" warning
+        # via watchdog when their reload doesn't fire.
+        resolved_target: str | None = None
+        if record["action"] == "navigate":
+            resolved_target = _resolve_navigate_target(
+                self.project_dir / STATE_DIR_NAME,
+                record["annotation_id"],
+                record["direction"],
+                view=record.get("view", "unresolved"),
+            )
+            if resolved_target is not None:
+                record["resolved_annotation_id"] = resolved_target
+
         # Build the on-disk record: ts first, then annotation_id/action/speculative_text.
         full_record = {"ts": _utc_now_iso(), **record}
         try:
@@ -291,6 +380,20 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
                 f"append failed: {e}\n".encode(),
             )
             return
+
+        if resolved_target is not None:
+            # Engine call lives inline — the server IS calling the engine, so
+            # the "engine-is-sole-writer" invariant holds. Failures here are
+            # logged-but-tolerated: the event is already in state-events.jsonl
+            # so a consumer can still pick up the navigate intent.
+            try:
+                from review_pdf_to_latex.apply import set_current_annotation
+
+                set_current_annotation(
+                    self.project_dir / STATE_DIR_NAME, resolved_target
+                )
+            except Exception:  # noqa: BLE001 - we deliberately swallow.
+                pass
 
         self.send_response(int(HTTPStatus.NO_CONTENT))
         self.send_header("Cache-Control", "no-store")

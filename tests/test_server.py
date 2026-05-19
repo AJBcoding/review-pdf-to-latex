@@ -792,6 +792,246 @@ def test_serve_frame_counter_renders_unresolved_label(
         thread.join(timeout=2.0)
 
 
+# ---- rev-3pm: server-side auto-dispatch of navigate events ------------------
+
+
+def test_resolve_navigate_target_next_within_unresolved(tmp_path: Path) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "pending"),
+            ("ann-002", "deferred"),  # terminal — skipped
+            ("ann-003", "pending"),
+            ("ann-004", "accepted"),  # terminal — skipped
+            ("ann-005", "pending"),
+        ],
+    )
+    state_dir = project / ".review-state"
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-001", "next")
+        == "ann-003"
+    )
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-003", "next")
+        == "ann-005"
+    )
+    # End of the visible (unresolved) set — no movement.
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-005", "next")
+        is None
+    )
+
+
+def test_resolve_navigate_target_previous_within_unresolved(tmp_path: Path) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "pending"),
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),
+        ],
+    )
+    state_dir = project / ".review-state"
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-003", "previous")
+        == "ann-001"
+    )
+    # Start of visible set — no movement.
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-001", "previous")
+        is None
+    )
+
+
+def test_resolve_navigate_target_view_all_includes_terminal(tmp_path: Path) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "pending"),
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),
+        ],
+    )
+    state_dir = project / ".review-state"
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-001", "next", view="all")
+        == "ann-002"
+    )
+
+
+def test_resolve_navigate_target_unknown_from_lands_on_first(tmp_path: Path) -> None:
+    """If from_id isn't visible (e.g., a terminal id under unresolved view),
+    we land on the first visible so Next/Prev never silently no-ops."""
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "deferred"),  # not in unresolved set
+            ("ann-002", "pending"),
+            ("ann-003", "pending"),
+        ],
+    )
+    state_dir = project / ".review-state"
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-001", "next")
+        == "ann-002"
+    )
+
+
+def test_resolve_navigate_target_empty_visible_returns_none(tmp_path: Path) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "accepted"),
+            ("ann-002", "deferred"),
+        ],
+    )
+    state_dir = project / ".review-state"
+    assert (
+        server_mod._resolve_navigate_target(state_dir, "ann-001", "next")
+        is None
+    )
+
+
+def test_navigate_post_mutates_state_without_consumer(tmp_path: Path) -> None:
+    """rev-3pm: clicking Next must advance state.current_annotation_id
+    even when no Claude consumer is running wait-event."""
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "pending"),
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),
+        ],
+    )
+    state_path = project / ".review-state" / "state.json"
+    assert json.loads(state_path.read_text())["current_annotation_id"] == "ann-001"
+
+    port = _pick_port()
+    httpd = server_mod.build_server(project, port)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _ = _post_json(
+            f"http://127.0.0.1:{port}",
+            "/api/events",
+            {"annotation_id": "ann-001", "action": "navigate", "direction": "next"},
+        )
+        assert status == HTTPStatus.NO_CONTENT
+        # State must be mutated server-side (skipping the terminal ann-002).
+        assert (
+            json.loads(state_path.read_text())["current_annotation_id"]
+            == "ann-003"
+        )
+        # Event line preserves the audit trail and carries the resolved id.
+        events_path = project / ".review-state" / "state-events.jsonl"
+        rec = json.loads(events_path.read_text().splitlines()[-1])
+        assert rec["action"] == "navigate"
+        assert rec["direction"] == "next"
+        assert rec["resolved_annotation_id"] == "ann-003"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_navigate_post_at_boundary_is_noop(tmp_path: Path) -> None:
+    """Next at the end of the visible set: 204 with no state mutation, and
+    no resolved_annotation_id on the event record."""
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "pending"),
+            ("ann-002", "pending"),
+        ],
+    )
+    state_path = project / ".review-state" / "state.json"
+    # Seed current at the last visible annotation.
+    state = json.loads(state_path.read_text())
+    state["current_annotation_id"] = "ann-002"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+    port = _pick_port()
+    httpd = server_mod.build_server(project, port)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _ = _post_json(
+            f"http://127.0.0.1:{port}",
+            "/api/events",
+            {"annotation_id": "ann-002", "action": "navigate", "direction": "next"},
+        )
+        assert status == HTTPStatus.NO_CONTENT
+        assert (
+            json.loads(state_path.read_text())["current_annotation_id"]
+            == "ann-002"
+        )
+        events_path = project / ".review-state" / "state-events.jsonl"
+        rec = json.loads(events_path.read_text().splitlines()[-1])
+        assert "resolved_annotation_id" not in rec
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_navigate_post_respects_view_all(tmp_path: Path) -> None:
+    project = _multi_annotation_project(
+        tmp_path,
+        [
+            ("ann-001", "pending"),
+            ("ann-002", "deferred"),
+            ("ann-003", "pending"),
+        ],
+    )
+    state_path = project / ".review-state" / "state.json"
+    port = _pick_port()
+    httpd = server_mod.build_server(project, port)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _ = _post_json(
+            f"http://127.0.0.1:{port}",
+            "/api/events",
+            {
+                "annotation_id": "ann-001",
+                "action": "navigate",
+                "direction": "next",
+                "view": "all",
+            },
+        )
+        assert status == HTTPStatus.NO_CONTENT
+        # With view=all the terminal ann-002 is no longer skipped.
+        assert (
+            json.loads(state_path.read_text())["current_annotation_id"]
+            == "ann-002"
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_post_navigate_unknown_view_falls_back_to_unresolved(running_server) -> None:
+    """Unknown view values fall back silently to 'unresolved' (closed
+    contract — never reject the click). The event still carries view in
+    its record."""
+    base_url, project_dir = running_server
+    status, _ = _post_json(
+        base_url,
+        "/api/events",
+        {
+            "annotation_id": "ann-001",
+            "action": "navigate",
+            "direction": "next",
+            "view": "garbage",
+        },
+    )
+    assert status == HTTPStatus.NO_CONTENT
+    events_path = project_dir / ".review-state" / "state-events.jsonl"
+    rec = json.loads(events_path.read_text().splitlines()[-1])
+    assert rec["view"] == "unresolved"
+
+
 # ---- Task 8.5: wait_for_events polling --------------------------------------
 
 

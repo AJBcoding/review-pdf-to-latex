@@ -43,6 +43,14 @@
     .phase, .order { background: #2c333d; padding: 2px 8px; border-radius: 3px; }
     .counter, .annotation-id { font-weight: 600; }
     .status-line { font-style: italic; opacity: 0.9; }
+    .status-line.status-warning {
+      font-style: normal;
+      opacity: 1;
+      color: #ffcc66;
+      background: #3a3014;
+      padding: 2px 8px;
+      border-radius: 3px;
+    }
 
     /* ───── Main 3-pane grid ───── */
     main {
@@ -456,6 +464,49 @@
     // to change (the 1s poll below picks that up and reloads).
     // Spec §10.5.
     // ─────────────────────────────────────────────────────────────
+    // rev-3pm: navigate is auto-dispatched server-side, but the status-
+    // mutating actions still require a Claude consumer running
+    // ``review-pdf wait-event``. The watchdog below surfaces that to the
+    // user instead of leaving them parked on "Waiting for engine..." with
+    // no recovery path.
+    var NO_CONSUMER_DELAY_MS = 2500;
+    var NO_CONSUMER_RECOVER_MS = 5000;
+    var STATUS_MUTATING_ACTIONS = new Set([
+      "approve", "reject", "redraft", "preview", "skip", "surface"
+    ]);
+    var noConsumerTimer = null;
+    var recoverTimer = null;
+
+    function _clearWatchdog() {
+      if (noConsumerTimer !== null) { clearTimeout(noConsumerTimer); noConsumerTimer = null; }
+      if (recoverTimer !== null) { clearTimeout(recoverTimer); recoverTimer = null; }
+    }
+
+    function _startNoConsumerWatchdog(action) {
+      _clearWatchdog();
+      noConsumerTimer = setTimeout(function () {
+        const s = document.getElementById("status");
+        if (s) {
+          s.textContent =
+            "No consumer attached — click logged to state-events.jsonl, but " +
+            "no engine is processing it. Run `review-pdf wait-event` in a " +
+            "terminal (or open the embedded terminal pane).";
+          s.classList.add("status-warning");
+        }
+      }, NO_CONSUMER_DELAY_MS);
+      recoverTimer = setTimeout(function () {
+        // After the warning has been visible long enough, re-enable the
+        // button row so the user can try a different action without
+        // reloading. Reload still wipes state when the consumer eventually
+        // arrives.
+        document.querySelectorAll(
+          "button[data-action]"
+        ).forEach(function (b) {
+          if (b.dataset._origDisabled !== "1") b.disabled = false;
+        });
+      }, NO_CONSUMER_RECOVER_MS);
+    }
+
     async function sendAction(annotationId, action, extra) {
       const body = Object.assign(
         {annotation_id: annotationId, action: action},
@@ -477,16 +528,27 @@
         alert("Server rejected action (" + r.status + "): " + err);
         return;
       }
-      // Disable the button row so the user can't double-click while the
-      // engine processes. The state poll will reload the page once the
-      // engine writes state.json, which restores button state.
-      document.querySelectorAll(
-        "button[data-action], button[data-navigate]"
-      ).forEach(function (b) {
+      // Status-neutral navigation (rev-bus) is auto-dispatched by the
+      // server (rev-3pm fix #1), so the state-poll loop will reload the
+      // page as soon as state.json mtime bumps. No need to freeze the
+      // button row or arm the no-consumer watchdog for this action.
+      if (action === "navigate") {
+        return;
+      }
+      // Remember the pre-click disabled state so the watchdog's recovery
+      // pass can re-enable only the buttons that were actionable.
+      document.querySelectorAll("button[data-action]").forEach(function (b) {
+        b.dataset._origDisabled = b.disabled ? "1" : "0";
         b.disabled = true;
       });
       const s = document.getElementById("status");
-      if (s) s.textContent = "Waiting for engine...";
+      if (s) {
+        s.textContent = "Waiting for engine...";
+        s.classList.remove("status-warning");
+      }
+      if (STATUS_MUTATING_ACTIONS.has(action)) {
+        _startNoConsumerWatchdog(action);
+      }
     }
 
     document.querySelectorAll("button[data-action]").forEach(function (btn) {
@@ -508,12 +570,16 @@
     });
 
     // Prev/Next buttons (rev-bus). Status-neutral: POST a navigate event
-    // with direction='next'|'previous'. The engine resolves the target
-    // annotation and calls set-current; the state-poll picks up the change.
+    // with direction='next'|'previous'. The server (rev-3pm) resolves the
+    // target inline and calls set-current; the state-poll picks up the
+    // change. ``view`` lets the server respect the viewer's current filter
+    // (unresolved-only by default; "all" when ?include=terminal is active).
+    var NAV_VIEW = {{ view_filter|tojson if view_filter is defined else '"unresolved"' }};
     document.querySelectorAll("button[data-navigate]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         sendAction(btn.dataset.annotationId, "navigate", {
           direction: btn.dataset.navigate,
+          view: NAV_VIEW,
         });
       });
     });
