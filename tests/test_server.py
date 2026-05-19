@@ -580,6 +580,14 @@ def _multi_annotation_project(tmp_path: Path, statuses: list[tuple[str, str]]) -
     (pages / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (build_dir / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
+    # rev-3pm: set_current_annotation runs the source-PDF guard, so the
+    # fixture needs a real source.pdf whose md5 matches annotations.json.
+    import hashlib
+
+    source_pdf = project / "source.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4 multi-annotation-fixture\n")
+    source_pdf_md5 = hashlib.md5(source_pdf.read_bytes()).hexdigest()
+
     annotations = {}
     annotations_list = []
     mappings = {}
@@ -639,8 +647,8 @@ def _multi_annotation_project(tmp_path: Path, statuses: list[tuple[str, str]]) -
         json.dumps(
             {
                 "schema_version": 1,
-                "source_pdf": "/dev/null/source.pdf",
-                "source_pdf_md5": "d41d8cd98f00b204e9800998ecf8427e",
+                "source_pdf": str(source_pdf.resolve()),
+                "source_pdf_md5": source_pdf_md5,
                 "extracted_at": "2026-05-16T20:40:00Z",
                 "extractor": "pdfannots-test",
                 "annotations": annotations_list,

@@ -86,6 +86,29 @@ def test_frame_counter_shows_all_view_label_when_include_terminal():
     assert ">unresolved<" not in out  # the counter itself does not say "unresolved"
 
 
+def test_frame_navigate_passes_view_filter_to_server():
+    """rev-3pm: the Prev/Next click handler embeds the active view_filter so
+    the server's auto-dispatch resolves within the correct visible set."""
+    env = _env()
+    tpl = env.get_template("frame.html")
+    ctx = normal_context()
+    ctx["view_filter"] = "all"
+    ctx["total_all_annotations"] = ctx["total_annotations"]
+    out = tpl.render(**ctx)
+    assert 'var NAV_VIEW = "all"' in out
+
+
+def test_frame_includes_no_consumer_watchdog_wiring():
+    """rev-3pm: the watchdog timer + warning copy must be present in the
+    embedded script so status-mutating clicks aren't silent no-ops."""
+    env = _env()
+    tpl = env.get_template("frame.html")
+    out = tpl.render(**normal_context())
+    assert "NO_CONSUMER_DELAY_MS" in out
+    assert "No consumer attached" in out
+    assert "status-warning" in out
+
+
 def test_frame_renders_mapping_mode_banner_when_mode_mapping():
     env = _env()
     tpl = env.get_template("frame.html")
