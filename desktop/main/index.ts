@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import { engineVersion, pdfHealth } from './engine.js';
+import type { ReadPdfBytesResult } from '@shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -50,6 +52,37 @@ void app.whenReady().then(() => {
   // all carry a usable report; only true engine failures (binary missing,
   // spawn error, non-JSON stdout) come through as ok:false.
   ipcMain.handle('engine:pdfHealth', async (_event, pdfPath: string) => pdfHealth(pdfPath));
+
+  // Read a PDF off disk for the renderer. Sandboxed renderer can't open
+  // file:// URLs; we ship bytes across the IPC boundary instead. Path is
+  // resolved relative to main's cwd (desktop/ during dev).
+  ipcMain.handle('fs:readPdfBytes', async (_event, pdfPath: string): Promise<ReadPdfBytesResult> => {
+    const resolvedPath = resolve(pdfPath);
+    try {
+      const s = await stat(resolvedPath);
+      if (!s.isFile()) {
+        return { ok: false, reason: 'not_a_file', resolvedPath };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'not_found',
+        resolvedPath,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    try {
+      const buf = await readFile(resolvedPath);
+      return { ok: true, bytes: new Uint8Array(buf), resolvedPath };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'read_failed',
+        resolvedPath,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
 
   createWindow();
 

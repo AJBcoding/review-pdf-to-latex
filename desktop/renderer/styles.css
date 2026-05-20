@@ -75,18 +75,131 @@ html, body, #app {
 .document-area {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 8px;
+  padding: 16px;
+  background: #0e0e0e;
 }
 
-.diag {
-  position: fixed;
-  bottom: 8px;
-  right: 8px;
+/*
+ * PDF viewer (renderer/pdf-viewer.ts). The text layer must absolutely overlay
+ * the canvas at exact dimensions so PDF.js's positioned <span>s land on the
+ * glyphs underneath — that's what makes native text selection snap.
+ *
+ * The .textLayer rules below match the canonical PDF.js text-layer styles
+ * (see pdfjs-dist/web/pdf_viewer.css). Deviations risk selection drift —
+ * change with care.
+ */
+/*
+ * .textLayer rules are imported from pdfjs-dist/web/pdf_viewer.css in
+ * pdf-viewer.ts — do NOT redeclare here; the canonical CSS sets up a
+ * chain of CSS variables (--total-scale-factor → --text-scale-factor)
+ * the TextLayer reads at render time, and partial redefinition causes
+ * font-metric drift between spans and canvas glyphs.
+ */
+.pdf-stage {
+  position: relative;
+  display: inline-block;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  background: #fff;
+}
+
+.pdf-canvas { display: block; }
+
+/* §13.6 spike: dark-mode toggle.
+ * Invert + hue-rotate the canvas (not the text layer — text layer is
+ * already transparent and lives above the canvas). hue-rotate compensates
+ * for invert's color-shift so colored elements (highlights, charts)
+ * stay recognizable. Pure CSS — no impact on selection accuracy. */
+.pdf-stage.pdf-dark .pdf-canvas {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+.pdf-stage.pdf-dark { background: #1a1a1a; }
+
+/*
+ * Page-nav strip lives in the document-pane header. Right-aligned controls
+ * inside the same row as the section title.
+ */
+.pdf-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pdf-nav-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdf-nav-controls button {
+  background: #333;
+  color: var(--text);
+  border: 1px solid var(--pane-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pdf-nav-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pdf-nav-controls button:not(:disabled):hover {
+  background: #444;
+}
+
+.pdf-nav-sep {
+  color: var(--pane-border);
+  font-size: 11px;
+  user-select: none;
+}
+
+.pdf-page-label {
   font-family: ui-monospace, monospace;
   font-size: 11px;
   color: var(--muted);
+  min-width: 60px;
+  text-align: center;
+}
+
+/*
+ * Bottom-input pane echo. The §3 input pane will replace this placeholder;
+ * for now we use it to visualize captured §5.2 payloads so the user can
+ * confirm selection capture actually works.
+ */
+.bottom-input {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--text);
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bottom-input.placeholder {
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/*
+ * Diagnostic strip — small text in the TOP-right of the renderer so it
+ * doesn't fight the bottom-input echo for screen space. Pointer-events:
+ * none so it never intercepts clicks on the panes underneath.
+ */
+.diag {
+  position: fixed;
+  top: 6px;
+  right: 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--muted);
   pointer-events: none;
   text-align: right;
-  line-height: 1.5;
+  line-height: 1.4;
   max-width: 60vw;
+  opacity: 0.7;
+  z-index: 10;
 }

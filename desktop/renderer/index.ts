@@ -1,15 +1,23 @@
-import type { EngineResult, PdfHealthResult } from '@shared/types';
+import type { EngineResult, PdfHealthResult, ReadPdfBytesResult } from '@shared/types';
+import { PdfViewer, type SelectionPayload } from './pdf-viewer';
 
-// Renderer entry. Wires up three startup probes that exercise the IPC bridge:
+// Renderer entry. Four startup probes exercise the IPC bridge end-to-end:
 //
-//   1. ping() — confirms contextBridge IPC.
-//   2. engineVersion() — confirms the §13.1 PATH-discovery + spawn path.
-//   3. pdfHealth() — confirms JSON round-trip through the engine for §5.2.
+//   1. ping()            — contextBridge IPC.
+//   2. engineVersion()   — §13.1 PATH-discovery + spawn.
+//   3. pdfHealth()       — JSON round-trip through the engine for §5.2.
+//   4. PdfViewer + readPdfBytes() — port of the 2026-05-20 spike into the
+//      document-viewer pane. Native text selection over PDF.js's TextLayer
+//      yields the §5.2 payload, echoed into the bottom-input placeholder.
 //
-// Real renderer logic (file tree, PDF viewer, comment cards, Claude pane)
-// lands as follow-up milestones. The third probe will be replaced by a
-// real call against whatever PDF the user opens, once project-open lands.
+// Future milestones replace each of these probes with real UX:
+//   #2 swaps the hardcoded probe path for a file picker + health banner
+//   #3 swaps the bottom-input echo for the typed comment/redraft/surface UI
+//   #4 routes selections into the comment stream in the right drawer
 
+// Until the file picker lands, point at a known fixture so the empty shell
+// has a visible PDF to demonstrate the rendering path. Resolved relative to
+// main's cwd (desktop/ during dev) → repo-root tests/fixtures/.
 const PROBE_PDF = '../tests/fixtures/sample-annotated.pdf';
 
 async function init() {
@@ -44,6 +52,88 @@ async function init() {
   } catch (err) {
     pdfHealthLine.textContent = `pdf-health ✗  IPC error: ${err instanceof Error ? err.message : String(err)}`;
   }
+
+  // 4. Mount the PDF viewer
+  await mountPdfViewer();
+}
+
+async function mountPdfViewer() {
+  const mount = document.getElementById('pdfMount');
+  const echo = document.getElementById('selectionEcho');
+  const prevBtn = document.getElementById('pdfPrev') as HTMLButtonElement | null;
+  const nextBtn = document.getElementById('pdfNext') as HTMLButtonElement | null;
+  const darkBtn = document.getElementById('pdfDarkToggle') as HTMLButtonElement | null;
+  const fitPageBtn = document.getElementById('pdfFitPage') as HTMLButtonElement | null;
+  const fitWidthBtn = document.getElementById('pdfFitWidth') as HTMLButtonElement | null;
+  const pageLabel = document.getElementById('pdfPageLabel');
+  if (!mount || !echo || !prevBtn || !nextBtn || !darkBtn || !fitPageBtn || !fitWidthBtn || !pageLabel) return;
+
+  const viewer = new PdfViewer({
+    container: mount,
+    onSelection: (payload) => updateSelectionEcho(echo, payload),
+    onPageInfo: ({ page, totalPages }) => {
+      pageLabel.textContent = `${page} / ${totalPages}`;
+      prevBtn.disabled = page <= 1;
+      nextBtn.disabled = page >= totalPages;
+    },
+  });
+
+  prevBtn.addEventListener('click', () => { void viewer.prevPage(); });
+  nextBtn.addEventListener('click', () => { void viewer.nextPage(); });
+  fitPageBtn.addEventListener('click', () => { void viewer.fitPage(); });
+  fitWidthBtn.addEventListener('click', () => { void viewer.fitWidth(); });
+  darkBtn.addEventListener('click', () => {
+    viewer.setDarkMode(!viewer.isDarkMode());
+    darkBtn.setAttribute('aria-pressed', String(viewer.isDarkMode()));
+  });
+
+  const bytesResult = await window.electronAPI.readPdfBytes(PROBE_PDF);
+  if (!bytesResult.ok) {
+    mount.replaceChildren(formatReadError(bytesResult));
+    return;
+  }
+
+  try {
+    await viewer.loadBytes(bytesResult.bytes);
+  } catch (err) {
+    const errEl = document.createElement('div');
+    errEl.className = 'placeholder';
+    errEl.textContent = `pdf load failed: ${err instanceof Error ? err.message : String(err)}`;
+    mount.replaceChildren(errEl);
+  }
+}
+
+function updateSelectionEcho(echo: HTMLElement, payload: SelectionPayload) {
+  echo.classList.remove('placeholder');
+  echo.textContent = JSON.stringify(
+    {
+      page: payload.page,
+      region: roundedRegion(payload.region),
+      highlighted_text: payload.highlighted_text,
+    },
+    null,
+    2,
+  );
+}
+
+function roundedRegion(r: SelectionPayload['region']) {
+  return {
+    x: Math.round(r.x * 10) / 10,
+    y: Math.round(r.y * 10) / 10,
+    w: Math.round(r.w * 10) / 10,
+    h: Math.round(r.h * 10) / 10,
+  };
+}
+
+function formatReadError(r: ReadPdfBytesResult): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'placeholder';
+  if (!r.ok) {
+    el.textContent = `pdf read failed (${r.reason}): ${r.resolvedPath}${r.error ? ` — ${r.error}` : ''}`;
+  } else {
+    el.textContent = 'pdf read returned no bytes';
+  }
+  return el;
 }
 
 function formatEngineResult(r: EngineResult): string {

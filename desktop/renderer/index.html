@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!--
+    CSP. PDF.js needs:
+      - worker-src 'self' blob: — to instantiate its pdf.worker as a Worker
+      - script-src 'self' blob: — Vite-bundled worker URLs and PDF.js's
+        canvas painting can use blob: URLs
+      - img-src adds blob: for canvas → ImageBitmap paths PDF.js takes on
+        some PDF operators
+  -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+        content="default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
   <title>review-pdf</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
@@ -15,14 +23,22 @@
     </aside>
 
     <main class="pane middle" data-pane="document">
-      <header class="pane-header">Document viewer</header>
-      <div class="pane-body placeholder document-area">
-        <p>empty shell — document viewer (PDF / Markdown / Word later) lands here per §2.</p>
-        <p>PDF.js text-layer integration referenced by §5.2 and validated by the
-           <a href="../docs/research/2026-05-20-pdf-text-layer-spike/README.md">2026-05-20 spike</a>.</p>
-      </div>
+      <header class="pane-header pdf-nav" id="pdfNav">
+        <span>Document viewer</span>
+        <span class="pdf-nav-controls">
+          <button id="pdfPrev" type="button" disabled>◀</button>
+          <span id="pdfPageLabel" class="pdf-page-label">— / —</span>
+          <button id="pdfNext" type="button" disabled>▶</button>
+          <span class="pdf-nav-sep" aria-hidden="true">│</span>
+          <button id="pdfFitPage" type="button" title="Fit whole page in view">Fit page</button>
+          <button id="pdfFitWidth" type="button" title="Fit page width to view (scroll vertically)">Fit width</button>
+          <span class="pdf-nav-sep" aria-hidden="true">│</span>
+          <button id="pdfDarkToggle" type="button" title="Toggle dark mode (§13.6 spike)">🌓</button>
+        </span>
+      </header>
+      <div class="pane-body document-area" id="pdfMount"></div>
       <footer class="pane-footer">
-        <div class="bottom-input placeholder">empty shell — bottom input pane (comment / redraft / surface) per §3</div>
+        <div class="bottom-input placeholder" id="selectionEcho">empty shell — bottom input pane (comment / redraft / surface) per §3.  Select text in the PDF to echo the §5.2 payload here.</div>
       </footer>
     </main>
 

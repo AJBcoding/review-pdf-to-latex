@@ -79,6 +79,15 @@ export type PdfHealthResult =
   | { ok: true; report: PdfHealthReport; exitCode: number; resolvedPath: string }
   | { ok: false; reason: 'engine_failed'; engine: EngineResult };
 
+/**
+ * Result of reading a PDF file from disk into renderer memory.
+ * The renderer is sandboxed and can't access the filesystem directly;
+ * main reads the bytes and ships them across the IPC boundary.
+ */
+export type ReadPdfBytesResult =
+  | { ok: true; bytes: Uint8Array; resolvedPath: string }
+  | { ok: false; reason: 'not_found' | 'not_a_file' | 'read_failed'; resolvedPath: string; error?: string };
+
 export interface ElectronAPI {
   // Smoke-test echo, retained from the empty-shell milestone.
   ping(message: string): Promise<string>;
@@ -89,6 +98,10 @@ export interface ElectronAPI {
   // into a typed PdfHealthReport. The renderer calls this at PDF-load time
   // to drive the §5.2 load-time banner.
   pdfHealth(pdfPath: string): Promise<PdfHealthResult>;
+  // Reads a PDF file from disk and returns its bytes. The renderer feeds
+  // these to `pdfjsLib.getDocument({data})`. Paths are resolved relative
+  // to the main process's cwd (the desktop/ dir during dev).
+  readPdfBytes(pdfPath: string): Promise<ReadPdfBytesResult>;
 }
 
 declare global {

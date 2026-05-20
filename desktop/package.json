@@ -18,5 +18,8 @@
     "electron-vite": "^2.3.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.7.284"
   }
 }
