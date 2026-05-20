@@ -30,7 +30,6 @@ interface ViewerHandles {
   viewer: PdfViewer;
   mount: HTMLElement;
   empty: HTMLElement;
-  echo: HTMLElement;
   title: HTMLElement;
   banner: HTMLElement;
   prevBtn: HTMLButtonElement;
@@ -39,6 +38,40 @@ interface ViewerHandles {
   fitWidthBtn: HTMLButtonElement;
   darkBtn: HTMLButtonElement;
 }
+
+/** Active comment-tool state (§4.2). Maps 1:1 to `engagement_level` (§11.1). */
+type Tool = 'comment' | 'redraft' | 'surface';
+
+/** What a single bottom-input submit produces. Shape mirrors §8's comment
+ *  data model — milestone #3 builds the payload + echoes it; milestone #4
+ *  persists to `.review-state/drafts/<doc-version>.json`. */
+interface CommentPayload {
+  id: string;
+  doc_id: string;
+  doc_version: string;
+  anchor: { page: number; region: { x: number; y: number; w: number; h: number } };
+  highlighted_text: string;
+  comment: string;
+  redraft: string | null;
+  redraft_suggestion: null;
+  engagement_level: Tool;
+  author: string;
+  kind: 'comment';
+  status: 'open';
+  created_at: string;
+}
+
+interface DocState {
+  /** Absolute path of the currently loaded PDF. Used as `doc_id` until the
+   *  project model lands (milestone #4). */
+  path: string;
+  /** Last non-empty selection the viewer reported. Persists across submits
+   *  so the user can stack Comment + Redraft against the same highlight. */
+  lastSelection: SelectionPayload | null;
+}
+
+const docState: DocState = { path: '', lastSelection: null };
+let activeTool: Tool = 'comment';
 
 async function init() {
   await mountStartupDiagnostics();
@@ -74,7 +107,6 @@ async function mountStartupDiagnostics(): Promise<void> {
 function bootProjectOpenFlow(): void {
   const mount = document.getElementById('pdfMount');
   const empty = document.getElementById('pdfEmpty');
-  const echo = document.getElementById('selectionEcho');
   const title = document.getElementById('pdfTitle');
   const banner = document.getElementById('pdfBanner');
   const openBtn = document.getElementById('pdfOpen') as HTMLButtonElement | null;
@@ -85,7 +117,7 @@ function bootProjectOpenFlow(): void {
   const fitWidthBtn = document.getElementById('pdfFitWidth') as HTMLButtonElement | null;
   const pageLabel = document.getElementById('pdfPageLabel');
   if (
-    !mount || !empty || !echo || !title || !banner ||
+    !mount || !empty || !title || !banner ||
     !openBtn || !prevBtn || !nextBtn || !darkBtn ||
     !fitPageBtn || !fitWidthBtn || !pageLabel
   ) return;
@@ -94,7 +126,7 @@ function bootProjectOpenFlow(): void {
   // as a sibling element and toggle visibility between them.
   const viewer = new PdfViewer({
     container: mount,
-    onSelection: (payload) => updateSelectionEcho(echo, payload),
+    onSelection: handleSelection,
     onPageInfo: ({ page, totalPages }) => {
       pageLabel.textContent = `${page} / ${totalPages}`;
       prevBtn.disabled = page <= 1;
@@ -103,9 +135,11 @@ function bootProjectOpenFlow(): void {
   });
 
   const handles: ViewerHandles = {
-    viewer, mount, empty, echo, title, banner,
+    viewer, mount, empty, title, banner,
     prevBtn, nextBtn, fitPageBtn, fitWidthBtn, darkBtn,
   };
+
+  bootToolPaletteAndInput();
 
   prevBtn.addEventListener('click', () => { void viewer.prevPage(); });
   nextBtn.addEventListener('click', () => { void viewer.nextPage(); });
@@ -142,6 +176,11 @@ async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Pr
 async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
+  // Reset comment-input state when a new doc is opened — selection caches
+  // belong to the previous document.
+  docState.path = path;
+  docState.lastSelection = null;
+  updateAnchorMeta();
 
   // Kick off bytes + health in parallel. Both round-trip through main; running
   // them concurrently shaves ~engine-startup-time off the visible load latency.
@@ -321,29 +360,222 @@ function formatPageList(pages: number[]): string {
   return `${label} ${ranges.join(', ')}`;
 }
 
-// ─── Selection echo + diagnostic formatters (unchanged from milestone #1) ──
+// ─── §4.2 tool palette + §4.3 bottom input ───────────────────────────────
 
-function updateSelectionEcho(echo: HTMLElement, payload: SelectionPayload) {
-  echo.classList.remove('placeholder');
-  echo.textContent = JSON.stringify(
-    {
-      page: payload.page,
-      region: roundedRegion(payload.region),
-      highlighted_text: payload.highlighted_text,
-    },
-    null,
-    2,
-  );
+function bootToolPaletteAndInput(): void {
+  const palette = document.getElementById('toolPalette');
+  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  const clearBtn = document.getElementById('commentClear') as HTMLButtonElement | null;
+  if (!palette || !input || !clearBtn) return;
+
+  // Tool selection (click + ⌘1/⌘2/⌘3 accelerators per spec §16 keyboard table).
+  palette.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-tool]');
+    if (!btn) return;
+    const next = btn.dataset.tool as Tool | undefined;
+    if (next) setActiveTool(next);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.key === '1') { e.preventDefault(); setActiveTool('comment'); }
+    else if (e.key === '2') { e.preventDefault(); setActiveTool('redraft'); }
+    else if (e.key === '3') { e.preventDefault(); setActiveTool('surface'); }
+  });
+
+  // §4.3 friction reductions: plain Enter submits, Shift+Enter is a soft
+  // return. Esc clears the in-memory buffer (the buffer is the only thing
+  // lost — no persisted state to invalidate).
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void handleSubmit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      clearInput();
+    }
+  });
+  clearBtn.addEventListener('click', () => { clearInput(); input.focus(); });
+
+  updateAnchorMeta();
 }
 
-function roundedRegion(r: SelectionPayload['region']) {
+function setActiveTool(next: Tool): void {
+  if (next === activeTool) return;
+  const previous = activeTool;
+  activeTool = next;
+  // Reflect active state in the palette buttons.
+  document.querySelectorAll<HTMLButtonElement>('#toolPalette .tool-btn').forEach((b) => {
+    const on = b.dataset.tool === next;
+    b.classList.toggle('is-active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  // Switching INTO Redraft with a live selection → populate the input with
+  // highlighted_text as the editing starter (§4.3). Switching OUT of Redraft
+  // leaves whatever is in the input alone — the user owns the buffer.
+  if (next === 'redraft' && previous !== 'redraft' && docState.lastSelection) {
+    const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+    if (input) {
+      input.value = docState.lastSelection.highlighted_text;
+      input.focus();
+      input.select();
+    }
+  }
+}
+
+/** Selection callback wired into PdfViewer. Caches the payload so it's
+ *  available at submit time and updates the anchor-status meta line. */
+function handleSelection(payload: SelectionPayload): void {
+  docState.lastSelection = payload;
+  updateAnchorMeta();
+  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  if (!input) return;
+  // §4.3: a fresh selection while Redraft is active populates the input as
+  // the editing starter. Comment / Surface tools leave the buffer alone.
+  if (activeTool === 'redraft') {
+    input.value = payload.highlighted_text;
+    input.focus();
+    input.select();
+    return;
+  }
+  // §4.3 for Comment/Surface: "input gets focus; user types comment; Enter
+  // submits." Without this, keystrokes after a highlight land in the PDF
+  // text layer and never reach the textarea, so Enter does nothing.
+  input.focus();
+}
+
+function updateAnchorMeta(): void {
+  const meta = document.getElementById('commentAnchor');
+  if (!meta) return;
+  const sel = docState.lastSelection;
+  if (!sel) {
+    meta.textContent = docState.path
+      ? 'No selection — highlight text in the PDF to anchor a comment.'
+      : 'No PDF loaded.';
+    meta.classList.remove('has-selection');
+    return;
+  }
+  const r = sel.region;
+  const snippet = truncate(sel.highlighted_text, 60);
+  meta.textContent = `p.${sel.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)} · “${snippet}”`;
+  meta.classList.add('has-selection');
+}
+
+function clearInput(): void {
+  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  if (input) input.value = '';
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+async function handleSubmit(): Promise<void> {
+  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  if (!input) return;
+  const buf = input.value.trim();
+  if (!buf) return; // nothing to submit — silent no-op
+  if (!docState.lastSelection) {
+    // milestone #3 requires an anchor; standalone point-comments (§5.1) land
+    // in a later milestone alongside the click-to-anchor affordance.
+    flashAnchorMeta('Select text in the PDF first to anchor this comment.');
+    return;
+  }
+  const payload = buildCommentPayload(buf, docState.lastSelection);
+  appendCommentCard(payload);
+  // §4.3: keep the active tool, keep the cached selection (the user may want
+  // to stack Comment + Redraft on the same highlight). Just clear the buffer.
+  clearInput();
+  input.focus();
+}
+
+function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload {
+  // Tool ↔ engagement_level / field mapping (§11.1):
+  //   Comment / Surface → buffer is the comment text; redraft is null.
+  //   Redraft           → buffer is the edited replacement text; comment is "".
+  const isRedraft = activeTool === 'redraft';
   return {
-    x: Math.round(r.x * 10) / 10,
-    y: Math.round(r.y * 10) / 10,
-    w: Math.round(r.w * 10) / 10,
-    h: Math.round(r.h * 10) / 10,
+    id: crypto.randomUUID(),
+    doc_id: docState.path,
+    doc_version: '1.0', // milestone #4 will source this from the project model
+    anchor: { page: sel.page, region: sel.region },
+    highlighted_text: sel.highlighted_text,
+    comment: isRedraft ? '' : buf,
+    redraft: isRedraft ? buf : null,
+    redraft_suggestion: null,
+    engagement_level: activeTool,
+    author: 'AJB',
+    kind: 'comment',
+    status: 'open',
+    created_at: new Date().toISOString(),
   };
 }
+
+function appendCommentCard(c: CommentPayload): void {
+  const stream = document.getElementById('commentStream');
+  const empty = document.getElementById('commentStreamEmpty');
+  if (!stream) return;
+  if (empty) empty.remove();
+
+  const card = document.createElement('div');
+  card.className = 'comment-card';
+  card.dataset.level = c.engagement_level;
+
+  const head = document.createElement('div');
+  head.className = 'comment-card-head';
+  const level = document.createElement('span');
+  level.className = 'comment-card-level';
+  level.textContent = labelFor(c.engagement_level);
+  const anchor = document.createElement('span');
+  anchor.className = 'comment-card-anchor';
+  const r = c.anchor.region;
+  anchor.textContent = `· p.${c.anchor.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)}`;
+  head.append(level, anchor);
+
+  const quote = document.createElement('div');
+  quote.className = 'comment-card-quote';
+  quote.textContent = `“${c.highlighted_text}”`;
+
+  card.append(head, quote);
+
+  if (c.comment) {
+    const body = document.createElement('div');
+    body.className = 'comment-card-body';
+    body.textContent = c.comment;
+    card.append(body);
+  }
+  if (c.redraft) {
+    const redraft = document.createElement('div');
+    redraft.className = 'comment-card-redraft';
+    redraft.textContent = c.redraft;
+    card.append(redraft);
+  }
+
+  stream.prepend(card);
+}
+
+function labelFor(level: Tool): string {
+  switch (level) {
+    case 'comment': return 'L1 Comment';
+    case 'redraft': return 'L2 Redraft';
+    case 'surface': return 'L3 Surface';
+  }
+}
+
+function flashAnchorMeta(msg: string): void {
+  const meta = document.getElementById('commentAnchor');
+  if (!meta) return;
+  const previous = meta.textContent;
+  meta.textContent = msg;
+  meta.classList.remove('has-selection');
+  setTimeout(() => {
+    if (meta.textContent === msg) {
+      meta.textContent = previous;
+      updateAnchorMeta();
+    }
+  }, 2000);
+}
+
+// ─── Diagnostic formatters (unchanged from milestone #1) ──────────────────
 
 function formatEngineResult(r: EngineResult): string {
   if (r.ok) {

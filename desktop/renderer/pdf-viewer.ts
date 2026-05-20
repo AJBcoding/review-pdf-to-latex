@@ -1,21 +1,41 @@
-// PDF viewer — renders one page at a time, with PDF.js's TextLayer overlaid
-// on the canvas so native browser text selection produces a glyph-accurate
-// highlight payload (per ux-spec §5.2).
+// PDF viewer — renders one page at a time, with PDF.js's TextLayerBuilder
+// driving the text overlay so native browser text selection produces a
+// glyph-accurate highlight payload (per ux-spec §5.2).
 //
-// Architecture validated by the 2026-05-20 spike (see
-// docs/research/2026-05-20-pdf-text-layer-spike/README.md). This module is the
-// production port of the spike's spike.html: same TextLayer approach, same
-// selection-rect math, same coordinate conversion.
+// Architecture: 2026-05-20 port to PDF.js's TextLayerBuilder. Previously we
+// drove a bare `TextLayer` and hand-ported the selection-trap machinery
+// (endOfContent, selectionchange repositioning, .selecting toggle). The hand
+// port carried a margin-click phantom-selection bug that Mozilla's reference
+// viewer demonstrably did NOT have on the same PDF, so we now consume the
+// same TextLayerBuilder + StructTreeLayerBuilder + TextAccessibilityManager
+// chain that the reference viewer uses. See:
+//   docs/handoffs/2026-05-20-milestone-3-selection-bug-research-handoff.md
+//   node_modules/pdfjs-dist/web/pdf_viewer.mjs  (L6174 TextLayerBuilder,
+//                                                 L5570 StructTreeLayerBuilder,
+//                                                 L5800 TextAccessibilityManager,
+//                                                 L7140 PDFPageView reference wiring)
 //
-// Out of scope for this milestone:
-// - File picker (#2)
-// - Health banner integration (#2)
-// - Routing the captured selection to a comment-card stream (#3 + #4)
-// Selections are surfaced into a callback the host wires up; for now the
-// host just logs them.
+// What we keep from the prior implementation: canvas page rendering, the
+// persistent highlight overlay (§5.2 — survives the focus shift to the
+// comment input that otherwise collapses native ::selection rendering),
+// SelectionPayload shape, navigation/zoom/fit/dark-mode, capture-on-mouseup.
+//
+// What TextLayerBuilder now owns (so we don't anymore): mousedown class
+// toggle, endOfContent sentinel placement, selectionchange repositioning of
+// the sentinel, pointerup/blur/keyup global resets, abort-signal teardown.
 
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
+import {
+  TextLayerBuilder,
+  StructTreeLayerBuilder,
+} from 'pdfjs-dist/web/pdf_viewer.mjs';
+// Note: TextAccessibilityManager is defined inside pdf_viewer.mjs but is NOT
+// in its public export list (see L9740 in pdf_viewer.mjs). PDFPageView
+// constructs one because it lives in the same module; we can't. The
+// accessibilityManager param on TextLayerBuilder is optional — without it we
+// lose aria-owns decoration on text spans, which is accessibility-only and
+// not relevant to selection.
 // Vite handles ?url to produce a hashed worker URL the bundler emits.
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 // PDF.js v5's TextLayer relies on a chain of CSS variables
@@ -57,10 +77,16 @@ export class PdfViewer {
   private opts: Required<Omit<PdfViewerOptions, 'onSelection' | 'onPageInfo'>>
               & Pick<PdfViewerOptions, 'onSelection' | 'onPageInfo'>;
 
-  // DOM
+  // DOM. The text layer element is owned by TextLayerBuilder and re-created
+  // per page render — `textLayerEl` is updated to point at the current
+  // builder's div in renderPage.
   private stage: HTMLElement;
   private canvas: HTMLCanvasElement;
-  private textLayerEl: HTMLDivElement;
+  private textLayerEl: HTMLDivElement | null = null;
+  // Persistent highlight overlay (§5.2). The browser's native ::selection
+  // styling disappears the moment focus moves to the comment input, so we
+  // mirror the captured rects into a sibling layer the user can keep seeing.
+  private highlightLayerEl: HTMLDivElement;
 
   // PDF.js state
   private doc: PDFDocumentProxy | null = null;
@@ -69,9 +95,14 @@ export class PdfViewer {
   private currentPageNum = 1;
   private zoom: number;
 
-  // Selection debouncer so we capture at the END of the drag, not on every
-  // intermediate selectionchange event.
-  private selectionDebounce: ReturnType<typeof setTimeout> | null = null;
+  // Per-render TextLayerBuilder + companions. Re-created on every page
+  // change; the prior instance is cancelled (which also aborts its global
+  // selection-listener registration via the static #removeGlobalSelectionListener).
+  private textLayerBuilder: TextLayerBuilder | null = null;
+  private structTreeBuilder: StructTreeLayerBuilder | null = null;
+  // AbortController whose signal is passed to the current TextLayerBuilder.
+  // Aborted before each new render so the prior builder's listeners go away.
+  private renderAbortController: AbortController | null = null;
 
   constructor(opts: PdfViewerOptions) {
     this.opts = {
@@ -83,18 +114,34 @@ export class PdfViewer {
     this.zoom = this.opts.initialZoom;
 
     // Stage: positioned wrapper so the text layer can absolute-position
-    // over the canvas at the same dimensions.
+    // over the canvas at the same dimensions. Text-layer element is appended
+    // per render (owned by TextLayerBuilder); we only install canvas +
+    // highlight overlay at construction.
     this.stage = document.createElement('div');
     this.stage.className = 'pdf-stage';
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'pdf-canvas';
-    this.textLayerEl = document.createElement('div');
-    this.textLayerEl.className = 'textLayer';
+    this.highlightLayerEl = document.createElement('div');
+    this.highlightLayerEl.className = 'pdf-highlight-layer';
 
-    this.stage.append(this.canvas, this.textLayerEl);
+    // Order: canvas (bottom) → highlight overlay (middle) → text layer (top,
+    // appended in renderPage). The overlay sits below the text layer so
+    // native selection rendering still composes naturally.
+    this.stage.append(this.canvas, this.highlightLayerEl);
     this.opts.container.replaceChildren(this.stage);
 
-    document.addEventListener('selectionchange', this.onSelectionChange);
+    // Selection capture: mouseup is captured on the document (not just the
+    // text layer) because the user can release outside the text layer when
+    // selecting across the page edge. A tiny rAF defer lets the browser
+    // finalize the selection range before we read it. TextLayerBuilder
+    // already owns the mousedown / selectionchange / pointer reset machinery
+    // for visual selection — we just read the result here.
+    document.addEventListener('mouseup', this.onDocumentMouseUp);
+  }
+
+  /** Wipe any persistent highlight rects from the overlay. */
+  clearHighlight(): void {
+    this.highlightLayerEl.replaceChildren();
   }
 
   /** Load a PDF from raw bytes (what main returns over IPC). */
@@ -120,6 +167,14 @@ export class PdfViewer {
       throw new Error(`PdfViewer: page ${pageNum} out of range [1, ${this.doc.numPages}]`);
     }
 
+    // Cached screen-rects belong to the previous page/zoom; flush before
+    // the canvas reflows under us.
+    this.clearHighlight();
+
+    // Tear down the previous text-layer builder (and its global selection
+    // listener registration) before laying out the new one.
+    this.cancelTextLayer();
+
     this.currentPageNum = pageNum;
     this.page = await this.doc.getPage(pageNum);
     this.viewport = this.page.getViewport({ scale: this.zoom });
@@ -128,31 +183,83 @@ export class PdfViewer {
     this.canvas.height = this.viewport.height;
     this.stage.style.width = `${this.viewport.width}px`;
     this.stage.style.height = `${this.viewport.height}px`;
-    this.textLayerEl.style.width = `${this.viewport.width}px`;
-    this.textLayerEl.style.height = `${this.viewport.height}px`;
-    // PDF.js v4+ TextLayer reads --scale-factor off the container.
-    // PDF.js v5 reads --total-scale-factor (not --scale-factor) off the
-    // container; --scale-factor is the legacy v3/v4 name. Setting both for
-    // belt-and-suspenders against any code path that still reads the old.
-    this.textLayerEl.style.setProperty('--scale-factor', String(this.zoom));
-    this.textLayerEl.style.setProperty('--total-scale-factor', String(this.zoom));
 
     const ctx = this.canvas.getContext('2d');
     if (!ctx) throw new Error('PdfViewer: canvas 2D context unavailable');
 
-    await this.page.render({ canvasContext: ctx, viewport: this.viewport, canvas: this.canvas }).promise;
-
-    // Build the text layer.
-    this.textLayerEl.replaceChildren();
-    const textContent = await this.page.getTextContent();
-    const textLayer = new pdfjsLib.TextLayer({
-      textContentSource: textContent,
-      container: this.textLayerEl,
+    await this.page.render({
+      canvasContext: ctx,
       viewport: this.viewport,
+      canvas: this.canvas,
+    }).promise;
+
+    // Set up the text layer via PDF.js's reference TextLayerBuilder. The
+    // builder creates its own div, wires its own selection trap, and renders
+    // text into the div. We slot the div into the stage at the right z-order
+    // and set the --total-scale-factor CSS variable PDF.js's text-layer CSS
+    // reads at render time.
+    this.renderAbortController = new AbortController();
+    this.textLayerBuilder = new TextLayerBuilder({
+      pdfPage: this.page,
+      abortSignal: this.renderAbortController.signal,
     });
-    await textLayer.render();
+    const builderDiv = this.textLayerBuilder.div;
+    builderDiv.style.width = `${this.viewport.width}px`;
+    builderDiv.style.height = `${this.viewport.height}px`;
+    builderDiv.style.setProperty('--total-scale-factor', String(this.zoom));
+    // Legacy v3/v4 variable name; some code paths still read it.
+    builderDiv.style.setProperty('--scale-factor', String(this.zoom));
+    // Clear the persistent highlight overlay on a fresh mousedown inside the
+    // text layer — without this a stale highlight stays visible until the
+    // next non-collapsed selection (a stationary click never reaches
+    // captureSelection). Coexists with TextLayerBuilder's own mousedown.
+    builderDiv.addEventListener('mousedown', () => this.clearHighlight());
+    this.stage.append(builderDiv);
+    this.textLayerEl = builderDiv;
+
+    await this.textLayerBuilder.render({ viewport: this.viewport } as never);
+
+    // StructTreeLayer: appends a parallel DOM of structure-shaped <span>s
+    // (from the PDF's tagged-PDF tree) into the canvas element, with
+    // aria-owns links back to the textLayer spans. PDFPageView wires this in
+    // at L7247–7248 of pdf_viewer.mjs.
+    this.structTreeBuilder = new StructTreeLayerBuilder(
+      this.page,
+      // viewport.rawDims exists on PageViewport at runtime; type is not
+      // exposed publicly so we cast through.
+      (this.viewport as unknown as { rawDims: unknown }).rawDims,
+    );
+    const treeDom = await this.structTreeBuilder.render() as unknown as Node | null | undefined;
+    if (treeDom) {
+      this.structTreeBuilder.updateTextLayer();
+      if (treeDom instanceof Node && treeDom.parentNode !== this.canvas) {
+        this.canvas.append(treeDom);
+      }
+    }
 
     this.opts.onPageInfo?.({ page: this.currentPageNum, totalPages: this.doc.numPages });
+  }
+
+  /** Cancel the active text-layer builder + a11y manager + struct tree, and
+   *  remove the textLayer div from the stage. Safe to call when nothing is
+   *  set up yet. */
+  private cancelTextLayer(): void {
+    if (this.renderAbortController) {
+      this.renderAbortController.abort();
+      this.renderAbortController = null;
+    }
+    if (this.textLayerBuilder) {
+      try { this.textLayerBuilder.cancel(); } catch { /* ignore */ }
+      this.textLayerBuilder = null;
+    }
+    if (this.structTreeBuilder) {
+      try { this.structTreeBuilder.hide(); } catch { /* ignore */ }
+      this.structTreeBuilder = null;
+    }
+    if (this.textLayerEl && this.textLayerEl.parentNode === this.stage) {
+      this.stage.removeChild(this.textLayerEl);
+    }
+    this.textLayerEl = null;
   }
 
   /** Navigation helpers. Out-of-range requests are clamped silently. */
@@ -231,23 +338,23 @@ export class PdfViewer {
     };
   }
 
-  /** Disconnect listeners; safe to call multiple times. */
+  /** Disconnect listeners + tear down PDF.js state; safe to call multiple times. */
   dispose(): void {
-    document.removeEventListener('selectionchange', this.onSelectionChange);
-    if (this.selectionDebounce) clearTimeout(this.selectionDebounce);
+    document.removeEventListener('mouseup', this.onDocumentMouseUp);
+    this.cancelTextLayer();
     if (this.doc) { void this.doc.destroy().catch(() => { /* ignore */ }); }
   }
 
   // ─── Selection capture ─────────────────────────────────────────────────
 
   // Arrow fn so `this` is bound when used as the event listener.
-  private onSelectionChange = (): void => {
-    if (this.selectionDebounce) clearTimeout(this.selectionDebounce);
-    this.selectionDebounce = setTimeout(() => this.captureSelection(), 120);
+  private onDocumentMouseUp = (): void => {
+    // Let the browser finalize the selection range before we read it.
+    requestAnimationFrame(() => this.captureSelection());
   };
 
   private captureSelection(): void {
-    if (!this.viewport || !this.page) return;
+    if (!this.viewport || !this.page || !this.textLayerEl) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
 
@@ -275,6 +382,11 @@ export class PdfViewer {
 
     if (rects.length === 0) return;
 
+    // Mirror the rects into the persistent highlight overlay so the visual
+    // survives the focus shift to the comment input (which collapses the
+    // browser's native ::selection rendering).
+    this.drawHighlight(rects);
+
     // Combined screen-space bbox, then convert to PDF coordinates.
     const screenBbox = {
       x: Math.min(...rects.map((r) => r.x)),
@@ -294,6 +406,24 @@ export class PdfViewer {
     });
   }
 
+  private drawHighlight(rects: { x: number; y: number; w: number; h: number }[]): void {
+    // PDF.js's text-layer spans frequently overlap horizontally on the same
+    // line, and Range.getClientRects() returns one rect per span. Drawing
+    // them as-is double-shades the overlapping zones. Merge per visual line
+    // so each line gets exactly one rect.
+    const merged = mergeRectsByLine(rects);
+    const next = merged.map((r) => {
+      const el = document.createElement('div');
+      el.className = 'pdf-highlight-rect';
+      el.style.left = `${r.x}px`;
+      el.style.top = `${r.y}px`;
+      el.style.width = `${r.w}px`;
+      el.style.height = `${r.h}px`;
+      return el;
+    });
+    this.highlightLayerEl.replaceChildren(...next);
+  }
+
   private screenBboxToPdf(s: { x: number; y: number; w: number; h: number }): SelectionPayload['region'] {
     if (!this.viewport) return { x: 0, y: 0, w: 0, h: 0 };
     const corners = [
@@ -309,4 +439,30 @@ export class PdfViewer {
       h: Math.max(...ys) - Math.min(...ys),
     };
   }
+}
+
+/** Merge rects that share a visual line (vertical-center within `tol` px) into
+ *  their horizontal bounding box. Prevents the multi-rect overlap on every
+ *  line that PDF.js's text-layer spans produce. */
+type Rect = { x: number; y: number; w: number; h: number };
+function mergeRectsByLine(rects: Rect[], tol = 3): Rect[] {
+  if (rects.length === 0) return [];
+  // Sort top-to-bottom, then left-to-right so the merge sweep is stable.
+  const sorted = [...rects].sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const out: Rect[] = [];
+  for (const r of sorted) {
+    const center = r.y + r.h / 2;
+    const fit = out.find((o) => Math.abs((o.y + o.h / 2) - center) <= tol);
+    if (fit) {
+      const right = Math.max(fit.x + fit.w, r.x + r.w);
+      const bottom = Math.max(fit.y + fit.h, r.y + r.h);
+      fit.x = Math.min(fit.x, r.x);
+      fit.y = Math.min(fit.y, r.y);
+      fit.w = right - fit.x;
+      fit.h = bottom - fit.y;
+    } else {
+      out.push({ ...r });
+    }
+  }
+  return out;
 }

@@ -48,14 +48,53 @@
         </div>
         <div class="pdf-mount" id="pdfMount" hidden></div>
       </div>
+      <!--
+        §4.2 tool palette — small icons between viewer and input. The active
+        tool also sets the comment's engagement_level (§11.1: one click, one
+        level, no extra picker).
+      -->
+      <div class="tool-palette" id="toolPalette" role="toolbar" aria-label="Comment tool">
+        <button class="tool-btn is-active" data-tool="comment" type="button"
+                aria-pressed="true" title="Comment — L1 (⌘1) — fix this, here's why">
+          <span class="tool-icon" aria-hidden="true">💬</span><span class="tool-label">Comment</span>
+        </button>
+        <button class="tool-btn" data-tool="redraft" type="button"
+                aria-pressed="false" title="Redraft — L2 (⌘2) — swap this text for new text">
+          <span class="tool-icon" aria-hidden="true">✏️</span><span class="tool-label">Redraft</span>
+        </button>
+        <button class="tool-btn" data-tool="surface" type="button"
+                aria-pressed="false" title="Surface — L3 (⌘3) — this needs a rethink">
+          <span class="tool-icon" aria-hidden="true">🌊</span><span class="tool-label">Surface</span>
+        </button>
+      </div>
       <footer class="pane-footer">
-        <div class="bottom-input placeholder" id="selectionEcho">empty shell — bottom input pane (comment / redraft / surface) per §3.  Select text in the PDF to echo the §5.2 payload here.</div>
+        <!--
+          §4.3 bottom input — always present. Enter submits, Shift+Enter for
+          soft return. No half-typed persisted state (in-memory until Enter).
+        -->
+        <div class="comment-input" id="commentInputWrap">
+          <div class="comment-input-meta">
+            <span class="comment-input-anchor" id="commentAnchor">No selection — highlight text in the PDF to anchor a comment.</span>
+            <button id="commentClear" type="button" class="comment-input-clear" title="Clear the input buffer (Esc)">✗ Clear</button>
+          </div>
+          <textarea id="commentInput" class="comment-input-textarea"
+                    rows="2"
+                    placeholder="Type a comment and press Enter to submit (Shift+Enter for a new line)."
+                    aria-label="Comment, redraft, or surface text"></textarea>
+        </div>
       </footer>
     </main>
 
     <aside class="pane right-drawer" data-pane="comments-and-claude">
       <header class="pane-header">Comments + Claude</header>
-      <div class="pane-body placeholder">empty shell — comment stream + embedded Claude pane land here per §9</div>
+      <!--
+        Right drawer comment stream. Milestone #3 echoes submitted comments
+        here as raw JSON cards; the proper comment-card UI + persistence land
+        in milestone #4 (§9.1, §10.3).
+      -->
+      <div class="pane-body comment-stream" id="commentStream">
+        <div class="placeholder" id="commentStreamEmpty">No comments yet — highlight text in the PDF, pick a tool, and press Enter.</div>
+      </div>
     </aside>
   </div>
 
