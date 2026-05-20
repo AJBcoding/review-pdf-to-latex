@@ -14,7 +14,7 @@ function createWindow(): BrowserWindow {
     title: 'review-pdf — empty shell',
     backgroundColor: '#1a1a1a',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

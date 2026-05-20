@@ -16,9 +16,16 @@ export default defineConfig({
     },
   },
   preload: {
+    // Sandboxed preloads in Electron must be CommonJS — ESM preloads silently
+    // fail to load under sandbox: true. Force CJS output regardless of the
+    // root package.json's "type": "module".
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'preload/index.ts'),
+        output: {
+          format: 'cjs',
+          entryFileNames: '[name].cjs',
+        },
       },
       outDir: 'out/preload',
     },
