@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+  <title>review-pdf</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" class="layout">
+    <aside class="pane left-drawer" data-pane="file-tree">
+      <header class="pane-header">File tree</header>
+      <div class="pane-body placeholder">empty shell — file tree lands here per §2 of the spec</div>
+    </aside>
+
+    <main class="pane middle" data-pane="document">
+      <header class="pane-header">Document viewer</header>
+      <div class="pane-body placeholder document-area">
+        <p>empty shell — document viewer (PDF / Markdown / Word later) lands here per §2.</p>
+        <p>PDF.js text-layer integration referenced by §5.2 and validated by the
+           <a href="../docs/research/2026-05-20-pdf-text-layer-spike/README.md">2026-05-20 spike</a>.</p>
+      </div>
+      <footer class="pane-footer">
+        <div class="bottom-input placeholder">empty shell — bottom input pane (comment / redraft / surface) per §3</div>
+      </footer>
+    </main>
+
+    <aside class="pane right-drawer" data-pane="comments-and-claude">
+      <header class="pane-header">Comments + Claude</header>
+      <div class="pane-body placeholder">empty shell — comment stream + embedded Claude pane land here per §9</div>
+    </aside>
+  </div>
+
+  <div id="diag" class="diag" aria-live="polite"></div>
+
+  <script type="module" src="./index.ts"></script>
+</body>
+</html>

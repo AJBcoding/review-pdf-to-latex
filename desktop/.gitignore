@@ -1,0 +1,14 @@
+node_modules/
+out/
+dist/
+build/
+
+# Vite cache
+.vite/
+
+# TypeScript composite-build cache
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+*.log

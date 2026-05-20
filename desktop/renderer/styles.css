@@ -1,0 +1,89 @@
+:root {
+  color-scheme: dark light;
+  --bg: #1a1a1a;
+  --pane-bg: #222;
+  --pane-border: #333;
+  --text: #e6e6e6;
+  --muted: #888;
+  --accent: #4a9eff;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+/*
+ * Three-pane layout per §2 of the 2026-05-19 electron-app-ux-spec:
+ *   left drawer (file tree) | middle (document + bottom input) | right drawer (comments + Claude)
+ * Concrete content for each pane is deferred to later milestones.
+ */
+.layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 360px;
+  grid-template-rows: 100vh;
+  gap: 1px;
+  background: var(--pane-border);
+}
+
+.pane {
+  background: var(--pane-bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-header {
+  padding: 10px 14px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--pane-border);
+  flex: 0 0 auto;
+}
+
+.pane-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 14px;
+  min-height: 0;
+}
+
+.pane-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--pane-border);
+  padding: 10px 14px;
+}
+
+.placeholder {
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.placeholder a { color: var(--accent); }
+
+.document-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diag {
+  position: fixed;
+  bottom: 8px;
+  right: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}

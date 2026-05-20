@@ -1,0 +1,22 @@
+{
+  "name": "review-pdf-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Electron renderer for review-pdf-to-latex (specified in docs/specs/2026-05-19-electron-app-ux-spec.md)",
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "electron": "^42.2.0",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
