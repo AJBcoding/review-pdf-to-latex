@@ -413,15 +413,215 @@ A common pattern this produces: a v1.0 L1 returns `needs-followup`; the seeded v
 
 ## 13. Open questions (decisions still needed)
 
-### 13.1–13.5 — Carried over from the pivot handoff (still open)
+### 13.5 — Carried over from the pivot handoff (still open)
 
-Items carried from the [Electron pivot handoff](../handoffs/2026-05-17-electron-pivot-handoff.md) §1–§3, §5–§6 — this spec doesn't resolve them:
+Status of items carried from the [Electron pivot handoff](../handoffs/2026-05-17-electron-pivot-handoff.md) §1–§3, §5–§6:
 
-1. **Python engine bundling.** pyinstaller / PATH-discovery / bundled wheel. Pick before distribution; can prototype with PATH-discovery.
-2. **First-scope cut.** Minimal-wrapper-over-existing-HTML-viewer vs. ground-up renderer. *This spec leans strongly toward ground-up* — the existing Jinja viewer doesn't fit the file-tree + comment-stream + Claude-pane layout described here. Worth confirming explicitly.
-3. **Repo strategy.** Same repo (`desktop/` subdir) vs. new repo. Recommended: same repo until distribution starts.
-4. **Electron vs Tauri vs Wails.** Tauri is smaller (Rust + system webview) but complicates Python engine embedding. Lock the choice up front.
+1. **§13.1 Python engine bundling — RESOLVED → PATH-discovery for v1.** Details in §13.1 below.
+2. **§13.2 First-scope cut — RESOLVED → ground-up renderer.** Details in §13.2 below.
+3. **§13.3 Repo strategy — RESOLVED → same repo, `desktop/` subdirectory.** Details in §13.3 below.
+4. **§13.4 Electron vs Tauri vs Wails — RESOLVED → Electron.** Details in §13.4 below.
 5. **Spec §10 of the 2026-05-16 design spec needs a rewrite** to remove the obsolete sidecar UX text. Not blocking — but should happen before someone reads the old spec and gets confused.
+
+### 13.1 — Python engine bundling — RESOLVED → PATH-discovery for v1
+
+**Decision:** v1 uses **PATH-discovery**. The Electron main process spawns `review-pdf` (the pyproject-declared script entrypoint at `[project.scripts] review-pdf = "review_pdf_to_latex.cli:main"`) and assumes it is resolvable on the user's `PATH`.
+
+**The three framing options:**
+
+| | A. PATH-discovery | B. pyinstaller | C. Bundled wheel + interpreter |
+|---|---|---|---|
+| What ships | Just the Electron app; user has `review-pdf` installed | Single self-contained binary, no Python needed | App + Python interpreter + wheel |
+| User prerequisite | `pip install -e .` (or equivalent) | None | None |
+| Engine iteration loop | Edit Python → save → next spawn picks it up | Edit Python → rebuild binary → repackage app → reinstall | Edit Python → rebuild wheel → repackage app |
+| App size impact | +0 MB (engine is separate) | +30–80 MB | +50–120 MB (interpreter + stdlib + wheel) |
+| Code-signing complexity | Just the Electron app | App + pyinstaller binary (separate Mach-O signing on macOS) | App + interpreter + native extensions |
+| Cross-platform variance | None (whatever Python the user has) | Per-platform pyinstaller builds | Per-platform interpreter bundling |
+| Distribution-ready | No (developer-only) | Yes | Yes |
+
+**Why PATH-discovery for v1:**
+
+1. **The audience already has it installed.** v1 ships to AJB + python419. Both are developers with the repo cloned and `pip install -e .` already in their environment. There is no install-friction problem to solve.
+2. **Iteration speed dominates v1.** The engine and the UI will co-evolve daily during build. PATH-discovery means engine changes are picked up on the next subprocess spawn — no rebuild, no repackage, no reinstall. Pyinstaller cuts that loop from seconds to minutes; for an early build where we'll change the engine alongside every UI flow, that's hours per day lost.
+3. **No code-signing tax during build.** macOS code-signing pyinstaller binaries is a known sinkhole (separate Mach-O signing, notarization, the works). Skipping it until distribution is real saves real time.
+4. **Reversibility.** The Electron main process talks to the engine through one function — `spawnEngine(args)`. Swapping PATH-discovery for pyinstaller later is a single-file change. Picking PATH-discovery now does not lock out pyinstaller for v2 distribution.
+
+**What PATH-discovery looks like concretely:**
+
+The main process resolves the engine in this order:
+1. User override from app settings (e.g., `~/Library/Application Support/review-pdf-electron/config.json` → `enginePath`)
+2. `review-pdf` on `PATH` (the default, works for `pip install -e .` and any active venv)
+3. Common venv locations as a fallback: repo-local `.venv/bin/review-pdf`, `~/.venvs/review-pdf-to-latex/bin/review-pdf`
+4. Error UI: "Python engine not found. Set the engine path in Settings or run `pip install -e .` in the repo." — modal at first launch, non-blocking banner on subsequent launches.
+
+At startup, the main process calls `review-pdf --version` and compares against an expected-version range baked into the Electron app. If the engine is older than the UI expects, show a non-blocking banner — common during co-evolution and not worth blocking on.
+
+**When the case would flip:**
+
+- **Public/internal distribution beyond AJB + python419.** First time a non-developer needs to run this, PATH-discovery breaks. Pyinstaller (Option A from the handoff) is the upgrade path. Plan for it; don't build it now.
+- **CI/automated runs in environments without the Python install.** Not v1.
+
+**Risk to record:** the engine and the Electron app are now in a co-version-dependent relationship without a hard linkage. The version-check banner is the safety rail. If the banner gets ignored or the version range is wrong, we'll see "feature missing" or "engine errored" bugs that trace to version drift, not real bugs. Worth being honest about in `bd` triage.
+
+### 13.2 — First-scope cut — RESOLVED → ground-up renderer
+
+**Decision:** v1 builds the renderer **ground-up** in the new Electron app. The existing Jinja viewer (`src/review_pdf_to_latex/templates/frame.html`, `annotation.html`) is retired as a UI artifact, not ported.
+
+**The two framing options:**
+
+| | A. Minimal wrapper | B. Ground-up renderer |
+|---|---|---|
+| First-paint effort | Lowest — Electron shell loads existing Jinja viewer as renderer content | Higher — build the four-pane layout (§2) from scratch |
+| Resulting layout | Old single-pane PDF + sidecar HTML | Spec layout: file tree + doc viewer + bottom input + comment stream + Claude pane |
+| Co-existence cost | Every new pane and tool must wedge into Jinja templates; halfway state for weeks | None — single coherent codebase from day one |
+| Embedded Claude pane (§9.2) | Hard — current viewer has no pane for it; would require Jinja surgery | Native — designed in from the start |
+| Save format / engine reuse | Same in both — the engine is untouched in either path |
+| Estimated effort to feature-parity with spec | Minimal-wrapper is faster to *something running*, but ~2–3× slower to *spec-matching* once the new layout work starts | Slower start, faster finish; coherent throughout |
+
+**Why ground-up wins:**
+
+1. **The spec describes a different app.** §2 lays out four panes (file tree / doc viewer / bottom input / right drawer with comment stream + Claude pane). The existing Jinja viewer is single-pane PDF + sidecar HTML for comments. They are not the same app with different paint. Wrapping the old viewer and "progressively rebuilding" it means months of living in a halfway state where every new feature has to coexist with the old layout.
+2. **The valuable artifacts are the engine and the patterns, not the templates.** What we keep: the Python engine (untouched — extract, apply, terminal, cli), the save format (the JSON comment shape), the PDF.js setup learnings, the xterm.js terminal integration logic. What we discard: Jinja templates as layout, the WebSocket-based sidecar bridge (Electron IPC replaces it), the HTTP-server hosting model (Electron loads files directly), the "open in browser" UX. The discards are layout glue; the keeps are domain logic.
+3. **Pivot handoff §3 leaned minimal-wrapper for speed; this spec earns the ground-up call.** The handoff was written when the new UX was unspecified. The 17 decisions captured in §3–§11 of this spec define a layout the Jinja viewer cannot host without being completely rewritten anyway. Once that's true, "wrapper" is just "rewrite with extra steps."
+4. **Halfway states cost trust.** Living in a six-week limbo where the file-tree pane works but the comment stream still uses Jinja and the Claude pane is a placeholder is the kind of thing that makes a v1 feel never-shipped. Ground-up means every shipped milestone is a coherent app, even if feature-incomplete.
+
+**What ground-up keeps from the existing codebase:**
+
+- **Python engine modules** — `cli.py`, `extract.py`, `apply.py`, `terminal.py` continue to exist and ship unchanged. Electron talks to them via subprocess (§13.1).
+- **PDF.js setup** — whatever's been learned about wiring PDF.js for our save formats moves over conceptually, even if the renderer code is rewritten.
+- **xterm.js** (already in-tree at `src/review_pdf_to_latex/templates/static/`) — the JS bundle moves to the Electron renderer. The pty driver moves from Python (`terminal.py`) to node-pty in the main process per §13.4. xterm.js itself ports directly.
+- **Save format conventions** — the comment JSON shape (§6.2, §10) is the engine's contract. The renderer reads/writes it; the engine consumes it. Stable.
+- **The three pre-pivot bugs** (`rev-3pm`, `rev-cav`, `rev-2mq`) — close as superseded once the rebuild is underway; they live in the abandoned sidecar architecture per §14.
+
+**What ground-up discards:**
+
+- **Jinja templates** (`frame.html`, `annotation.html`) — not ported. The layout they describe is not the spec layout.
+- **HTTP-serve hosting** (`server.py` in serve mode) — Electron renderer loads files directly from disk via the main process; no localhost. `server.py` may stay as a useful headless serve mode for tests / Gas City embedding (§13 of the pivot handoff), but it stops being the path the user runs.
+- **WebSocket sidecar bridge** — Electron IPC replaces it.
+- **"Open in browser" UX** — the app is the surface; no browser tab dependency.
+
+**When the case would flip (recorded for future-you):**
+
+- **If the existing Jinja viewer's layout were close to the spec layout.** It isn't; this is the load-bearing reason ground-up wins.
+- **If we were under a hard deadline to demo *something* this week.** We're not; v1 is paced to AJB + python419.
+- **If the renderer framework choice were itself uncertain enough to want to defer.** It's not — the renderer can start with vanilla TS + components and migrate to a framework if/when needed (renderer framework is explicitly not load-bearing per the §13.4 stack note).
+
+**Risk to record:** ground-up takes longer to first-paint. Estimate the §2 layout shell at ~1–2 weeks of focused work before any pane has its real content (file tree wiring, doc viewer skeleton, bottom-input stub, right-drawer skeleton, Claude pane placeholder, IPC plumbing to main). If that empty-shell milestone slips badly, revisit the call — but expect the slip to be a sign of an undersized estimate, not a sign that minimal-wrapper would have been faster overall.
+
+### 13.3 — Repo strategy — RESOLVED → same repo, `desktop/` subdirectory
+
+**Decision:** v1 lives in **this repo**, under a top-level `desktop/` directory. The Python engine and the Electron app share one git history, one issue tracker (`bd`), and one release process. Split into a separate repo when — not before — the conditions in "When to split" below are met.
+
+**The two framing options:**
+
+| | A. Same repo, `desktop/` subdir | B. New repo (`review-pdf-to-latex-app` or similar) |
+|---|---|---|
+| Git history | One — every cross-cutting change is one commit | Two — coordinated changes are two PRs in two repos |
+| Engine + app version coupling | Same commit hash; trivially in sync | Pinned versions; surface area for drift |
+| Issue tracking | One `bd` instance, one inbox | Split or duplicated across repos |
+| CI | One repo, scoped per-path (Python tests vs Electron build) | Two pipelines, two configs |
+| Refactor friction | Low — engine API change + app caller change in one commit | High — engine PR → release → bump app dependency → app PR |
+| Onboarding for engine-only users | More noise (the app is also in the tree) | Cleaner — engine repo is just the engine |
+| Distribution coupling | Engine and app ship together (good for v1 audience) | Engine `pip install`-able independently (good for public engine) |
+| Repo size | Larger (Electron deps, build artifacts) | Each stays smaller |
+| Solo-dev ceremony | Single — one place for branches, hooks, settings | Doubled — every config exists in both |
+
+**Why same repo for v1:**
+
+1. **Solo dev + co-evolving halves.** AJB is the only contributor for now. The engine and the app will change together daily during build (a new app pane needs a new engine endpoint; a new save-format field needs both halves to read it). Two repos doubles the ceremony — branches, PRs, CI runs, version bumps — for the same person doing both jobs. Same repo lets a single commit span both halves with no version-pinning dance.
+2. **The version-check banner from §13.1 becomes trivial.** When engine and app live at the same commit hash, "what version of the engine does this app expect" has one answer. Split repos require a real version protocol (semver pin, compatibility matrix, banner-aware ranges) — meaningful work that earns its cost only at distribution.
+3. **bd tracks the work as one project.** This repo already has `bd` set up. Splitting bd across two repos either means cross-repo links (clunky) or a third meta-repo for tracking (overhead). One repo, one tracker.
+4. **Refactors stay coordinated.** When the engine's comment JSON shape changes (§6.2, §10), the app's reader changes in the same PR. No "engine ships v0.2, app pinned to v0.1, bug reports are ambiguous about which version" failure mode.
+5. **The pivot handoff already recommended this** (§3 of the pivot handoff, "Option A — same repo, `desktop/` subdirectory"). This spec confirms rather than reverses.
+
+**What `desktop/` looks like concretely:**
+
+```
+review-pdf-to-latex/
+├── pyproject.toml              # engine (unchanged)
+├── src/review_pdf_to_latex/    # engine (unchanged)
+├── tests/                       # engine tests (unchanged)
+├── docs/                        # specs, handoffs (unchanged)
+├── .beads/                      # bd issue tracker (unchanged)
+├── desktop/
+│   ├── package.json             # Electron + renderer deps
+│   ├── tsconfig.json
+│   ├── main/                    # Electron main process
+│   ├── preload/                 # preload scripts
+│   ├── renderer/                # renderer (file tree, doc viewer, comment stream, Claude pane)
+│   ├── shared/                  # types shared main ↔ renderer
+│   ├── tests/                   # app-side tests
+│   └── build/                   # gitignored: dist/, out/, node_modules/
+└── .gitignore                   # extended for desktop/ build artifacts
+```
+
+**CI & tooling notes:**
+
+- Engine and app CI are separately scoped via path filters — pushes touching `src/**` or `tests/**` run Python CI; pushes touching `desktop/**` run app CI. Pushes touching both run both. (Implementation deferred until CI exists.)
+- `desktop/node_modules/`, `desktop/dist/`, `desktop/out/`, and any packaged binaries are gitignored.
+- The engine continues to be installable via `pip install -e .` from the repo root. The app's PATH-discovery (§13.1) finds it normally.
+- Cross-cutting work uses a single branch and a single commit. No requirement that engine and app changes live in separate commits — at v1 audience scale, the bisect benefit doesn't justify the ceremony. A loose convention (one commit per logical change, regardless of which half it touches) is enough.
+
+**When to split (recorded for v2+):**
+
+- **Non-AJB/non-python419 users want the engine without the app.** If anyone installs `review-pdf` via pip without ever opening the Electron app, the engine is earning independent identity. Split.
+- **A non-AJB contributor joins the app side.** Engine internals become noise for them; the app deserves its own repo.
+- **Release cadences diverge meaningfully.** Engine shipping weekly while app ships quarterly (or vice versa) makes one-repo coordination an active drag.
+- **Public distribution starts.** The engine becomes a PyPI package; the app becomes a release-channel binary. Different release surfaces = different repos.
+- **`desktop/` outgrows the repo's coherence.** If `desktop/` ends up larger than the engine and dominates the repo's identity, the repo is no longer "the engine"; split into engine + app where each is itself.
+
+None of these apply to v1.
+
+**Risk to record:** monorepo coherence depends on discipline. As a solo dev, it's easy to land a commit that's actually three changes across both halves, then have a hard time bisecting six months later. Mitigation: keep commits scoped (one logical change per commit, even if it spans both halves), write commit messages that name both halves explicitly when they're touched (e.g., `engine + app: bump comment schema to v3`), and lean on `bd` for the per-task scoping that commits alone won't enforce.
+
+### 13.4 — Electron vs Tauri vs Wails — RESOLVED → Electron
+
+**Decision:** v1 ships on **Electron**.
+
+**The three framing options:**
+
+| | Electron | Tauri | Wails |
+|---|---|---|---|
+| Backend language | Node.js (JS/TS) | Rust | Go |
+| Renderer | Bundled Chromium | System webview (WKWebView / WebView2 / WebKitGTK) | System webview (same) |
+| Binary size | 80–200 MB | 5–30 MB | 8–25 MB |
+| Cross-platform render consistency | Identical (one Chromium) | Three different webviews | Three different webviews |
+| Native module ecosystem | npm (node-pty, sqlite, native crypto) | Rust crates | Go stdlib + community |
+| pty / terminal stack | `node-pty` + xterm.js, standard pattern | `portable-pty` + custom IPC | `creack/pty` + custom IPC |
+| Subprocess spawn (Python engine) | `child_process.spawn` — trivial | Rust `Command` or `tauri sidecar` | Go `os/exec` — trivial |
+| Auto-update | Squirrel / `electron-updater`, battle-tested | `tauri-plugin-updater`, younger | Not built in |
+| Mobile (iOS/Android) | No | Yes (Tauri 2) | No |
+| Security model | Process isolation + preload sandbox | Capability scoping, sandbox-by-default | Minimal |
+| Maturity / community | Largest (VS Code, Slack, Figma, etc.) | Mid (Spacedrive et al.) | Smallest |
+
+**Why Electron wins for this app:**
+
+1. **The renderer carries the load-bearing risk.** §13.10 / §13.11 hinge on PDF.js text-layer extraction working reliably under rotated pages, tight quads, and the corrupted-PDF case from `rev-fv6`. Chromium is the widest known-good surface for PDF.js. WKWebView (Tauri/Wails on macOS) lags Chromium by months on web APIs and has documented PDF rendering quirks — running a load-bearing spike on a moving target adds confound where we don't want it.
+2. **The native-module pull is real.** `node-pty` + `xterm.js` is the canonical embedded-terminal stack for the Claude pane (§9.2). xterm.js is already in-tree (`src/review_pdf_to_latex/templates/static/`). Electron keeps that work straightforward: node-pty in main, xterm.js in renderer, IPC between them. Tauri/Wails throw out the node-pty half and require building a custom Rust/Go pty↔webview bridge.
+3. **v1's audience is two people.** Electron's 100 MB-on-disk and 200 MB-of-RAM downsides matter at consumer distribution scale. They don't matter for AJB + python419. The case for Tauri's size advantage cashes out at distribution — which v1 explicitly defers (§12).
+4. **Build velocity.** Electron is one-language (JS/TS) end-to-end and AJB already works in JS-land. Tauri adds a Rust learning cost; Wails adds Go and a smaller community to find answers in. For an internal v1, the fastest path to a working app is the right path.
+5. **Python engine spawn is trivially mature in Electron.** `child_process.spawn("review-pdf", [...])` works on day one. Same is true in Wails (`os/exec`). Tauri's sidecar pattern is workable but adds ceremony. Combined with the renderer and pty wins, the Python-spawn neutrality doesn't move the needle.
+
+**When the case would flip (worth recording for v2):**
+
+- **Public distribution at scale.** If we ever want to put this in front of a download-curious audience, install size and cold-start become real. Tauri's 5–30 MB beats Electron's 80–200 MB meaningfully there.
+- **Mobile.** If we want iOS/Android from the same codebase, only Tauri 2 offers it.
+- **Security-scoped deployment.** Enterprise or sandboxed-environment shipping benefits from Tauri's capability model.
+- **Rust expertise on the team.** If the project ever gets a contributor who lives in Rust, Tauri's appeal goes up.
+
+None of these apply to v1; all are worth re-checking if/when we cross into v2 distribution.
+
+**Risk to record:** an Electron→Tauri port in v2 has real cost — rewriting node-pty integration as a Rust pty bridge, re-plumbing the Python engine as a Tauri sidecar, packaging changes, and (most painfully) re-testing PDF.js against three webview engines. The renderer code itself (React/Vue/Svelte/vanilla, whatever §13.x picks) carries over cleanly; only the main-process plumbing is at stake. **We're picking Electron for its v1 fit, not pretending it's the right end-state.**
+
+**Concrete stack v1 will ship on:**
+
+- Electron (latest stable at build start)
+- Renderer framework: TBD (one of: React 19, Svelte 5, vanilla TS). Decide during prototype; not load-bearing.
+- `node-pty` (main process) + `xterm.js` (renderer) for the Claude pane
+- PDF.js (renderer) for PDF view + text-layer extraction
+- `child_process.spawn` for the Python engine — pairs with §13.1 PATH-discovery for prototype
+- `electron-builder` or `electron-forge` for packaging (defer pick until first package needed)
+- Auto-update deferred per §12
 
 ### 13.6 — Dark mode for PDF + Word (still open, spike)
 
@@ -456,7 +656,7 @@ PDF.js exposes text-layer extraction; need to confirm coordinate accuracy matche
 In order:
 
 1. **AJB reviews this spec.** Confirm: layout shape, three-engagement-levels framing, bottom-pane-is-universal-input idea, save-versioning scheme, decision ledger in §3–§11 + §15. Reject/edit anything wrong.
-2. **Resolve open questions §13.1–§13.4.** These are pre-build decisions: tech stack, repo, bundling, rebuild-vs-wrap. Pick before any code.
+2. **Pre-build picks complete.** §13.1 bundling → PATH-discovery; §13.2 first-scope → ground-up; §13.3 repo → same repo, `desktop/`; §13.4 tech stack → Electron. Remaining §13 items are spikes (§13.6, §13.10, §13.11) and a docs cleanup (§13.5); none are pre-build blockers.
 3. **Spike #1 — PDF highlight + text capture.** Single-page PDF.js prototype that proves we can highlight a region and reliably get the underlying text out, including the corrupted-PDF case from yesterday. Validates the load-bearing §5.2 requirement before committing the full app.
 4. **Spike #2 — Dark mode for PDF.** Quick canvas-invert test to know whether §4.1's "dark/light toggle for all doc types" is real or fantasy.
 5. **Visual mockup.** ASCII in §2 is enough to discuss; before building, sketch the actual UI in Figma or hand-drawn — color, typography, comment-card design (steal from Sudowrite/Spellbook per [SCREENSHOTS.md](../research/2026-05-16-existing-tools-survey/SCREENSHOTS.md) "patterns worth noting").
