@@ -164,28 +164,29 @@ rough priority order.
    handoff).** `bd where` still errors. Until resolved, all
    follow-ups live in handoff docs instead of bd.
 
-## Follow-up TODOs (file in bd when reachable)
+## Follow-up TODOs (filed in bd)
 
-Copy of the limitations above, plus housekeeping:
+Filed in bd after mayor (mail hq-gheez) restored `.beads/metadata.json`
+and removed the broken `.beads/redirect` mid-session. All labeled
+`milestone-4-followup`.
 
-- M4-followup-1: Flush drafts on app quit + window unload.
-- M4-followup-2: Group §9.1 cards by engagement level (L1/L2/L3
-  sections in the right drawer).
-- M4-followup-3: `j` / `k` / `Enter` keyboard navigation in the
+- [`rev-cm6`](#) P2 [bug] Flush drafts on app quit + window unload.
+- [`rev-6vc`](#) P3 Group §9.1 cards by engagement level (L1/L2/L3
+  sections).
+- [`rev-680`](#) P3 `j` / `k` / `Enter` keyboard navigation in the
   comment stream (spec §15).
-- M4-followup-4: Edit / delete actions on comment cards.
-- M4-followup-5: Standalone (no-anchor) comments + click-to-anchor
+- [`rev-b8t`](#) P3 Edit / delete actions on comment cards.
+- [`rev-6nh`](#) P3 Standalone (no-anchor) comments + click-to-anchor
   affordance (spec §5.1).
-- M4-followup-6: Add multi-page fixture; manually verify
-  `revealAnchor` cross-page path.
-- M4-followup-7: Better persistence-error UI than a 2s flash —
-  maybe a persistent badge near `#pdfTitle` that clears on next
-  successful write.
-- M4-followup-8 (carried from prior handoff): Investigate `bd init`
-  for this checkout vs leaving `.beads/` as-is.
-- M4-followup-9: Selection on bulleted PDFs extends through
-  sub-bullets in DOM order on backward drag (PDF.js #17191
-  limitation; carried from prior handoff).
+- [`rev-4qc`](#) P3 Add multi-page fixture; verify `revealAnchor`
+  cross-page path.
+- [`rev-a1x`](#) P3 Better persistence-error UI than 2s meta flash.
+- [`rev-4pr`](#) P3 [bug] Backward-drag selection extends through
+  sub-bullets on bulleted PDFs (PDF.js #17191 — carried from prior
+  handoff).
+
+(Prior handoff's "bd workspace not initialized" item resolved this
+session by mayor.)
 
 ## Suggested next session — milestone #5 options
 
