@@ -82,6 +82,58 @@ html, body, #app {
 }
 
 /*
+ * Empty state shown in the document area when no PDF is loaded. Renderer
+ * removes this element once a PDF is opened; it's re-rendered if the user
+ * opens a different file that fails to load.
+ */
+.pdf-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.pdf-empty-title {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.pdf-empty-hint {
+  font-size: 13px;
+}
+.pdf-empty strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/*
+ * §5.2 load-time health banner. Non-blocking — sits between the nav header
+ * and the document area. Severity drives color; clean PDFs hide the banner
+ * entirely (renderer sets [hidden]).
+ */
+.pdf-banner {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--pane-border);
+  color: var(--text);
+}
+.pdf-banner[data-severity="warn"] {
+  background: #3a2e10;
+  border-bottom-color: #6a5418;
+}
+.pdf-banner[data-severity="error"] {
+  background: #3a1818;
+  border-bottom-color: #7a2a2a;
+}
+.pdf-banner strong { font-weight: 600; }
+.pdf-banner .pdf-banner-detail {
+  display: block;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/*
  * PDF viewer (renderer/pdf-viewer.ts). The text layer must absolutely overlay
  * the canvas at exact dimensions so PDF.js's positioned <span>s land on the
  * glyphs underneath — that's what makes native text selection snap.
@@ -148,6 +200,26 @@ html, body, #app {
 }
 .pdf-nav-controls button:not(:disabled):hover {
   background: #444;
+}
+
+/* Open… is the primary action when no doc is loaded — slightly emphasized. */
+.pdf-nav-controls button#pdfOpen {
+  background: var(--accent);
+  color: #0b1a2e;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.pdf-nav-controls button#pdfOpen:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+
+.pdf-nav-title {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .pdf-nav-sep {

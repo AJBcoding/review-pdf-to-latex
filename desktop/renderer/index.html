@@ -24,19 +24,29 @@
 
     <main class="pane middle" data-pane="document">
       <header class="pane-header pdf-nav" id="pdfNav">
-        <span>Document viewer</span>
+        <span class="pdf-nav-title" id="pdfTitle">Document viewer</span>
         <span class="pdf-nav-controls">
+          <button id="pdfOpen" type="button" title="Open a PDF (⌘O)">Open…</button>
+          <span class="pdf-nav-sep" aria-hidden="true">│</span>
           <button id="pdfPrev" type="button" disabled>◀</button>
           <span id="pdfPageLabel" class="pdf-page-label">— / —</span>
           <button id="pdfNext" type="button" disabled>▶</button>
           <span class="pdf-nav-sep" aria-hidden="true">│</span>
-          <button id="pdfFitPage" type="button" title="Fit whole page in view">Fit page</button>
-          <button id="pdfFitWidth" type="button" title="Fit page width to view (scroll vertically)">Fit width</button>
+          <button id="pdfFitPage" type="button" disabled title="Fit whole page in view">Fit page</button>
+          <button id="pdfFitWidth" type="button" disabled title="Fit page width to view (scroll vertically)">Fit width</button>
           <span class="pdf-nav-sep" aria-hidden="true">│</span>
-          <button id="pdfDarkToggle" type="button" title="Toggle dark mode (§13.6 spike)">🌓</button>
+          <button id="pdfDarkToggle" type="button" disabled title="Toggle dark mode (§13.6 spike)">🌓</button>
         </span>
       </header>
-      <div class="pane-body document-area" id="pdfMount"></div>
+      <!-- pdf-health banner (§5.2 load-time pre-flight). Hidden until a PDF
+           is loaded; populated by the renderer based on the parsed report. -->
+      <div id="pdfBanner" class="pdf-banner" hidden role="status" aria-live="polite"></div>
+      <div class="pane-body document-area" id="pdfMount">
+        <div class="pdf-empty" id="pdfEmpty">
+          <div class="pdf-empty-title">No PDF loaded</div>
+          <div class="pdf-empty-hint">Click <strong>Open…</strong> above to choose a PDF.</div>
+        </div>
+      </div>
       <footer class="pane-footer">
         <div class="bottom-input placeholder" id="selectionEcho">empty shell — bottom input pane (comment / redraft / surface) per §3.  Select text in the PDF to echo the §5.2 payload here.</div>
       </footer>
