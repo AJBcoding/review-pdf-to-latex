@@ -57,12 +57,20 @@ def _add_global_args(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from . import __version__
+
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
             "Sidecar tool for walking PDF annotations into LaTeX source edits. "
             "See docs/specs/2026-05-16-review-pdf-to-latex-design.md."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Print the engine version and exit. Used by the Electron app at startup per spec §13.1.",
     )
     _add_global_args(parser)
     sub = parser.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")

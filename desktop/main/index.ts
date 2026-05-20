@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { engineVersion } from './engine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -34,10 +35,15 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
-  // First IPC handler — just an echo so the renderer can confirm the bridge works.
+  // Smoke-test IPC retained from the empty-shell milestone.
   ipcMain.handle('ping', (_event, message: string) => {
     return `pong: ${message}`;
   });
+
+  // Engine version probe — walks the §13.1 resolution chain and spawns
+  // `review-pdf --version`. Returns a structured EngineResult; the renderer
+  // never sees a thrown error, just a discriminated union to branch on.
+  ipcMain.handle('engine:version', async () => engineVersion());
 
   createWindow();
 

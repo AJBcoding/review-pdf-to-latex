@@ -86,4 +86,7 @@ html, body, #app {
   font-size: 11px;
   color: var(--muted);
   pointer-events: none;
+  text-align: right;
+  line-height: 1.5;
+  max-width: 60vw;
 }
