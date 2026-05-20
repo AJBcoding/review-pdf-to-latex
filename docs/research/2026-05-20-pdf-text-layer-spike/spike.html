@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PDF text-layer spike</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      margin: 0;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: minmax(600px, 1fr) 420px;
+      grid-template-rows: auto 1fr;
+      grid-template-areas:
+        "controls controls"
+        "canvas   panel";
+      gap: 16px;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+    .controls { grid-area: controls; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .canvas-wrap {
+      grid-area: canvas;
+      overflow: auto;
+      border: 1px solid #888;
+      background: #f4f4f4;
+      min-height: 0;
+    }
+    #stage {
+      position: relative;
+      display: inline-block;
+    }
+    #pdfCanvas { display: block; }
+
+    /* Text layer — invisible spans positioned over the canvas, selectable. */
+    .textLayer {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      opacity: 1;
+      line-height: 1;
+      text-size-adjust: none;
+      forced-color-adjust: none;
+      transform-origin: 0 0;
+      z-index: 2;
+    }
+    .textLayer.debug-visible { opacity: 0.35; }
+    .textLayer.debug-visible span,
+    .textLayer.debug-visible br { color: rgba(0, 0, 255, 0.6); }
+    .textLayer > span,
+    .textLayer > br {
+      color: transparent;
+      position: absolute;
+      white-space: pre;
+      cursor: text;
+      transform-origin: 0% 0%;
+    }
+    .textLayer ::selection { background: rgba(0, 100, 255, 0.4); }
+    .textLayer.inactive { pointer-events: none; }
+    .textLayer.inactive ::selection { background: transparent; }
+
+    /* Region overlay — rectangle drag, used as fallback or for image-only PDFs. */
+    #selectionOverlay {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none; /* enabled when mode = region */
+    }
+    #selectionOverlay.active {
+      pointer-events: auto;
+      cursor: crosshair;
+    }
+    #selectionRect {
+      position: absolute;
+      border: 2px solid #d70;
+      background: rgba(221, 119, 0, 0.18);
+      pointer-events: none;
+      display: none;
+    }
+    .hit-box {
+      position: absolute;
+      border: 1px dashed #08c;
+      background: rgba(0, 136, 204, 0.10);
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .panel {
+      grid-area: panel;
+      overflow: auto;
+      border: 1px solid #888;
+      padding: 12px;
+      font-size: 13px;
+      min-height: 0;
+    }
+    h2 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .03em; }
+    pre { background: #0001; padding: 8px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .meta { font-family: ui-monospace, monospace; font-size: 12px; }
+    .extracted { font-size: 14px; line-height: 1.4; }
+    .warn { color: #c33; font-weight: 600; }
+    .ok { color: #393; font-weight: 600; }
+    button, input[type=number], select { font: inherit; padding: 4px 8px; }
+    label { display: inline-flex; align-items: center; gap: 4px; }
+    .mode-pill {
+      padding: 4px 10px;
+      border: 1px solid #888;
+      border-radius: 999px;
+      background: #fff2;
+      font-weight: 600;
+    }
+    .mode-pill.text { background: #cce4ff; color: #003366; }
+    .mode-pill.region { background: #ffe2b0; color: #663300; }
+  </style>
+</head>
+<body>
+
+<div class="controls">
+  <input type="file" id="filePicker" accept="application/pdf">
+  <label>Page <input type="number" id="pageNum" value="1" min="1" style="width:60px"></label>
+  <label>Zoom
+    <select id="zoom">
+      <option value="0.75">75%</option>
+      <option value="1" selected>100%</option>
+      <option value="1.5">150%</option>
+      <option value="2">200%</option>
+      <option value="3">300%</option>
+    </select>
+  </label>
+  <button id="modeToggle" class="mode-pill text">Mode: text-select</button>
+  <label><input type="checkbox" id="debugTextLayer"> show text layer (debug)</label>
+  <button id="dumpAll">dump page text-content</button>
+  <button id="copyExtract">copy extracted text</button>
+  <span id="docMeta" class="meta"></span>
+</div>
+
+<div class="canvas-wrap" id="canvasWrap">
+  <div id="stage">
+    <canvas id="pdfCanvas"></canvas>
+    <div id="textLayer" class="textLayer"></div>
+    <div id="selectionOverlay">
+      <div id="selectionRect"></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Extracted text</h2>
+  <div id="extracted" class="extracted"><em>Select text on the page (drag like you would in any PDF reader). Switch to region-select mode for image-only PDFs.</em></div>
+
+  <h2 style="margin-top:16px">Selection region</h2>
+  <div id="regionMeta" class="meta">—</div>
+
+  <h2 style="margin-top:16px">Selection details</h2>
+  <div id="hitItems" class="meta"></div>
+
+  <h2 style="margin-top:16px">Page meta</h2>
+  <div id="pageMeta" class="meta">—</div>
+
+  <h2 style="margin-top:16px">Warnings</h2>
+  <div id="warnings">—</div>
+</div>
+
+<script type="module">
+const PDFJS_VERSION = '4.7.76';
+const PDFJS_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
+
+const pdfjsLib = await import(`${PDFJS_CDN}/pdf.min.mjs`);
+pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/pdf.worker.min.mjs`;
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  file: $('filePicker'),
+  pageNum: $('pageNum'),
+  zoom: $('zoom'),
+  modeToggle: $('modeToggle'),
+  debugTextLayer: $('debugTextLayer'),
+  dumpAll: $('dumpAll'),
+  copyExtract: $('copyExtract'),
+  docMeta: $('docMeta'),
+  canvas: $('pdfCanvas'),
+  stage: $('stage'),
+  textLayer: $('textLayer'),
+  overlay: $('selectionOverlay'),
+  selectionRect: $('selectionRect'),
+  extracted: $('extracted'),
+  regionMeta: $('regionMeta'),
+  hitItems: $('hitItems'),
+  pageMeta: $('pageMeta'),
+  warnings: $('warnings'),
+};
+
+let pdfDoc = null;
+let pageObj = null;
+let viewport = null;
+let textContent = null;
+let textLayerInstance = null;
+let mode = 'text'; // 'text' | 'region'
+
+els.file.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  await loadPdf(buf, file.name);
+});
+
+els.pageNum.addEventListener('change', () => renderCurrentPage());
+els.zoom.addEventListener('change', () => renderCurrentPage());
+els.modeToggle.addEventListener('click', () => toggleMode());
+els.debugTextLayer.addEventListener('change', () => {
+  els.textLayer.classList.toggle('debug-visible', els.debugTextLayer.checked);
+});
+els.dumpAll.addEventListener('click', () => dumpAllText());
+els.copyExtract.addEventListener('click', () => {
+  navigator.clipboard.writeText(els.extracted.innerText);
+});
+
+function toggleMode() {
+  mode = mode === 'text' ? 'region' : 'text';
+  applyMode();
+}
+
+function applyMode() {
+  if (mode === 'text') {
+    els.modeToggle.textContent = 'Mode: text-select';
+    els.modeToggle.classList.remove('region');
+    els.modeToggle.classList.add('text');
+    els.textLayer.classList.remove('inactive');
+    els.overlay.classList.remove('active');
+  } else {
+    els.modeToggle.textContent = 'Mode: region-select';
+    els.modeToggle.classList.remove('text');
+    els.modeToggle.classList.add('region');
+    els.textLayer.classList.add('inactive');
+    els.overlay.classList.add('active');
+    window.getSelection()?.removeAllRanges();
+  }
+  clearHitBoxes();
+}
+
+async function loadPdf(data, name) {
+  pdfDoc = await pdfjsLib.getDocument({ data }).promise;
+  els.docMeta.textContent = `loaded "${name}" — ${pdfDoc.numPages} pages — pdfjs ${PDFJS_VERSION}`;
+  els.pageNum.max = pdfDoc.numPages;
+  if (parseInt(els.pageNum.value) > pdfDoc.numPages) els.pageNum.value = 1;
+  await renderCurrentPage();
+}
+
+async function renderCurrentPage() {
+  if (!pdfDoc) return;
+  const pNum = parseInt(els.pageNum.value);
+  const zoom = parseFloat(els.zoom.value);
+  pageObj = await pdfDoc.getPage(pNum);
+  viewport = pageObj.getViewport({ scale: zoom });
+
+  els.canvas.width = viewport.width;
+  els.canvas.height = viewport.height;
+  els.stage.style.width = `${viewport.width}px`;
+  els.stage.style.height = `${viewport.height}px`;
+  els.textLayer.style.width = `${viewport.width}px`;
+  els.textLayer.style.height = `${viewport.height}px`;
+  els.textLayer.style.setProperty('--scale-factor', String(zoom));
+  // PDF.js v4 TextLayer requires --scale-factor on the container.
+
+  const ctx = els.canvas.getContext('2d');
+  await pageObj.render({ canvasContext: ctx, viewport }).promise;
+
+  // Build the text layer.
+  els.textLayer.replaceChildren();
+  if (textLayerInstance) {
+    try { textLayerInstance.cancel(); } catch (_) {}
+  }
+  textContent = await pageObj.getTextContent();
+  textLayerInstance = new pdfjsLib.TextLayer({
+    textContentSource: textContent,
+    container: els.textLayer,
+    viewport,
+  });
+  await textLayerInstance.render();
+
+  const warnings = [];
+  if (textContent.items.length === 0) {
+    warnings.push('<span class="warn">⚠ This page reports zero text-content items. Likely a scanned / image-only PDF. Switch to region-select mode and plan an OCR fallback.</span>');
+  } else if (textContent.items.every((it) => (it.str ?? '').trim() === '')) {
+    warnings.push('<span class="warn">⚠ All text-content items have empty/whitespace strings. Embedded text may be CID-encoded without a ToUnicode map.</span>');
+  } else {
+    warnings.push('<span class="ok">✓ text-content extracted, text layer rendered.</span>');
+  }
+
+  els.pageMeta.innerHTML = [
+    `page: ${pNum} / ${pdfDoc.numPages}`,
+    `page.rotate: ${pageObj.rotate}°`,
+    `viewport: ${viewport.width.toFixed(0)} × ${viewport.height.toFixed(0)} px @ scale ${zoom}`,
+    `viewport.viewBox (PDF units): [${viewport.viewBox.join(', ')}]`,
+    `text-content items: ${textContent.items.length}`,
+    `unique font-styles: ${Object.keys(textContent.styles).length}`,
+  ].join('<br>');
+
+  els.warnings.innerHTML = warnings.join('<br>');
+  clearHitBoxes();
+  els.extracted.innerHTML = mode === 'text'
+    ? '<em>Select text on the page (drag like you would in any PDF reader).</em>'
+    : '<em>Drag a rectangle on the page.</em>';
+  els.regionMeta.textContent = '—';
+  els.hitItems.innerHTML = '';
+  applyMode();
+}
+
+// ─── Text-select mode ────────────────────────────────────────────────
+// Listen for mouseup on the text layer + selectionchange globally,
+// and surface whatever is currently selected inside the text layer.
+
+let selectionDebounce = null;
+function onSelectionChange() {
+  if (mode !== 'text') return;
+  clearTimeout(selectionDebounce);
+  selectionDebounce = setTimeout(captureTextSelection, 120);
+}
+
+document.addEventListener('selectionchange', onSelectionChange);
+
+function captureTextSelection() {
+  if (mode !== 'text') return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+    return; // nothing meaningful selected
+  }
+  const range = sel.getRangeAt(0);
+  // Only act if the selection is inside our text layer.
+  if (!els.textLayer.contains(range.commonAncestorContainer) &&
+      !els.textLayer.contains(range.startContainer)) {
+    return;
+  }
+
+  const text = sel.toString();
+  const stageRect = els.stage.getBoundingClientRect();
+  const rects = Array.from(range.getClientRects())
+    .map((r) => ({
+      x: r.left - stageRect.left,
+      y: r.top - stageRect.top,
+      w: r.width,
+      h: r.height,
+    }))
+    .filter((r) => r.w > 0 && r.h > 0);
+
+  if (rects.length === 0) return;
+
+  // Combined bbox
+  const bbox = {
+    x: Math.min(...rects.map((r) => r.x)),
+    y: Math.min(...rects.map((r) => r.y)),
+    w: 0, h: 0,
+  };
+  bbox.w = Math.max(...rects.map((r) => r.x + r.w)) - bbox.x;
+  bbox.h = Math.max(...rects.map((r) => r.y + r.h)) - bbox.y;
+
+  const pdfRegion = screenRegionToPdf(bbox, viewport);
+
+  // Render selection bbox(es) as hit-boxes (visual confirmation).
+  clearHitBoxes();
+  for (const r of rects) drawHitBox(r);
+
+  els.extracted.textContent = text;
+
+  els.regionMeta.innerHTML = [
+    `screen (combined bbox): x=${bbox.x.toFixed(1)} y=${bbox.y.toFixed(1)} w=${bbox.w.toFixed(1)} h=${bbox.h.toFixed(1)}`,
+    `pdf    (combined bbox): x=${pdfRegion.x.toFixed(1)} y=${pdfRegion.y.toFixed(1)} w=${pdfRegion.w.toFixed(1)} h=${pdfRegion.h.toFixed(1)}`,
+    `selection rects: ${rects.length}  (multi-line selections produce one rect per line)`,
+  ].join('<br>');
+
+  els.hitItems.innerHTML = `
+    <div>text length: ${text.length} chars</div>
+    <div>contains-ligature-replacement-spaces: ${detectLigatureLoss(text) ? '<span class="warn">⚠ likely</span>' : '<span class="ok">no</span>'}</div>
+    <pre>${escapeHtml(JSON.stringify({ text, region: pdfRegion, page: parseInt(els.pageNum.value) }, null, 2))}</pre>
+  `;
+}
+
+// Heuristic for ligature loss: words like "veri ed", "e cient", "con dence" — a space
+// between known partial-stems and known partial-tails. Not perfect, but a useful flag.
+function detectLigatureLoss(text) {
+  const patterns = [
+    /\bveri \w/i, /\bef ci/i, /\bcon de/i, /\bcon den/i, /\bsigni \w/i,
+    /\bde n\w/i, /\b\w+ci ent\b/i, /\bof ce/i, /\b ag\b/i, /\b oat/i,
+    /\bre ect/i, /\bre ne/i, /\bre nem/i, /\b ll(ed|ing)?\b/i,
+  ];
+  return patterns.some((re) => re.test(text));
+}
+
+// ─── Region-select mode (fallback) ────────────────────────────────────
+let drag = null;
+els.overlay.addEventListener('pointerdown', (e) => {
+  if (mode !== 'region' || !viewport) return;
+  els.overlay.setPointerCapture(e.pointerId);
+  const rect = els.canvas.getBoundingClientRect();
+  drag = { startX: e.clientX - rect.left, startY: e.clientY - rect.top, rect };
+  Object.assign(els.selectionRect.style, {
+    display: 'block', left: `${drag.startX}px`, top: `${drag.startY}px`, width: '0', height: '0',
+  });
+});
+
+els.overlay.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const x = e.clientX - drag.rect.left;
+  const y = e.clientY - drag.rect.top;
+  const left = Math.min(x, drag.startX);
+  const top = Math.min(y, drag.startY);
+  const w = Math.abs(x - drag.startX);
+  const h = Math.abs(y - drag.startY);
+  Object.assign(els.selectionRect.style, {
+    left: `${left}px`, top: `${top}px`, width: `${w}px`, height: `${h}px`,
+  });
+});
+
+els.overlay.addEventListener('pointerup', (e) => {
+  if (!drag) return;
+  els.overlay.releasePointerCapture(e.pointerId);
+  const x = e.clientX - drag.rect.left;
+  const y = e.clientY - drag.rect.top;
+  const region = {
+    x: Math.min(x, drag.startX),
+    y: Math.min(y, drag.startY),
+    w: Math.abs(x - drag.startX),
+    h: Math.abs(y - drag.startY),
+  };
+  drag = null;
+  if (region.w < 2 || region.h < 2) {
+    els.extracted.innerHTML = '<em>Region too small. Try again.</em>';
+    return;
+  }
+  extractFromRegion(region);
+});
+
+function extractFromRegion(region) {
+  // For region-mode, intersect with text items geometrically (same logic as v1 spike).
+  const items = textContent?.items ?? [];
+  const hits = items
+    .map((it, i) => ({ ...it, idx: i, screen: itemScreenBbox(it, viewport) }))
+    .filter((it) => it.screen && rectsIntersect(region, it.screen))
+    .sort((a, b) => {
+      const lineTolerance = 4;
+      if (Math.abs(a.screen.y - b.screen.y) < lineTolerance) return a.screen.x - b.screen.x;
+      return a.screen.y - b.screen.y;
+    });
+
+  clearHitBoxes();
+  for (const h of hits) drawHitBox(h.screen);
+
+  const text = stitchItems(hits);
+  els.extracted.textContent = text || '(empty)';
+
+  const pdfRegion = screenRegionToPdf(region, viewport);
+  els.regionMeta.innerHTML = [
+    `screen: x=${region.x.toFixed(1)} y=${region.y.toFixed(1)} w=${region.w.toFixed(1)} h=${region.h.toFixed(1)}`,
+    `pdf:    x=${pdfRegion.x.toFixed(1)} y=${pdfRegion.y.toFixed(1)} w=${pdfRegion.w.toFixed(1)} h=${pdfRegion.h.toFixed(1)}`,
+    `items hit: ${hits.length} / ${items.length} on page`,
+  ].join('<br>');
+
+  els.hitItems.innerHTML = renderItemsTable(hits);
+}
+
+function itemScreenBbox(item, vp) {
+  const [a, b, c, d, e, f] = item.transform;
+  const w = item.width;
+  const h = item.height;
+  const corners = [[0, 0], [w, 0], [w, h], [0, h]].map(([x, y]) => {
+    const px = a * x + c * y + e;
+    const py = b * x + d * y + f;
+    return vp.convertToViewportPoint(px, py);
+  });
+  const xs = corners.map((p) => p[0]);
+  const ys = corners.map((p) => p[1]);
+  return {
+    x: Math.min(...xs),
+    y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs),
+    h: Math.max(...ys) - Math.min(...ys),
+  };
+}
+
+function rectsIntersect(a, b) {
+  return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+}
+
+function stitchItems(items) {
+  let out = ''; let prev = null;
+  for (const it of items) {
+    if (prev) {
+      const sameLine = Math.abs(it.screen.y - prev.screen.y) < 4;
+      if (sameLine) {
+        const gap = it.screen.x - (prev.screen.x + prev.screen.w);
+        if (gap > 2 && !out.endsWith(' ')) out += ' ';
+      } else { out += '\n'; }
+    }
+    out += it.str;
+    if (it.hasEOL) out += '\n';
+    prev = it;
+  }
+  return out.trim();
+}
+
+function screenRegionToPdf(region, vp) {
+  const corners = [
+    [region.x, region.y], [region.x + region.w, region.y],
+    [region.x + region.w, region.y + region.h], [region.x, region.y + region.h],
+  ].map(([x, y]) => vp.convertToPdfPoint(x, y));
+  const xs = corners.map((p) => p[0]);
+  const ys = corners.map((p) => p[1]);
+  return {
+    x: Math.min(...xs), y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs),
+    h: Math.max(...ys) - Math.min(...ys),
+  };
+}
+
+function clearHitBoxes() {
+  for (const el of document.querySelectorAll('.hit-box')) el.remove();
+}
+
+function drawHitBox(s) {
+  const el = document.createElement('div');
+  el.className = 'hit-box';
+  Object.assign(el.style, { left: `${s.x}px`, top: `${s.y}px`, width: `${s.w}px`, height: `${s.h}px` });
+  els.stage.appendChild(el);
+}
+
+function renderItemsTable(items) {
+  if (items.length === 0) return '<em>no items hit.</em>';
+  const rows = items.map((it) => `
+    <tr><td>${it.idx}</td><td>${escapeHtml(it.str)}</td>
+        <td>${it.screen.x.toFixed(0)},${it.screen.y.toFixed(0)}</td>
+        <td>${it.screen.w.toFixed(0)}×${it.screen.h.toFixed(0)}</td>
+        <td>${it.fontName ?? ''}</td></tr>`).join('');
+  return `<table style="width:100%;border-collapse:collapse;font:11px ui-monospace,monospace">
+    <tr><th>idx</th><th>str</th><th>x,y</th><th>w×h</th><th>font</th></tr>${rows}</table>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function dumpAllText() {
+  if (!textContent) return;
+  const lines = textContent.items.map((it, i) => `[${i}] ${JSON.stringify(it.str)}  hasEOL=${it.hasEOL}  font=${it.fontName}  pdfW=${it.width?.toFixed(1)} pdfH=${it.height?.toFixed(1)}  transform=[${it.transform.map((n) => n.toFixed(2)).join(',')}]`);
+  els.extracted.innerHTML = `<pre>${escapeHtml(lines.join('\n'))}</pre>`;
+}
+</script>
+
+</body>
+</html>

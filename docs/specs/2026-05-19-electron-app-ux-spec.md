@@ -146,6 +146,21 @@ Yesterday's COTA run surfaced a class of bug: the highlight layer lives **on top
 
 This directly addresses the root cause behind ready-bug `rev-9m5`/`rev-fv6` (sticky-note ↔ highlight ↔ text mismatch) — see [bug screenshots](../research/2026-05-17-ready-bugs-ux/).
 
+**Implementation primitive:** PDF.js's `TextLayer` rendered over the canvas, with native browser text selection (drag-to-select snaps to actual glyphs). This was validated by the [PDF text-layer spike](../research/2026-05-20-pdf-text-layer-spike/README.md) on 2026-05-20. The captured payload's `region` falls out of `Range.getClientRects()` — no geometric intersection math required, which is what made `§13.11` (coordinate accuracy) tractable.
+
+**Behavior on damaged PDFs.** The spike confirmed that broken PDFs are a real and recurring failure shape (the `rev-fv6` COTA file: 137 stream errors, 8 of 10 pages render blank, missing ToUnicode maps cause ligature loss). The app must handle them explicitly:
+
+1. **PDF-health pre-flight at load time.** The renderer calls `review-pdf pdf-health <path>` (see [design spec §8](../specs/2026-05-16-review-pdf-to-latex-design.md#8-cli-surface)) on every loaded PDF and surfaces a non-blocking banner when problems are detected. Example:
+   > "⚠ This PDF appears partially damaged: pages 3–10 contain no readable text. Likely cause: the file was re-saved or annotated by a tool that corrupted its content streams. **Recommended:** rebuild the PDF from source. You can still review pages 1–2."
+
+2. **Inline quality warning at highlight time.** If the captured text matches a ligature-replacement heuristic (`veri ed`, `e cient`, `con dence`, …), the comment card shows a small "⚠ captured text may be incomplete" badge, and the payload carries `"text_quality": "degraded"`.
+
+3. **Region always captured, even when text capture returns empty.** On blank/unreadable pages, the user can still drag-select a region in the renderer's fallback "region-select" mode. The payload becomes `{"region": {...}, "highlighted_text": "", "text_unavailable": true}` — the agent gets coordinates plus surrounding-page context, and may ask the user for clarification.
+
+4. **No OCR fallback in v1.** The v1 audience (AJB + python419) reviews their own LaTeX projects; when a PDF is broken, rebuilding from `.tex` source is faster than OCR. Tesseract.js as a region-OCR fallback is deferred until a non-developer user hits this.
+
+The full reasoning, test methodology, and decision rationale are in the [spike README](../research/2026-05-20-pdf-text-layer-spike/README.md).
+
 ### 5.3 Save behavior
 
 - **Save As** with version bump: `report-1.0.pdf` → `report-1.1.pdf`, optionally with initials: `report-1.1 (AJB edits).pdf`.
@@ -639,13 +654,15 @@ Bottom input retained for consistency across doc types. In-place edit of rendere
 
 What fills the slot alongside Comment / Redraft / Surface? Strikethrough? Sticky-note? Decide during prototype based on usage gaps.
 
-### 13.10 — PDF underlying-text extraction reliability (still open, spike)
+### 13.10 — PDF underlying-text extraction reliability — RESOLVED (2026-05-20)
 
-Test against corrupted/scanned/multi-column PDFs to confirm we can always recover the text behind a highlight. If we can't, fall back to OCR + a "needs_review" flag.
+**Decision:** PDF.js text-layer extraction is reliable on well-formed PDFs. On malformed PDFs it degrades gracefully (blank render, zero text-content items, clear warning). The app handles the degraded path via a load-time pre-flight health check, an inline quality warning at highlight time, and "region-only" capture when text capture fails. No OCR fallback in v1. Full reasoning in [`docs/research/2026-05-20-pdf-text-layer-spike/README.md`](../research/2026-05-20-pdf-text-layer-spike/README.md); implementation requirements added to §5.2 above and to the engine CLI as `review-pdf pdf-health`.
 
-### 13.11 — Highlight → text capture library (still open, spike)
+The five documented failure modes — image-only / partially-corrupted / missing-ToUnicode / encrypted / unparseable — and the app's response to each are recorded in the spike README's "Failure modes summary" table.
 
-PDF.js exposes text-layer extraction; need to confirm coordinate accuracy matches a user-drawn region under all PDF coordinate systems (rotated pages, tight quads — see what `rev-fv6` ran into).
+### 13.11 — Highlight → text capture coordinate accuracy — RESOLVED (2026-05-20)
+
+**Decision:** non-issue under text-layer selection. When the user drags to select text, the selection IS the characters PDF.js extracted; bounding rects come straight from `Range.getClientRects()`. No rectangle-intersection math, no coordinate drift. Coordinate accuracy is only a question in the fallback "region-select" mode (image-only PDFs), and that mode is by design imprecise — the user is pointing at a region, not at specific text. Spike validation in [`docs/research/2026-05-20-pdf-text-layer-spike/README.md`](../research/2026-05-20-pdf-text-layer-spike/README.md).
 
 ### 13.12 — Search inside doc / search across comments (new, deferred to v2)
 
@@ -657,7 +674,7 @@ In order:
 
 1. **AJB reviews this spec.** Confirm: layout shape, three-engagement-levels framing, bottom-pane-is-universal-input idea, save-versioning scheme, decision ledger in §3–§11 + §15. Reject/edit anything wrong.
 2. **Pre-build picks complete.** §13.1 bundling → PATH-discovery; §13.2 first-scope → ground-up; §13.3 repo → same repo, `desktop/`; §13.4 tech stack → Electron. §13.5 docs cleanup is done (2026-05-20). Remaining §13 items are spikes only (§13.6, §13.10, §13.11) and v2 deferrals (§13.9, §13.12); none are pre-build blockers.
-3. **Spike #1 — PDF highlight + text capture.** Single-page PDF.js prototype that proves we can highlight a region and reliably get the underlying text out, including the corrupted-PDF case from yesterday. Validates the load-bearing §5.2 requirement before committing the full app.
+3. ~~**Spike #1 — PDF highlight + text capture.** Single-page PDF.js prototype that proves we can highlight a region and reliably get the underlying text out, including the corrupted-PDF case from yesterday. Validates the load-bearing §5.2 requirement before committing the full app.~~ **Done 2026-05-20.** §5.2 confirmed achievable; §13.10 and §13.11 resolved. See [`docs/research/2026-05-20-pdf-text-layer-spike/README.md`](../research/2026-05-20-pdf-text-layer-spike/README.md).
 4. **Spike #2 — Dark mode for PDF.** Quick canvas-invert test to know whether §4.1's "dark/light toggle for all doc types" is real or fantasy.
 5. **Visual mockup.** ASCII in §2 is enough to discuss; before building, sketch the actual UI in Figma or hand-drawn — color, typography, comment-card design (steal from Sudowrite/Spellbook per [SCREENSHOTS.md](../research/2026-05-16-existing-tools-survey/SCREENSHOTS.md) "patterns worth noting").
 6. ~~**Rewrite the obsolete spec §10** of `docs/specs/2026-05-16-review-pdf-to-latex-design.md` so the engine spec doesn't contradict this one.~~ Done 2026-05-20 — see §13.5 above.
