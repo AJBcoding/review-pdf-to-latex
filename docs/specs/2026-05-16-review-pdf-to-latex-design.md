@@ -4,20 +4,23 @@
 |---|---|
 | Title | review-pdf-to-latex — Sidecar tool for walking PDF annotations into LaTeX source edits |
 | Date | 2026-05-16 |
-| Status | Final Draft — Ready for User Review (2026-05-16) |
+| Status | Final Draft — partially superseded (see "Superseded-in-part-by" below). Engine contract (§5–§9, §11–§19) remains authoritative. |
 | Author | Claude (Opus 4.7, 1M context) on behalf of Anthony Byrnes |
 | Repo | `/Users/anthonybyrnes/PycharmProjects/review-pdf-to-latex/` |
 | Related — brief | [`../handoffs/2026-05-16-brainstorm-complete-handoff.md`](../handoffs/2026-05-16-brainstorm-complete-handoff.md) |
 | Related — narrative | [`../sessions/2026-05-16-initial-brainstorm-session.md`](../sessions/2026-05-16-initial-brainstorm-session.md) |
 | Related — closed research | [`../research/2026-05-16-superdoc-fit-analysis.md`](../research/2026-05-16-superdoc-fit-analysis.md) |
 | Supersedes | — |
+| Superseded-in-part-by | [`2026-05-19-electron-app-ux-spec.md`](./2026-05-19-electron-app-ux-spec.md) replaces the §10 sidecar-viewer UX (Jinja + local HTTP server) with the Electron-app renderer. The Electron pivot is recorded in [`../handoffs/2026-05-17-electron-pivot-handoff.md`](../handoffs/2026-05-17-electron-pivot-handoff.md). The engine CLI and on-disk data contract are unchanged. |
 | Implementation plan | Pending; to be written via `superpowers:writing-plans` after this spec is approved |
 
 ---
 
 ## 1. Summary
 
-`review-pdf-to-latex` is a single-user, local-only tool that walks the **author** (the LaTeX project owner) through every annotation on a **commenter**-marked PDF, one annotation at a time, and applies the corresponding edit to the LaTeX source that produced that PDF. The tool ships as two artifacts: a portable Python package (the *engine*) exposing a `review-pdf` CLI plus a thin local HTTP viewer, and a Claude Code skill (the *playbook*) that teaches Claude how to drive the engine through a four-phase workflow (phases 0/1/2/3, with phase 2 split into sub-phases 2a Ratify and 2b Surface). The engine knows nothing about Claude; the skill knows nothing about `pdfannots` or `pdflatex`. They meet at three JSON files on disk and the CLI contract defined in this spec. All mutations of `state.json` flow through engine CLI subcommands; the skill never writes `state.json` directly. The first concrete use case is the COTA Impact Report v2.0 review cycle (80 annotations across ~24 pages of LaTeX-generated PDF), but the engine is designed to accept any LaTeX project root plus any annotated PDF.
+`review-pdf-to-latex` is a single-user, local-only tool that walks the **author** (the LaTeX project owner) through every annotation on a **commenter**-marked PDF, one annotation at a time, and applies the corresponding edit to the LaTeX source that produced that PDF. The tool ships as two artifacts: a portable Python package (the *engine*) exposing a `review-pdf` CLI, and an Electron desktop app (the *renderer*, specified in [`2026-05-19-electron-app-ux-spec.md`](./2026-05-19-electron-app-ux-spec.md)) that drives the engine via subprocess and presents the four-phase workflow (phases 0/1/2/3, with phase 2 split into sub-phases 2a Ratify and 2b Surface). The engine knows nothing about the renderer; the renderer knows nothing about `pdfannots` or `pdflatex`. They meet at the JSON files on disk and the CLI contract defined in this spec. All mutations of `state.json` flow through engine CLI subcommands; nothing else writes `state.json` directly. The first concrete use case is the COTA Impact Report v2.0 review cycle (80 annotations across ~24 pages of LaTeX-generated PDF), but the engine is designed to accept any LaTeX project root plus any annotated PDF.
+
+> **Note on this spec's history.** The original §10 of this document described a thin local HTTP viewer (Jinja templates + browser tab + `state-events.jsonl` polling) driven by a Claude Code skill in the terminal. That sidecar UX was retired in the [Electron pivot](../handoffs/2026-05-17-electron-pivot-handoff.md) and replaced by the Electron app spec'd in 2026-05-19. The engine surface (CLI, file formats, status transitions, error codes) carried over unchanged; §10 below has been rewritten to point at the new UX spec while preserving the engine-side action semantics that other sections reference.
 
 ## 2. Problem statement
 
@@ -470,42 +473,32 @@ User selects at `serve` start time via `--order` or toggles in the viewer header
 | Success criteria | Clean build; clean git status post-commit; all approved edits in history; `state.json.phase == "3-final"` |
 | Failure modes | Final build failure → halt, surface log; git pre-commit hook failure → halt, surface |
 
-## 10. Viewer UI
+## 10. Renderer UI — superseded by 2026-05-19 electron-app-ux-spec
 
-### 10.1 Layout
+> **Status (2026-05-20):** the original §10 specified a thin local HTTP viewer (Jinja2 templates served from `review-pdf serve`, browser tab, click events appended to `state-events.jsonl`, `review-pdf wait-event` consumed by a Claude Code skill in the terminal). The [Electron pivot handoff](../handoffs/2026-05-17-electron-pivot-handoff.md) retired that architecture; the renderer is now an Electron desktop app, fully specified in [`2026-05-19-electron-app-ux-spec.md`](./2026-05-19-electron-app-ux-spec.md). The CLI surface (§8), data model (§7), and status enum (§7.3) are unchanged; only the front end and the front-end→engine plumbing changed.
+>
+> This section is preserved (rewritten) because §7, §8, §9, §11, §12, §18, and §19 cross-reference §10.3 (action → CLI → state-transition contract). That table is the engine's authoritative transition matrix — `set-status` validates against it — and it carries over to the Electron app unchanged. The obsolete layout/HTTP-serve/event-polling prose has been removed; see the linked 2026-05-19 spec for the current UX.
 
-```
-┌─ Annotation N of M · Page P · @author: "comment text" ─────────────┐
-├──────────┬─────────────────────┬───────────────────────────────────┤
-│ Source   │ Source LaTeX        │ Live PDF preview                  │
-│ PDF page │ (highlighted lines, │ (current rebuilt state,           │
-│ with     │  read-only <pre>)   │  auto-scrolls to page P)          │
-│ highlight│                     │                                   │
-│ overlay  │ ─────────────       │ ─────────────                     │
-│ <img>    │ Proposed edit       │ Pagination check:                 │
-│  + CSS   │ (read-only <pre>;   │  "24 → 24 pages, no shift"        │
-│  bbox    │  optional diff2html)│  or                               │
-│          │                     │  "24 → 25 pages, shift at p.12"   │
-│          │ ─────────────       │                                   │
-│          │ [Preview] [Approve] │                                   │
-│          │ [Reject]  [Redraft] │                                   │
-│          │ [Skip]    [Surface] │                                   │
-└──────────┴─────────────────────┴───────────────────────────────────┘
-```
+### 10.1 Layout — superseded
 
-The viewer is a fork of the brainstorming visual-companion server pattern (handoff §8). HTML files are rendered server-side (Jinja2) and served as static-ish responses; clicks fire a `fetch('/event', {method: 'POST', body: …})` that appends to `state-events.jsonl`.
+The original three-pane browser layout (source PDF page + source LaTeX + live PDF preview, with a fixed button row) is replaced by the Electron app's three-pane layout: left drawer (file tree), middle pane (document viewer + bottom input pane), right drawer (comment stream + Claude pane). See [2026-05-19 §2](./2026-05-19-electron-app-ux-spec.md). The §11.3 perf-warning indicator surface is now the Electron status bar rather than "under the preview pane."
 
-### 10.2 Interaction model
+### 10.2 Interaction model — superseded
 
-- The author does not type in the viewer (except in the manual-mapping UI, §10.6). Every interaction is a button click.
-- The viewer polls `state.json` every 500ms for status changes. The engine — invoked by the skill via CLI subcommands — is the sole writer; reads tolerate the atomic-rename window per §7.
-- The author types in the **Claude Code terminal** for everything else: SURFACE conversations, free-form redraft direction, anything not captured by a button.
+The original "every interaction is a button click; the author types only in the Claude Code terminal" model is replaced by the Electron app's richer interaction surface: typed comments and redraft directions in the bottom input pane, button-driven status transitions in the comment stream, embedded Claude pane for AI-assisted redrafts. See [2026-05-19 §3–§9](./2026-05-19-electron-app-ux-spec.md) for the full interaction model.
 
-### 10.3 Button semantics (precise)
+What carries over unchanged:
 
-Each row maps the button to: the CLI subcommand(s) the skill invokes, the resulting `state.json` mutation, the effect on the underlying `.tex` file, whether a rebuild is triggered, and the allowed source statuses for the transition.
+- `state.json` is read by the renderer, written only by the engine via CLI subcommands. The atomic-rename contract from §7 still governs cross-process reads.
+- Every renderer-initiated state transition goes through one of the §8 CLI subcommands. The renderer never writes `state.json` directly.
 
-| Button | CLI invocation(s) | Effect on state.json | Effect on .tex file | Triggers rebuild? | Allowed source → target statuses |
+### 10.3 Action semantics — engine transition contract (still authoritative)
+
+This table is the engine's authoritative status-transition contract. Whichever renderer issues the action — the retired Jinja viewer, the current Electron app, a future scripted CLI driver — must invoke the same CLI subcommand(s), and `set-status` will reject any transition that violates the allowed-source → target column.
+
+Each row maps the user-initiated action to: the CLI subcommand(s) invoked, the resulting `state.json` mutation, the effect on the underlying `.tex` file, whether a rebuild is triggered, and the allowed source statuses for the transition.
+
+| Action | CLI invocation(s) | Effect on state.json | Effect on .tex file | Triggers rebuild? | Allowed source → target statuses |
 |---|---|---|---|---|---|
 | **Approve** | `set-status --status accepted` | status → `accepted` | none (edit already applied in Phase 1) | no | `applied`, `redrafted` → `accepted` |
 | **Reject** | `revert --status rejected` then `build` (async) | status → `rejected`; `applied_text` → null; `before_text` preserved | engine restores `before_text` | yes, async | `applied`, `redrafted` → `rejected` |
@@ -514,87 +507,23 @@ Each row maps the button to: the CLI subcommand(s) the skill invokes, the result
 | **Skip** | `set-status --status deferred` | status → `deferred` | none | no | `pending`, `applied`, `redrafted`, `rejected`, `needs_review`, `surfaced_pending` → `deferred` |
 | **Surface** | `set-status --status surfaced_pending` | status → `surfaced_pending` | none | no | `pending`, `applied`, `deferred`, `needs_review` → `surfaced_pending` |
 
-Note on Preview implementation: in-place-mutate-then-restore is preferred over scratch-copy because it requires no project-tree copy (which would compound polecat path complexity) and gives the viewer the same `.review-state/builds/build-NNN.pdf` artifact stream it already consumes. The engine guarantees restoration via a Python `try/finally`: if the snapshot restore fails (exit code 17), the engine prints recovery instructions naming the snapshot bytes and the affected file.
+Note on Preview implementation: in-place-mutate-then-restore is preferred over scratch-copy because it requires no project-tree copy (which would compound polecat path complexity) and produces the same `.review-state/builds/build-NNN.pdf` artifact stream the renderer already consumes. The engine guarantees restoration via a Python `try/finally`: if the snapshot restore fails (exit code 17), the engine prints recovery instructions naming the snapshot bytes and the affected file.
 
-### 10.4 Dependencies (front-end)
+### 10.4 Dependencies — superseded
 
-- Vanilla HTML5 + ES6, no framework.
-- Optional CDN-loaded `diff2html` for the proposed-edit diff display. Falls back to side-by-side `<pre>` blocks if the CDN is unavailable.
-- PDF pages displayed as `<img src="pages/page-N.png">`. Highlight overlay is a CSS-positioned `<div>` computed from `bbox`.
-- No build step; HTML is served directly.
+Vanilla HTML5 + ES6 + Jinja-rendered HTML + optional CDN `diff2html` no longer applies. The Electron renderer's stack (TypeScript + Electron 30+ + PDF.js + xterm.js, with the renderer-framework choice deliberately deferred per the 2026-05-19 §13.4 stack note) is the current dependency surface. See [2026-05-19 §13.4](./2026-05-19-electron-app-ux-spec.md) and the eventual `desktop/package.json` once scaffolded per [2026-05-19 §13.3](./2026-05-19-electron-app-ux-spec.md).
 
-### 10.5 Click→engine path
+### 10.5 Action dispatch — superseded; replaced by Electron IPC
 
-```
-1. Author clicks [Approve] in browser.
-2. JS handler: fetch('/event', {method:'POST',
-                 body: {annotation_id, action:'approve'}}).
-3. server.py: appends one JSONL line to .review-state/state-events.jsonl
-   via O_APPEND + single write() (POSIX-atomic for line-sized payloads).
-4. The skill, running inside the Claude Code session, has a foreground
-   bash loop active that calls
-   `review-pdf wait-event --since <last_ts> --timeout 60`.
-   The CLI blocks until a new event lands, then prints it and exits 0
-   (or exits 20 on timeout, in which case the skill loops).
-5. The skill parses the event and invokes the CLI subcommand(s) in §10.3
-   for that action (e.g., `review-pdf set-status --status accepted`).
-6. The engine atomically rewrites state.json (write tmp → fsync → rename).
-7. The viewer's 500ms poll picks up the state change and advances the UI.
-```
+The original "click → `fetch('/event')` → `state-events.jsonl` → skill polls `wait-event` → dispatches CLI" indirection is replaced by Electron IPC: the renderer sends an IPC message to the main process, the main process spawns the appropriate `review-pdf` subcommand (resolved via PATH-discovery, see [2026-05-19 §13.1](./2026-05-19-electron-app-ux-spec.md)), the engine atomically rewrites `state.json`, and the main process notifies the renderer to refresh. No browser tab, no HTTP loopback, no JSONL event log on the hot path.
 
-**Event-polling cadence.** The skill calls `review-pdf wait-event` with a 60-second timeout. On timeout, the skill re-issues the call. Total round-trip from click to state mutation: < 1 second on average (one viewer write + one engine read + one engine write). The viewer's 500ms read poll bounds UI refresh latency.
+The CLI subcommands `review-pdf serve` and `review-pdf wait-event`, and the `state-events.jsonl` file format, remain in §8 — they support headless / scripted drivers (`server.py` may persist as a useful tests / Gas City embedding path per the pivot handoff §13), and any out-of-process driver that needs to consume user-initiated actions can use them. They are no longer the primary front-end driver, but the engine still honors them.
 
-**Blocking-call lifecycle.** The 60-second timeout is chosen to fit comfortably inside Claude Code's default 2-minute bash subprocess timeout. Specific scenarios:
+### 10.6 Manual mapping (`needs_review` resolution) — superseded UI, unchanged engine contract
 
-- *Idle wait.* If no click arrives within 60s, the CLI exits with code 20 (timeout); the skill loops and re-issues the call. The skill carries `--since <last_observed_ts>` forward so no event is missed across loop iterations.
-- *Browser closed mid-wait.* The viewer is a separate process; closing the browser tab does not kill `review-pdf serve` or the in-flight `wait-event`. The wait simply continues until the timeout fires. The author re-opens the browser and clicks resume normally. If the server itself dies, `wait-event` continues until timeout because it tails a file, not a socket.
-- *Context compaction mid-wait.* If Claude Code compacts the conversation while a `wait-event` bash call is in flight, the subprocess continues independently of the model context. On post-compaction resumption, the skill re-reads `state.json` and reissues `wait-event --since <last_observed_ts>` (read from the most recent in-state event), seamlessly picking up any events the compacted subprocess captured.
-- *User abort.* The author can Ctrl-C the bash process via the Claude Code terminal; the skill catches the non-zero exit and pauses event polling until the author resumes the session.
+The original `--mapping-mode` UI (separate browser layout listing every `needs_review` annotation with a candidate picker) is replaced by the Electron app's needs-mapping affordance — design specified in the 2026-05-19 spec, integrated into the same three-pane layout rather than living behind a separate `serve --mapping-mode` invocation.
 
-This indirection is intentional: the viewer never knows it is talking to Claude. A scripted CLI driver could substitute for the skill at step 4 — any program that polls `state-events.jsonl` and dispatches the corresponding CLI subcommands works.
-
-### 10.6 Manual mapping UI (`--mapping-mode`)
-
-When `review-pdf serve --mapping-mode` is invoked (between Phase 0 and Phase 1, or any time the author wants to revisit a mapping), the viewer renders a different layout: a list of every annotation with `needs_review: true` in the left pane, the selected annotation's `highlighted_text` + `comment` in the center pane, and a candidate-picker in the right pane.
-
-```
-┌─ Mapping mode · 7 annotations need mapping ───────────────────────┐
-├──────────────────────┬──────────────────┬──────────────────────────┤
-│ ann-013 (p.7)   [▶]  │ Highlighted text │ Candidate 1              │
-│ ann-027 (p.11)       │ "The college     │  templates/equity.tex    │
-│ ann-031 (p.12)       │  experienced…"   │  lines 22-28  (score .34)│
-│ ann-044 (p.14)       │                  │  [preview tex] [Confirm] │
-│ ann-058 (p.17)       │ Comment          │                          │
-│ ann-066 (p.19)       │ "Tighten this"   │ Candidate 2              │
-│ ann-072 (p.21)       │                  │  templates/success.tex   │
-│                      │                  │  lines 88-91  (score .31)│
-│                      │                  │  [preview tex] [Confirm] │
-│                      │                  │                          │
-│                      │                  │ Or enter manually:       │
-│                      │                  │  File: _________________ │
-│                      │                  │  Lines: ____ : ____      │
-│                      │                  │  [Confirm] [Skip] [Reject]│
-└──────────────────────┴──────────────────┴──────────────────────────┘
-```
-
-Click→engine path for mapping mode:
-
-```
-1. Author clicks [Confirm] on a candidate (or types a manual file/range
-   and clicks [Confirm]).
-2. JS handler: fetch('/override-mapping',
-                 {method:'POST',
-                  body: {annotation_id, file, line_start, line_end}}).
-3. server.py invokes `review-pdf override-mapping --annotation-id ID
-                       --file PATH --lines START:END` as a subprocess.
-4. Engine atomically rewrites mapping.json (and clears the matching
-   `needs_review: true` flag).
-5. Viewer's 500ms poll picks up the change; the annotation falls off
-   the list. When the list is empty, the viewer shows "All mappings
-   resolved. You may now run Phase 1."
-```
-
-[Skip] in mapping mode leaves the mapping `needs_review: true` (no engine call). [Reject mapping] is a v2 affordance and is omitted from v1: a rejected mapping is just a skipped one until the author returns.
+The engine contract is unchanged: each resolution invokes `review-pdf override-mapping --annotation-id ID --file PATH --lines START:END`, which atomically rewrites `mapping.json` with `method: manual`, `confidence: 1.0`, `needs_review: false`. Phase 1 remains blocked until the `needs_review` bucket is empty (see §9.1 last paragraph and §12.1 recovery). Skipping a candidate leaves `needs_review: true` (no engine call); explicit mapping rejection is still v2.
 
 ## 11. Compile and pagination strategy
 
@@ -617,7 +546,7 @@ After each successful build, the engine:
    - **Shift, same count:** same page count but one or more page MD5s differ → indicator "content changed on pp. X, Y".
    - **Page count delta:** different page count → indicator "24 → 25 pages, shift starts at p.12" — locate the shift by walking forward through page MD5s until the first mismatch.
 
-The indicator appears under the preview pane (see §10.1).
+The indicator is surfaced in the renderer (originally specified under the preview pane in the retired Jinja viewer; in the Electron app, surfaced in the comment-card pagination row per the 2026-05-19 spec). The engine computes the indicator regardless of which renderer consumes it.
 
 ### 11.3 Compile-time benchmark
 

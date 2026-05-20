@@ -421,7 +421,7 @@ Status of items carried from the [Electron pivot handoff](../handoffs/2026-05-17
 2. **§13.2 First-scope cut — RESOLVED → ground-up renderer.** Details in §13.2 below.
 3. **§13.3 Repo strategy — RESOLVED → same repo, `desktop/` subdirectory.** Details in §13.3 below.
 4. **§13.4 Electron vs Tauri vs Wails — RESOLVED → Electron.** Details in §13.4 below.
-5. **Spec §10 of the 2026-05-16 design spec needs a rewrite** to remove the obsolete sidecar UX text. Not blocking — but should happen before someone reads the old spec and gets confused.
+5. **Spec §10 of the 2026-05-16 design spec rewrite — RESOLVED (2026-05-20).** §10 of the design spec was rewritten in place: the obsolete sidecar/Jinja-viewer prose was removed, the engine-side action-semantics table (the status-transition matrix that `set-status` validates against) was preserved under §10.3, each subsection now points at the corresponding part of this spec, and the design spec's header was updated to mark it "partially superseded by 2026-05-19." Other §10 cross-references in the design spec still resolve cleanly (§10.3 table is intact; §10.5/§10.6 land on supersession notices that direct readers to the Electron architecture). The §1 summary line and the §11.3 perf-warning placement were also updated for internal consistency.
 
 ### 13.1 — Python engine bundling — RESOLVED → PATH-discovery for v1
 
@@ -656,11 +656,11 @@ PDF.js exposes text-layer extraction; need to confirm coordinate accuracy matche
 In order:
 
 1. **AJB reviews this spec.** Confirm: layout shape, three-engagement-levels framing, bottom-pane-is-universal-input idea, save-versioning scheme, decision ledger in §3–§11 + §15. Reject/edit anything wrong.
-2. **Pre-build picks complete.** §13.1 bundling → PATH-discovery; §13.2 first-scope → ground-up; §13.3 repo → same repo, `desktop/`; §13.4 tech stack → Electron. Remaining §13 items are spikes (§13.6, §13.10, §13.11) and a docs cleanup (§13.5); none are pre-build blockers.
+2. **Pre-build picks complete.** §13.1 bundling → PATH-discovery; §13.2 first-scope → ground-up; §13.3 repo → same repo, `desktop/`; §13.4 tech stack → Electron. §13.5 docs cleanup is done (2026-05-20). Remaining §13 items are spikes only (§13.6, §13.10, §13.11) and v2 deferrals (§13.9, §13.12); none are pre-build blockers.
 3. **Spike #1 — PDF highlight + text capture.** Single-page PDF.js prototype that proves we can highlight a region and reliably get the underlying text out, including the corrupted-PDF case from yesterday. Validates the load-bearing §5.2 requirement before committing the full app.
 4. **Spike #2 — Dark mode for PDF.** Quick canvas-invert test to know whether §4.1's "dark/light toggle for all doc types" is real or fantasy.
 5. **Visual mockup.** ASCII in §2 is enough to discuss; before building, sketch the actual UI in Figma or hand-drawn — color, typography, comment-card design (steal from Sudowrite/Spellbook per [SCREENSHOTS.md](../research/2026-05-16-existing-tools-survey/SCREENSHOTS.md) "patterns worth noting").
-6. **Rewrite the obsolete spec §10** of `docs/specs/2026-05-16-review-pdf-to-latex-design.md` so the engine spec doesn't contradict this one.
+6. ~~**Rewrite the obsolete spec §10** of `docs/specs/2026-05-16-review-pdf-to-latex-design.md` so the engine spec doesn't contradict this one.~~ Done 2026-05-20 — see §13.5 above.
 7. **File bd issues** for the prototype work once steps 1–4 are answered. Will be coarse-grained at first (one per pane, one per doc type, one per spike), refined as build progresses.
 
 The three pre-pivot ready bugs (rev-3pm, rev-cav, rev-2mq) should be re-scoped or closed-as-superseded once the rebuild direction is locked — they live in the abandoned sidecar architecture.
