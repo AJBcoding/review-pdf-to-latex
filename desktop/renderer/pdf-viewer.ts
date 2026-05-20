@@ -279,6 +279,41 @@ export class PdfViewer {
     if (clamped !== this.currentPageNum) await this.renderPage(clamped);
   }
 
+  /** Navigate to the page that owns this anchor and paint a persistent
+   * highlight at the captured PDF-space region. Drives the §9.1 "click a
+   * comment card to jump to its anchor" affordance. The region was captured
+   * in PDF points so it's stable across zoom. */
+  async revealAnchor(page: number, region: { x: number; y: number; w: number; h: number }): Promise<void> {
+    if (!this.doc) return;
+    await this.gotoPage(page);
+    if (!this.viewport) return;
+    // PDF.js's PDF→viewport projection inverts Y (origin at top), so passing
+    // both corners and bbox-ing the result is more robust than transforming
+    // a single point + width/height.
+    const corners = [
+      [region.x, region.y],
+      [region.x + region.w, region.y],
+      [region.x + region.w, region.y + region.h],
+      [region.x, region.y + region.h],
+    ].map(([x, y]) => this.viewport!.convertToViewportPoint(x, y));
+    const xs = corners.map((p) => p[0]);
+    const ys = corners.map((p) => p[1]);
+    const screenRect = {
+      x: Math.min(...xs),
+      y: Math.min(...ys),
+      w: Math.max(...xs) - Math.min(...xs),
+      h: Math.max(...ys) - Math.min(...ys),
+    };
+    this.drawHighlight([screenRect]);
+    // Scroll the highlight into the user's viewport — for tall pages the
+    // anchor may be off-screen even after gotoPage. Use the first child of
+    // the highlight layer as the scroll target.
+    const first = this.highlightLayerEl.firstElementChild;
+    if (first && first instanceof HTMLElement) {
+      first.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    }
+  }
+
   get totalPages(): number { return this.doc?.numPages ?? 0; }
   get currentPage(): number { return this.currentPageNum; }
   get currentZoom(): number { return this.zoom; }

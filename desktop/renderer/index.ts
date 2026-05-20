@@ -1,4 +1,7 @@
 import type {
+  CommentPayload,
+  DraftsFile,
+  EngagementLevel,
   EngineResult,
   PdfHealthResult,
   ReadPdfBytesResult,
@@ -40,38 +43,56 @@ interface ViewerHandles {
 }
 
 /** Active comment-tool state (§4.2). Maps 1:1 to `engagement_level` (§11.1). */
-type Tool = 'comment' | 'redraft' | 'surface';
-
-/** What a single bottom-input submit produces. Shape mirrors §8's comment
- *  data model — milestone #3 builds the payload + echoes it; milestone #4
- *  persists to `.review-state/drafts/<doc-version>.json`. */
-interface CommentPayload {
-  id: string;
-  doc_id: string;
-  doc_version: string;
-  anchor: { page: number; region: { x: number; y: number; w: number; h: number } };
-  highlighted_text: string;
-  comment: string;
-  redraft: string | null;
-  redraft_suggestion: null;
-  engagement_level: Tool;
-  author: string;
-  kind: 'comment';
-  status: 'open';
-  created_at: string;
-}
+type Tool = EngagementLevel;
 
 interface DocState {
-  /** Absolute path of the currently loaded PDF. Used as `doc_id` until the
-   *  project model lands (milestone #4). */
+  /** Absolute path of the currently loaded PDF. Doubles as `doc_id` for v1
+   *  (no project model yet — a doc's identity is its path on disk). */
   path: string;
+  /** Content sha256 from main. Used as `doc_version` (§8) and as the drafts
+   *  filename so renames/copies of the PDF don't lose the drafts. Empty
+   *  string until a PDF is loaded. */
+  sha256: string;
   /** Last non-empty selection the viewer reported. Persists across submits
    *  so the user can stack Comment + Redraft against the same highlight. */
   lastSelection: SelectionPayload | null;
+  /** In-memory mirror of the drafts file. The render-the-stream code reads
+   *  this — main only sees it on debounced writes. */
+  comments: CommentPayload[];
 }
 
-const docState: DocState = { path: '', lastSelection: null };
+const docState: DocState = { path: '', sha256: '', lastSelection: null, comments: [] };
 let activeTool: Tool = 'comment';
+let viewerRef: PdfViewer | null = null;
+
+// ─── Drafts write debounce (§10.3 — 250ms) ─────────────────────────────────
+let writeTimer: number | null = null;
+const WRITE_DEBOUNCE_MS = 250;
+
+function scheduleDraftsWrite(): void {
+  if (!docState.path || !docState.sha256) return;
+  if (writeTimer !== null) window.clearTimeout(writeTimer);
+  writeTimer = window.setTimeout(() => {
+    writeTimer = null;
+    void flushDraftsWrite();
+  }, WRITE_DEBOUNCE_MS);
+}
+
+async function flushDraftsWrite(): Promise<void> {
+  if (!docState.path || !docState.sha256) return;
+  const file: DraftsFile = {
+    schema_version: 1,
+    doc_version: docState.sha256,
+    comments: docState.comments,
+  };
+  const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
+  if (!res.ok) {
+    // Surface persistence failures so the user knows their work isn't
+    // saved. Non-blocking — the in-memory state is still authoritative
+    // until the next successful write.
+    flashAnchorMeta(`Drafts save failed (${res.reason}): ${res.error}`);
+  }
+}
 
 async function init() {
   await mountStartupDiagnostics();
@@ -133,6 +154,7 @@ function bootProjectOpenFlow(): void {
       nextBtn.disabled = page >= totalPages;
     },
   });
+  viewerRef = viewer;
 
   const handles: ViewerHandles = {
     viewer, mount, empty, title, banner,
@@ -176,10 +198,19 @@ async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Pr
 async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
-  // Reset comment-input state when a new doc is opened — selection caches
-  // belong to the previous document.
+  // Flush any pending write for the previous doc before its sha256 is gone.
+  if (writeTimer !== null) {
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    await flushDraftsWrite();
+  }
+  // Reset per-doc state. selection cache and in-memory drafts belong to the
+  // previous document.
   docState.path = path;
+  docState.sha256 = '';
   docState.lastSelection = null;
+  docState.comments = [];
+  renderAllCards();
   updateAnchorMeta();
 
   // Kick off bytes + health in parallel. Both round-trip through main; running
@@ -200,6 +231,12 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     return;
   }
 
+  docState.sha256 = bytesResult.sha256;
+
+  // Drafts load races bytes-render — both are independent of each other,
+  // and rendering the cards before the canvas is ready is fine.
+  void loadDraftsForCurrentDoc();
+
   try {
     showViewer(h);
     await h.viewer.loadBytes(bytesResult.bytes);
@@ -210,6 +247,21 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     showLoadError(h, null, err);
     setViewerControlsEnabled(h, false);
   }
+}
+
+async function loadDraftsForCurrentDoc(): Promise<void> {
+  if (!docState.path || !docState.sha256) return;
+  const path = docState.path;
+  const sha256 = docState.sha256;
+  const res = await window.electronAPI.readDrafts(path, sha256);
+  // Bail if the user opened a different doc while we were waiting.
+  if (docState.path !== path || docState.sha256 !== sha256) return;
+  if (!res.ok) {
+    flashAnchorMeta(`Drafts load failed (${res.reason}): ${res.error}`);
+    return;
+  }
+  docState.comments = res.file?.comments ?? [];
+  renderAllCards();
 }
 
 function showViewer(h: ViewerHandles): void {
@@ -481,7 +533,9 @@ async function handleSubmit(): Promise<void> {
     return;
   }
   const payload = buildCommentPayload(buf, docState.lastSelection);
-  appendCommentCard(payload);
+  docState.comments.unshift(payload);
+  renderAllCards();
+  scheduleDraftsWrite();
   // §4.3: keep the active tool, keep the cached selection (the user may want
   // to stack Comment + Redraft on the same highlight). Just clear the buffer.
   clearInput();
@@ -496,7 +550,7 @@ function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload
   return {
     id: crypto.randomUUID(),
     doc_id: docState.path,
-    doc_version: '1.0', // milestone #4 will source this from the project model
+    doc_version: docState.sha256,
     anchor: { page: sel.page, region: sel.region },
     highlighted_text: sel.highlighted_text,
     comment: isRedraft ? '' : buf,
@@ -510,15 +564,40 @@ function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload
   };
 }
 
-function appendCommentCard(c: CommentPayload): void {
+/** Rebuild the comment stream from `docState.comments`. Cheap enough for
+ *  the v1 scale (10s-100s of cards per doc) — if this ever shows up in a
+ *  flame graph, switch to incremental DOM updates keyed by `c.id`. */
+function renderAllCards(): void {
   const stream = document.getElementById('commentStream');
-  const empty = document.getElementById('commentStreamEmpty');
   if (!stream) return;
-  if (empty) empty.remove();
+  if (docState.comments.length === 0) {
+    stream.replaceChildren(buildEmptyPlaceholder());
+    return;
+  }
+  const cards = docState.comments.map((c) => buildCommentCard(c));
+  stream.replaceChildren(...cards);
+}
 
+function buildEmptyPlaceholder(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'placeholder';
+  el.id = 'commentStreamEmpty';
+  el.textContent = 'No comments yet…';
+  return el;
+}
+
+function buildCommentCard(c: CommentPayload): HTMLElement {
   const card = document.createElement('div');
   card.className = 'comment-card';
   card.dataset.level = c.engagement_level;
+  card.dataset.id = c.id;
+  // Click to reveal: jumps to the anchor's page and repaints the persistent
+  // highlight at the captured PDF-space region. Stable across zoom because
+  // the region was stored in PDF points.
+  card.addEventListener('click', () => {
+    if (!viewerRef) return;
+    void viewerRef.revealAnchor(c.anchor.page, c.anchor.region);
+  });
 
   const head = document.createElement('div');
   head.className = 'comment-card-head';
@@ -550,7 +629,7 @@ function appendCommentCard(c: CommentPayload): void {
     card.append(redraft);
   }
 
-  stream.prepend(card);
+  return card;
 }
 
 function labelFor(level: Tool): string {

@@ -362,9 +362,10 @@ html, body, #app {
 }
 
 /*
- * Right-drawer comment stream. Milestone #3 echoes submitted payloads as
- * stacked cards; milestone #4 swaps this for the real §9.1 comment cards
- * + persistence.
+ * Right-drawer comment stream. §9.1 cards backed by the in-memory
+ * `docState.comments` mirror of `.review-state/drafts/<sha256>.json`.
+ * Click a card → viewer.revealAnchor jumps to its page + repaints the
+ * persistent highlight at the captured PDF-space region.
  */
 .comment-stream { display: flex; flex-direction: column; gap: 8px; }
 .comment-card {
@@ -375,7 +376,10 @@ html, body, #app {
   padding: 8px 10px;
   font-size: 12px;
   line-height: 1.4;
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease;
 }
+.comment-card:hover { background: #1f1f1f; border-color: #3a3a3a; }
 .comment-card[data-level="comment"]  { border-left-color: #4a9eff; }
 .comment-card[data-level="redraft"]  { border-left-color: #c084fc; }
 .comment-card[data-level="surface"]  { border-left-color: #38bdf8; }

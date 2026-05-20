@@ -83,9 +83,13 @@ export type PdfHealthResult =
  * Result of reading a PDF file from disk into renderer memory.
  * The renderer is sandboxed and can't access the filesystem directly;
  * main reads the bytes and ships them across the IPC boundary.
+ *
+ * `sha256` is the hex digest of the bytes — used as `doc_version` for
+ * drafts persistence (§10.3) and as the drafts filename. Computed in main
+ * because we already have the buffer there.
  */
 export type ReadPdfBytesResult =
-  | { ok: true; bytes: Uint8Array; resolvedPath: string }
+  | { ok: true; bytes: Uint8Array; resolvedPath: string; sha256: string }
   | { ok: false; reason: 'not_found' | 'not_a_file' | 'read_failed'; resolvedPath: string; error?: string };
 
 /** Result of the native open-file dialog. `path === null` means the user
@@ -93,6 +97,49 @@ export type ReadPdfBytesResult =
 export interface OpenPdfDialogResult {
   path: string | null;
 }
+
+/**
+ * §8 comment payload. Built by the renderer on submit, persisted to
+ * `<pdf-dir>/.review-state/drafts/<sha256>.json` by main.
+ */
+export type EngagementLevel = 'comment' | 'redraft' | 'surface';
+
+export interface CommentPayload {
+  id: string;
+  doc_id: string;
+  doc_version: string;
+  anchor: { page: number; region: { x: number; y: number; w: number; h: number } };
+  highlighted_text: string;
+  comment: string;
+  redraft: string | null;
+  redraft_suggestion: null;
+  engagement_level: EngagementLevel;
+  author: string;
+  kind: 'comment';
+  status: 'open';
+  created_at: string;
+}
+
+/**
+ * On-disk drafts schema. Snapshot (not append-only): main rewrites the full
+ * file on every save. Renderer debounces writes 250ms per spec §10.3.
+ */
+export interface DraftsFile {
+  schema_version: 1;
+  doc_version: string;
+  comments: CommentPayload[];
+}
+
+/** Read result. `not_found` is normal (no drafts yet) — caller treats it as
+ *  "start with empty array", not an error. Distinct from `read_failed`. */
+export type DraftsReadResult =
+  | { ok: true; file: DraftsFile; filePath: string }
+  | { ok: true; file: null; filePath: string; reason: 'not_found' }
+  | { ok: false; reason: 'read_failed' | 'parse_failed'; filePath: string; error: string };
+
+export type DraftsWriteResult =
+  | { ok: true; filePath: string }
+  | { ok: false; reason: 'write_failed' | 'mkdir_failed'; filePath: string; error: string };
 
 export interface ElectronAPI {
   // Smoke-test echo, retained from the empty-shell milestone.
@@ -111,6 +158,12 @@ export interface ElectronAPI {
   // Shows the native open-file dialog filtered to PDFs. Returns the picked
   // path, or null if the user canceled.
   openPdfDialog(): Promise<OpenPdfDialogResult>;
+  // Reads `<dir-of-pdfPath>/.review-state/drafts/<sha256>.json`. A missing
+  // file is the normal first-open case, not an error.
+  readDrafts(pdfPath: string, sha256: string): Promise<DraftsReadResult>;
+  // Writes the snapshot atomically (temp file + rename). Mkdir -p the
+  // drafts dir first. Renderer debounces calls 250ms per spec §10.3.
+  writeDrafts(pdfPath: string, sha256: string, file: DraftsFile): Promise<DraftsWriteResult>;
 }
 
 declare global {
