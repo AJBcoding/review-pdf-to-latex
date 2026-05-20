@@ -1,20 +1,25 @@
-import type { EngineResult } from '@shared/types';
+import type { EngineResult, PdfHealthResult } from '@shared/types';
 
-// Renderer entry. Empty-shell + engine-probe milestone:
-//   1. ping main to verify the contextBridge IPC.
-//   2. call engineVersion() to verify the Python engine is reachable per spec §13.1.
+// Renderer entry. Wires up three startup probes that exercise the IPC bridge:
+//
+//   1. ping() — confirms contextBridge IPC.
+//   2. engineVersion() — confirms the §13.1 PATH-discovery + spawn path.
+//   3. pdfHealth() — confirms JSON round-trip through the engine for §5.2.
 //
 // Real renderer logic (file tree, PDF viewer, comment cards, Claude pane)
-// lands as follow-up milestones.
+// lands as follow-up milestones. The third probe will be replaced by a
+// real call against whatever PDF the user opens, once project-open lands.
+
+const PROBE_PDF = '../tests/fixtures/sample-annotated.pdf';
 
 async function init() {
   const diag = document.getElementById('diag');
   if (!diag) return;
 
-  // Two diagnostic lines, stacked.
   const ipcLine = document.createElement('div');
   const engineLine = document.createElement('div');
-  diag.append(ipcLine, engineLine);
+  const pdfHealthLine = document.createElement('div');
+  diag.append(ipcLine, engineLine, pdfHealthLine);
 
   // 1. IPC bridge smoke-test
   try {
@@ -31,13 +36,19 @@ async function init() {
   } catch (err) {
     engineLine.textContent = `engine ✗  IPC error: ${err instanceof Error ? err.message : String(err)}`;
   }
+
+  // 3. PDF health round-trip
+  try {
+    const result = await window.electronAPI.pdfHealth(PROBE_PDF);
+    pdfHealthLine.textContent = formatPdfHealthResult(result);
+  } catch (err) {
+    pdfHealthLine.textContent = `pdf-health ✗  IPC error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 function formatEngineResult(r: EngineResult): string {
   if (r.ok) {
-    // stdout is typically "review-pdf 0.1.0\n"
-    const version = r.stdout.trim();
-    return `engine ✓  ${version}  (${shortenPath(r.resolvedPath)})`;
+    return `engine ✓  ${r.stdout.trim()}  (${shortenPath(r.resolvedPath)})`;
   }
   switch (r.reason) {
     case 'not_found': {
@@ -53,9 +64,25 @@ function formatEngineResult(r: EngineResult): string {
   }
 }
 
+function formatPdfHealthResult(r: PdfHealthResult): string {
+  if (!r.ok) {
+    return `pdf-health ✗  engine call failed (${r.engine.ok ? '' : r.engine.reason})`;
+  }
+  const { report } = r;
+  if (report.error) {
+    return `pdf-health ⚠  ${report.error}  (exit ${r.exitCode})`;
+  }
+  if (report.encrypted) {
+    return `pdf-health ⚠  encrypted PDF`;
+  }
+  const total = report.total_pages ?? 0;
+  const readable = report.readable_pages.length;
+  const unreadable = report.unreadable_pages.length;
+  const lig = report.ligature_loss_detected ? ', ⚠ ligature-loss' : '';
+  return `pdf-health ✓  ${readable}/${total} pages readable, ${unreadable} unreadable${lig}`;
+}
+
 function shortenPath(p: string): string {
-  // Collapse $HOME for readability in the corner diagnostic.
-  // We can't read process.env here; just look for /Users/<name>/ style prefixes.
   return p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
 }
 

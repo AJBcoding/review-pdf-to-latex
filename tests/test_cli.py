@@ -37,6 +37,7 @@ ALL_SUBCOMMANDS = [
     "commit-phase",
     "wait-event",
     "migrate-state",
+    "pdf-health",
 ]
 
 
@@ -90,6 +91,7 @@ def test_global_args_accepted_after_subcommand(subcommand: str) -> None:
         "record-proposal": ["--annotation-id", "a", "--text-file", "x.txt"],
         "commit-phase": ["--phase", "1"],
         "migrate-state": ["--from", "1", "--to", "2"],
+        "pdf-health": ["--pdf", "x.pdf"],
     }
     argv = [subcommand] + extra.get(subcommand, []) + [
         "--project-dir", "/some/proj",

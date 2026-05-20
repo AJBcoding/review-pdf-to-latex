@@ -229,3 +229,60 @@ export async function runEngine(args: string[], opts: RunOptions = {}): Promise<
 export async function engineVersion(): Promise<EngineResult> {
   return runEngine(['--version']);
 }
+
+/**
+ * Strongly-typed view of the `review-pdf pdf-health --json` report.
+ * Re-exported from shared/types so callers in main can import from one place.
+ */
+export interface PdfHealthReport {
+  schema_version: 1;
+  pdf_path: string | null;
+  total_pages: number | null;
+  readable_pages: number[];
+  unreadable_pages: number[];
+  ligature_loss_detected: boolean;
+  encrypted: boolean;
+  producer: string | null;
+  creator: string | null;
+  page_errors: { page: number; error: string }[];
+  error: string | null;
+}
+
+export type PdfHealthResult =
+  | { ok: true; report: PdfHealthReport; exitCode: number; resolvedPath: string }
+  | { ok: false; reason: 'engine_failed'; engine: EngineResult };
+
+/**
+ * Run `review-pdf pdf-health --pdf <path> --json` and parse the JSON report.
+ *
+ * The pdf-health engine subcommand emits exit codes 0 (ok) / 2 (missing) /
+ * 21 (encrypted), and in all three cases prints a parseable JSON report. We
+ * accept all of those as `ok: true` because the report itself describes the
+ * outcome. Only true engine failures (binary not found, spawn errored, parse
+ * failed) bubble up as `ok: false`.
+ */
+export async function pdfHealth(pdfPath: string): Promise<PdfHealthResult> {
+  const engine = await runEngine(['pdf-health', '--pdf', pdfPath, '--json'], {
+    timeoutMs: 30_000,  // walking a many-page PDF can take seconds; be generous.
+  });
+
+  // pdf-health emits JSON on stdout regardless of exit code. Even the
+  // "missing file" and "encrypted" exit codes carry a partial report.
+  const successfulExits = new Set([0, 2, 21]);
+  if (
+    (engine.ok || (!engine.ok && engine.reason === 'failed' && engine.exitCode !== null && successfulExits.has(engine.exitCode)))
+  ) {
+    const stdout = engine.ok ? engine.stdout : engine.stdout;
+    const exitCode = engine.ok ? engine.exitCode : (engine.reason === 'failed' ? (engine.exitCode ?? -1) : -1);
+    const resolvedPath = engine.ok ? engine.resolvedPath : (engine.reason === 'failed' ? engine.resolvedPath : '');
+    try {
+      const report = JSON.parse(stdout) as PdfHealthReport;
+      return { ok: true, report, exitCode, resolvedPath };
+    } catch {
+      // Engine exited but stdout wasn't JSON — treat as engine failure.
+      return { ok: false, reason: 'engine_failed', engine };
+    }
+  }
+
+  return { ok: false, reason: 'engine_failed', engine };
+}

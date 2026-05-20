@@ -250,6 +250,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ms.add_argument("--to", dest="to_version", type=int, required=True)
     _add_global_args(p_ms, on_subparser=True)
 
+    # 16. pdf-health
+    p_ph = sub.add_parser(
+        "pdf-health",
+        help=(
+            "Pre-flight health check for a PDF (text-layer readability, "
+            "ligature loss, encryption, per-page errors). Specified by "
+            "ux-spec §5.2 + design-spec §8; always emits JSON to stdout."
+        ),
+    )
+    p_ph.add_argument("--pdf", type=Path, required=True, help="Path to the PDF to check.")
+    _add_global_args(p_ph, on_subparser=True)
+
     return parser
 
 
@@ -672,6 +684,13 @@ def _handle_bulk_surface(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handle_pdf_health(args: argparse.Namespace) -> int:
+    """PDF pre-flight health check (design-spec §8 pdf-health row)."""
+    from review_pdf_to_latex.pdf_health import run_pdf_health
+
+    return run_pdf_health(Path(args.pdf))
+
+
 def _handle_migrate_state(args: argparse.Namespace) -> int:
     """``migrate-state`` subcommand handler (spec §8 exit code 14).
 
@@ -720,6 +739,7 @@ _HANDLERS_TABLE: dict[str, "callable"] = {
     "commit-phase": _handle_commit_phase,
     "preview": _handle_preview,
     "bulk-surface": _handle_bulk_surface,
+    "pdf-health": _handle_pdf_health,
 }
 
 

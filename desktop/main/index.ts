@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { engineVersion } from './engine.js';
+import { engineVersion, pdfHealth } from './engine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -44,6 +44,12 @@ void app.whenReady().then(() => {
   // `review-pdf --version`. Returns a structured EngineResult; the renderer
   // never sees a thrown error, just a discriminated union to branch on.
   ipcMain.handle('engine:version', async () => engineVersion());
+
+  // PDF pre-flight health check — runs `review-pdf pdf-health --pdf <path>`
+  // and parses the JSON report. Drives the §5.2 load-time banner. Exits 0/2/21
+  // all carry a usable report; only true engine failures (binary missing,
+  // spawn error, non-JSON stdout) come through as ok:false.
+  ipcMain.handle('engine:pdfHealth', async (_event, pdfPath: string) => pdfHealth(pdfPath));
 
   createWindow();
 
