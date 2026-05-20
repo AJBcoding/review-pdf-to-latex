@@ -81,6 +81,16 @@ html, body, #app {
   background: #0e0e0e;
 }
 
+/* Viewer host — sibling of the empty state so PdfViewer can own its
+ * children without being clobbered by the empty-state DOM. */
+.pdf-mount {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+.pdf-mount[hidden] { display: none; }
+
 /*
  * Empty state shown in the document area when no PDF is loaded. Renderer
  * removes this element once a PDF is opened; it's re-rendered if the user

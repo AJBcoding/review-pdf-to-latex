@@ -41,11 +41,12 @@
       <!-- pdf-health banner (§5.2 load-time pre-flight). Hidden until a PDF
            is loaded; populated by the renderer based on the parsed report. -->
       <div id="pdfBanner" class="pdf-banner" hidden role="status" aria-live="polite"></div>
-      <div class="pane-body document-area" id="pdfMount">
+      <div class="pane-body document-area">
         <div class="pdf-empty" id="pdfEmpty">
           <div class="pdf-empty-title">No PDF loaded</div>
           <div class="pdf-empty-hint">Click <strong>Open…</strong> above to choose a PDF.</div>
         </div>
+        <div class="pdf-mount" id="pdfMount" hidden></div>
       </div>
       <footer class="pane-footer">
         <div class="bottom-input placeholder" id="selectionEcho">empty shell — bottom input pane (comment / redraft / surface) per §3.  Select text in the PDF to echo the §5.2 payload here.</div>

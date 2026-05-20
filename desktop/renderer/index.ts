@@ -29,6 +29,7 @@ function basename(p: string): string {
 interface ViewerHandles {
   viewer: PdfViewer;
   mount: HTMLElement;
+  empty: HTMLElement;
   echo: HTMLElement;
   title: HTMLElement;
   banner: HTMLElement;
@@ -72,6 +73,7 @@ async function mountStartupDiagnostics(): Promise<void> {
 
 function bootProjectOpenFlow(): void {
   const mount = document.getElementById('pdfMount');
+  const empty = document.getElementById('pdfEmpty');
   const echo = document.getElementById('selectionEcho');
   const title = document.getElementById('pdfTitle');
   const banner = document.getElementById('pdfBanner');
@@ -83,11 +85,13 @@ function bootProjectOpenFlow(): void {
   const fitWidthBtn = document.getElementById('pdfFitWidth') as HTMLButtonElement | null;
   const pageLabel = document.getElementById('pdfPageLabel');
   if (
-    !mount || !echo || !title || !banner ||
+    !mount || !empty || !echo || !title || !banner ||
     !openBtn || !prevBtn || !nextBtn || !darkBtn ||
     !fitPageBtn || !fitWidthBtn || !pageLabel
   ) return;
 
+  // The viewer takes over `mount`'s children, so we keep the empty state
+  // as a sibling element and toggle visibility between them.
   const viewer = new PdfViewer({
     container: mount,
     onSelection: (payload) => updateSelectionEcho(echo, payload),
@@ -98,12 +102,8 @@ function bootProjectOpenFlow(): void {
     },
   });
 
-  // The viewer constructor takes over `mount`'s children — re-attach the
-  // empty-state node it just removed so it's visible until a PDF loads.
-  renderEmptyState(mount);
-
   const handles: ViewerHandles = {
-    viewer, mount, echo, title, banner,
+    viewer, mount, empty, echo, title, banner,
     prevBtn, nextBtn, fitPageBtn, fitWidthBtn, darkBtn,
   };
 
@@ -156,23 +156,45 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
 
   if (!bytesResult.ok) {
     h.title.textContent = basename(path);
-    renderLoadError(h.mount, bytesResult);
+    showLoadError(h, bytesResult);
     setViewerControlsEnabled(h, false);
     return;
   }
 
   try {
+    showViewer(h);
     await h.viewer.loadBytes(bytesResult.bytes);
     h.title.textContent = basename(path);
     setViewerControlsEnabled(h, true);
   } catch (err) {
     h.title.textContent = basename(path);
-    const errEl = document.createElement('div');
-    errEl.className = 'pdf-empty';
-    errEl.textContent = `pdf load failed: ${err instanceof Error ? err.message : String(err)}`;
-    h.mount.replaceChildren(errEl);
+    showLoadError(h, null, err);
     setViewerControlsEnabled(h, false);
   }
+}
+
+function showViewer(h: ViewerHandles): void {
+  h.empty.hidden = true;
+  h.mount.hidden = false;
+}
+
+function showLoadError(h: ViewerHandles, r: ReadPdfBytesResult | null, err?: unknown): void {
+  h.empty.replaceChildren();
+  const t = document.createElement('div');
+  t.className = 'pdf-empty-title';
+  t.textContent = 'Couldn’t open this file';
+  const detail = document.createElement('div');
+  detail.className = 'pdf-empty-hint';
+  if (r && !r.ok) {
+    detail.textContent = `${r.reason}: ${r.resolvedPath}${r.error ? ` — ${r.error}` : ''}`;
+  } else if (err) {
+    detail.textContent = `pdf load failed: ${err instanceof Error ? err.message : String(err)}`;
+  } else {
+    detail.textContent = 'no bytes returned';
+  }
+  h.empty.append(t, detail);
+  h.empty.hidden = false;
+  h.mount.hidden = true;
 }
 
 function setViewerControlsEnabled(h: ViewerHandles, enabled: boolean): void {
@@ -182,45 +204,6 @@ function setViewerControlsEnabled(h: ViewerHandles, enabled: boolean): void {
   // prev/next/pageLabel are managed by onPageInfo — when no doc is loaded
   // they retain their last-known state, which is fine because the empty
   // state replaces the viewer surface entirely.
-}
-
-function renderEmptyState(mount: HTMLElement): void {
-  const wrap = document.createElement('div');
-  wrap.className = 'pdf-empty';
-  wrap.id = 'pdfEmpty';
-
-  const t = document.createElement('div');
-  t.className = 'pdf-empty-title';
-  t.textContent = 'No PDF loaded';
-
-  const hint = document.createElement('div');
-  hint.className = 'pdf-empty-hint';
-  hint.append('Click ');
-  const strong = document.createElement('strong');
-  strong.textContent = 'Open…';
-  hint.append(strong, ' above to choose a PDF.');
-
-  wrap.append(t, hint);
-  mount.replaceChildren(wrap);
-}
-
-function renderLoadError(mount: HTMLElement, r: ReadPdfBytesResult): void {
-  const el = document.createElement('div');
-  el.className = 'pdf-empty';
-
-  const title = document.createElement('div');
-  title.className = 'pdf-empty-title';
-  title.textContent = 'Couldn’t open this file';
-
-  const detail = document.createElement('div');
-  detail.className = 'pdf-empty-hint';
-  if (!r.ok) {
-    detail.textContent = `${r.reason}: ${r.resolvedPath}${r.error ? ` — ${r.error}` : ''}`;
-  } else {
-    detail.textContent = 'no bytes returned';
-  }
-  el.append(title, detail);
-  mount.replaceChildren(el);
 }
 
 // ─── §5.2 banner ──────────────────────────────────────────────────────────
@@ -264,19 +247,22 @@ function renderHealthBanner(banner: HTMLElement, r: PdfHealthResult): void {
   const readable = report.readable_pages.length;
   const unreadable = report.unreadable_pages.length;
 
-  // 3. All pages unreadable
+  // 3. All pages flagged as unreadable by the engine. Note: PDF.js's own text
+  // layer can still extract glyphs from some pages the engine considers
+  // "unreadable" (e.g. CID-only pages with missing ToUnicode maps), so we
+  // frame this as "captured text will be unreliable", not "no text at all".
   if (total > 0 && readable === 0) {
     fillBanner(banner, 'error',
-      'This PDF appears damaged — no readable text on any page.',
-      'Likely cause: the file was re-saved or annotated by a tool that corrupted its content streams. Recommended: rebuild the PDF from source.');
+      'This PDF has corrupted text encoding.',
+      'Highlights may capture empty, garbled, or ligature-corrupted text (e.g. “veri ed” for “verified”). The viewer still works — but for clean text capture, rebuild the PDF from source.');
     return;
   }
 
   // 4. Partial damage
   if (unreadable > 0) {
     fillBanner(banner, 'warn',
-      `This PDF appears partially damaged: ${formatPageList(report.unreadable_pages)} contain no readable text.`,
-      `You can still review ${formatPageList(report.readable_pages)}. Highlights on damaged pages will capture region-only (no underlying text).`);
+      `This PDF is partially damaged: text extraction is unreliable on ${formatPageList(report.unreadable_pages)}.`,
+      `${formatPageList(report.readable_pages)} extract cleanly. Highlights on damaged pages may capture empty or garbled text.`);
     return;
   }
 
