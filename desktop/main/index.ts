@@ -1,9 +1,9 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 import { engineVersion, pdfHealth } from './engine.js';
-import type { ReadPdfBytesResult } from '@shared/types';
+import type { OpenPdfDialogResult, ReadPdfBytesResult } from '@shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -52,6 +52,22 @@ void app.whenReady().then(() => {
   // all carry a usable report; only true engine failures (binary missing,
   // spawn error, non-JSON stdout) come through as ok:false.
   ipcMain.handle('engine:pdfHealth', async (_event, pdfPath: string) => pdfHealth(pdfPath));
+
+  // Native open-file dialog for picking a PDF. Returns the picked path,
+  // or `path: null` if the user canceled. The renderer follows up with
+  // pdfHealth() + readPdfBytes() to actually load the document.
+  ipcMain.handle('dialog:openPdf', async (event): Promise<OpenPdfDialogResult> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showOpenDialog(win ?? undefined as any, {
+      title: 'Open PDF',
+      properties: ['openFile'],
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { path: null };
+    }
+    return { path: result.filePaths[0] };
+  });
 
   // Read a PDF off disk for the renderer. Sandboxed renderer can't open
   // file:// URLs; we ship bytes across the IPC boundary instead. Path is

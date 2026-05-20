@@ -8,6 +8,7 @@ const electronAPI: ElectronAPI = {
   engineVersion: () => ipcRenderer.invoke('engine:version'),
   pdfHealth: (pdfPath: string) => ipcRenderer.invoke('engine:pdfHealth', pdfPath),
   readPdfBytes: (pdfPath: string) => ipcRenderer.invoke('fs:readPdfBytes', pdfPath),
+  openPdfDialog: () => ipcRenderer.invoke('dialog:openPdf'),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

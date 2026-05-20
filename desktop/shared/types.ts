@@ -88,6 +88,12 @@ export type ReadPdfBytesResult =
   | { ok: true; bytes: Uint8Array; resolvedPath: string }
   | { ok: false; reason: 'not_found' | 'not_a_file' | 'read_failed'; resolvedPath: string; error?: string };
 
+/** Result of the native open-file dialog. `path === null` means the user
+ * canceled — distinct from any error state. */
+export interface OpenPdfDialogResult {
+  path: string | null;
+}
+
 export interface ElectronAPI {
   // Smoke-test echo, retained from the empty-shell milestone.
   ping(message: string): Promise<string>;
@@ -102,6 +108,9 @@ export interface ElectronAPI {
   // these to `pdfjsLib.getDocument({data})`. Paths are resolved relative
   // to the main process's cwd (the desktop/ dir during dev).
   readPdfBytes(pdfPath: string): Promise<ReadPdfBytesResult>;
+  // Shows the native open-file dialog filtered to PDFs. Returns the picked
+  // path, or null if the user canceled.
+  openPdfDialog(): Promise<OpenPdfDialogResult>;
 }
 
 declare global {
