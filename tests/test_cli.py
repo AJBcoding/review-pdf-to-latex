@@ -243,11 +243,12 @@ def _bootstrap_minimal_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     return project, state_dir, tex
 
 
-def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_cli(args: list[str], env: dict | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "review_pdf_to_latex", *args],
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
@@ -1025,6 +1026,109 @@ hi
     )
     assert result.returncode == 0, result.stderr
     assert "Compile took" in result.stderr
+
+
+def _env_with_gt_rig(rig: str) -> dict:
+    """Build a child env with ``GT_RIG`` set, preserving PATH so python finds itself."""
+    import os
+    env = os.environ.copy()
+    env["GT_RIG"] = rig
+    return env
+
+
+def test_cli_apply_refuses_under_reviewer_rig(tmp_path: Path) -> None:
+    """apply exits 23 with a clear message under $GT_RIG=reviewer/* (spec §10.5.2)."""
+    project, _, tex = _bootstrap_minimal_project(tmp_path)
+    new_text_file = tmp_path / "draft.txt"
+    new_text_file.write_text("REPLACED\n", encoding="utf-8")
+    original = tex.read_text(encoding="utf-8")
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(new_text_file),
+        ],
+        env=_env_with_gt_rig("reviewer/anthony"),
+    )
+    assert r.returncode == 23, (r.returncode, r.stderr)
+    assert "Reviewer" in r.stderr
+    assert "§10.5.2" in r.stderr
+    # File must be untouched.
+    assert tex.read_text(encoding="utf-8") == original
+
+
+def test_cli_build_refuses_under_reviewer_rig(tmp_path: Path) -> None:
+    """build exits 23 with a clear message under $GT_RIG=reviewer/*."""
+    # Build doesn't need a real project for the guard to fire — it returns
+    # before constructing the state dir.
+    r = _run_cli(
+        [
+            "--project-dir", str(tmp_path),
+            "build",
+        ],
+        env=_env_with_gt_rig("reviewer/anthony"),
+    )
+    assert r.returncode == 23, (r.returncode, r.stderr)
+    assert "Reviewer" in r.stderr
+
+
+def test_cli_revert_refuses_under_reviewer_rig(tmp_path: Path) -> None:
+    """revert exits 23 with a clear message under $GT_RIG=reviewer/*."""
+    project, _, _ = _bootstrap_minimal_project(tmp_path)
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "revert",
+            "--annotation-id", "ann-001",
+            "--status", "rejected",
+        ],
+        env=_env_with_gt_rig("reviewer/anthony"),
+    )
+    assert r.returncode == 23, (r.returncode, r.stderr)
+    assert "Reviewer" in r.stderr
+
+
+def test_cli_apply_runs_under_non_reviewer_rig(tmp_path: Path) -> None:
+    """A non-reviewer $GT_RIG (e.g., crew/anthony) does NOT trigger the guard."""
+    project, state_dir, tex = _bootstrap_minimal_project(tmp_path)
+    new_text_file = tmp_path / "draft.txt"
+    new_text_file.write_text("REPLACED\n", encoding="utf-8")
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(new_text_file),
+        ],
+        env=_env_with_gt_rig("report-engine/anthony"),
+    )
+    assert r.returncode == 0, r.stderr
+    assert tex.read_text(encoding="utf-8") == "alpha\nREPLACED\ndelta\nepsilon\n"
+
+
+def test_cli_apply_runs_with_unset_gt_rig(tmp_path: Path) -> None:
+    """An unset $GT_RIG (the common case outside gas-town) does NOT trigger the guard."""
+    import os
+    project, state_dir, tex = _bootstrap_minimal_project(tmp_path)
+    new_text_file = tmp_path / "draft.txt"
+    new_text_file.write_text("REPLACED\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("GT_RIG", None)
+
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "apply",
+            "--annotation-id", "ann-001",
+            "--new-text-file", str(new_text_file),
+        ],
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
 
 
 def test_exit_code_constants_match_spec():
