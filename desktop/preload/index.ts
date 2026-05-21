@@ -8,6 +8,9 @@ import type {
   PtyExitEvent,
   PtyStartParams,
   ResultsEvent,
+  SubmitAbandonRequest,
+  SubmitPromoteRequest,
+  SubmitSlingRequest,
 } from '@shared/types';
 
 // Expose a minimal, typed IPC surface to the renderer.
@@ -36,7 +39,7 @@ const electronAPI: ElectronAPI = {
   writeAppState: (state: AppStateFile) => ipcRenderer.invoke('appState:write', state),
   indexPdfs: (root: string) => ipcRenderer.invoke('fs:indexPdfs', root),
   onOpenExternalFile: (cb) => {
-    const listener = (_e: IpcRendererEvent, path: string) => cb(path);
+    const listener = (_e: IpcRendererEvent, event: { path: string; from: string | null }) => cb(event);
     ipcRenderer.on('app:openExternalFile', listener);
     // Tell main we're ready to receive the buffered cold-launch queue.
     ipcRenderer.send('app:externalOpenReady');
@@ -53,6 +56,14 @@ const electronAPI: ElectronAPI = {
   },
 
   writeBundle: (request: BundleWriteRequest) => ipcRenderer.invoke('bundle:write', request),
+
+  // §10.1 Submit flow (rev-1md.4)
+  submitPromote: (request: SubmitPromoteRequest) =>
+    ipcRenderer.invoke('submit:promote', request),
+  submitSling: (request: SubmitSlingRequest) =>
+    ipcRenderer.invoke('submit:sling', request),
+  submitAbandonRound: (request: SubmitAbandonRequest) =>
+    ipcRenderer.invoke('submit:abandonRound', request),
 
   // ─── §9.2 embedded Claude pane (rev-1md.2) ─────────────────────────────
   probeReviewer: () => ipcRenderer.invoke('pty:probeReviewer'),

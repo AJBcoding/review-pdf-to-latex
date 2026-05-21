@@ -329,6 +329,18 @@ export interface AppStateFile {
    *  semantics; main writes deduped + sorted. */
   expanded_dirs: string[];
   show_hidden: boolean;
+  /** §10.5.1 — originating rig per source-doc path. Populated when the app
+   *  is launched via `review-pdf-app open <path> --from <rig-id>`; survives
+   *  app restart so re-opening the same doc still routes Submit to the same
+   *  rig. Per-doc keying matches the spec's "per doc" picker memory. */
+  origin_rig_per_doc?: Record<string, string>;
+  /** §10.5 — most-recently-used rig destinations for the picker, newest
+   *  first. Capped at MAX_RECENT_RIGS in the renderer; main writes verbatim. */
+  recent_rigs?: string[];
+  /** §10.5 — last picked destination per source-doc path. Drives the
+   *  picker's "same doc, same default" behavior. Stores the destination
+   *  rig-id literal (e.g., `"reviewer-local"`, `"report-engine/anthony"`). */
+  last_destination_per_doc?: Record<string, string>;
 }
 
 export type AppStateReadResult =
@@ -416,6 +428,136 @@ export type BundleWriteResult =
       bundleJsonPath: string | null;
     };
 
+// ─── §10.1 Submit flow — promote draft, sling via gt mail, abandon ──────
+//
+// Three IPC surfaces:
+//   submit:promote    → write `.review-state/submit-<ts>.json` from current
+//                       draft, flip its open entries to `submitted`.
+//   submit:sling      → spawn `gt mail send` with the rev-2k7 payload.
+//   submit:abandonRound → rename results-<ts>.json → results-<ts>.abandoned.json
+//                         (§10.1 step 6 soft tombstone semantics).
+
+/** Reviewer-local is a virtual destination ID; the picker shows it as
+ *  "Reviewer (local) — talk only, no source edits". When the rig case is
+ *  off (no `--from` + no rigs picked yet), this is the only option. */
+export const REVIEWER_LOCAL_ID = 'reviewer-local';
+
+export interface SubmitPromoteRequest {
+  /** Absolute path of the open source PDF. Determines `.review-state/` dir. */
+  sourcePath: string;
+  /** sha256 of the source bytes — pinned into the submit file as
+   *  `doc_version` so the results-file watcher can pair them. */
+  sourceSha256: string;
+  /** Source-version parsed from the filename per §10.6 (e.g., "1.0"). Null
+   *  for filenames that don't conform. */
+  sourceFileVersion: string | null;
+  /** Bundle metadata to embed in the submit file. The bundle should already
+   *  be on disk by the time promote is called (writeBundle ran first). */
+  bundlePdfPath: string;
+  bundleJsonPath: string;
+  /** Origin rig recorded at launch via `--from`. Null for standalone. */
+  originRig: string | null;
+  /** The current in-memory drafts. Entries with status:'open' (or missing)
+   *  get promoted to 'submitted'; all entries are written to the submit
+   *  file frozen. */
+  comments: CommentPayload[];
+  /** Author for the submit file's metadata. AJB in v1. */
+  author: string;
+}
+
+export type SubmitPromoteResult =
+  | {
+      ok: true;
+      submitId: string;
+      submitFilePath: string;
+      submitFile: SubmitFile;
+      /** Per-comment status mutation the renderer mirrors back onto its
+       *  in-memory drafts (so the right-drawer immediately shows
+       *  "submitted" badges). Only entries that flipped are listed. */
+      statusUpdates: { commentId: string; submittedAt: string }[];
+    }
+  | {
+      ok: false;
+      reason: 'mkdir_failed' | 'write_failed';
+      error: string;
+      submitFilePath: string | null;
+    };
+
+export interface SubmitSlingRequest {
+  /** Destination rig-id. Reviewer-local routes to a `reviewer/<you>/` mailbox
+   *  per §10.5; full rigs go to `<rig>/` per §10.1 step 3. */
+  destinationRig: string;
+  /** Origin rig recorded at launch — null for standalone. Echoed into the
+   *  payload's `origin_rig` field; not used for addressing. */
+  originRig: string | null;
+  /** Pinned submit_id from the promote step. */
+  submitId: string;
+  /** Same `bundle_id` the bundle JSON sidecar carries. Lets the rig pair
+   *  submit + bundle without re-parsing the JSON. */
+  bundleId: string;
+  /** Source-doc absolute path — frozen into the payload for the rig. */
+  sourcePath: string;
+  /** Submit file written by the promote step. */
+  submitFilePath: string;
+  /** Bundle artifacts written by writeBundle(). */
+  bundlePdfPath: string;
+  bundleJsonPath: string;
+  /** App version frozen into the payload for the rig. */
+  appVersion: string;
+  /** Subject prefix the rig matches on. Defaults are wired in main; the
+   *  field is exposed so tests / future versions can override. */
+  subjectPrefix?: string;
+}
+
+/** Returned by the sling. The pending-send / sent-unconfirmed split lives
+ *  in the renderer's state machine; main reports the raw process result. */
+export type SubmitSlingResult =
+  | {
+      ok: true;
+      /** Exit code from `gt mail send` — always 0 here (non-zero comes
+       *  through `ok:false, reason:'gt_failed'`). */
+      exitCode: 0;
+      stdout: string;
+      stderr: string;
+      /** The exact JSON body main piped to gt mail's stdin — surfaced so
+       *  the renderer can stash it for a "Show gt mail status" diagnostic
+       *  drawer if the user needs to debug delivery. */
+      payload: string;
+      /** Resolved subject so it shows up in the user's gt-mail history. */
+      subject: string;
+    }
+  | {
+      ok: false;
+      reason: 'no_gt';
+      message: string;
+    }
+  | {
+      ok: false;
+      reason: 'spawn_failed';
+      error: string;
+    }
+  | {
+      ok: false;
+      reason: 'gt_failed';
+      exitCode: number | null;
+      stdout: string;
+      stderr: string;
+    }
+  | {
+      ok: false;
+      reason: 'timeout';
+      timeoutMs: number;
+    };
+
+export interface SubmitAbandonRequest {
+  /** Absolute path of `results-<ts>.json` to soft-tombstone. */
+  resultsFilePath: string;
+}
+
+export type SubmitAbandonResult =
+  | { ok: true; renamedTo: string }
+  | { ok: false; reason: 'not_found' | 'rename_failed'; error: string };
+
 /** Existence check used at launch: a remembered root that's been moved/deleted
  *  shouldn't crash the boot path — we just clear it and show the empty state. */
 export type PathExistsResult =
@@ -476,7 +618,12 @@ export interface ElectronAPI {
   // (from a CLI shim arg, second-instance argv, or reviewpdf:// URL).
   // Renderer pivots the middle pane to the doc; per §10.3 the prior doc's
   // draft state is preserved by the existing loadPdf flow.
-  onOpenExternalFile(cb: (path: string) => void): () => void;
+  //
+  // `from` carries the originating rig recorded via `review-pdf-app open
+  // <path> --from <rig-id>` (§10.5.1). Null when invoked without the flag
+  // (standalone case). The renderer persists this into AppState so subsequent
+  // doc opens recover the origin even after restart.
+  onOpenExternalFile(cb: (event: { path: string; from: string | null }) => void): () => void;
 
   // §10.1 step 6 + §10.3 — start watching `.review-state/` next to the
   // currently-open doc for new/changed results-*.json files. Renderer calls
@@ -495,6 +642,21 @@ export interface ElectronAPI {
   // overwrite the same files; a new date produces a new dated bundle and
   // leaves yesterday's as audit trail.
   writeBundle(request: BundleWriteRequest): Promise<BundleWriteResult>;
+
+  // ─── §10.1 Submit flow (rev-1md.4) ──────────────────────────────────────
+  // Promote the live draft to a frozen submit-<ts>.json under .review-state/.
+  // Returns the submit_id and per-comment status updates so the renderer can
+  // mirror them onto its in-memory drafts (right-drawer flips to "submitted").
+  submitPromote(request: SubmitPromoteRequest): Promise<SubmitPromoteResult>;
+  // Spawn `gt mail send` with the rev-2k7 contract payload. Stdout/stderr
+  // surface in the failure case so the renderer can show verbatim gt
+  // diagnostics in the persistent error banner.
+  submitSling(request: SubmitSlingRequest): Promise<SubmitSlingResult>;
+  // §10.1 step 6 abandon: rename results-<ts>.json → results-<ts>.abandoned.json.
+  // Soft tombstone — partial results are preserved, the rig's resume guard
+  // ignores the .abandoned suffix, and the app's in-memory state flips to
+  // idle so Submit re-enables.
+  submitAbandonRound(request: SubmitAbandonRequest): Promise<SubmitAbandonResult>;
 
   // ─── §9.2 embedded Claude pane (rev-1md.2) ──────────────────────────────
   // Probe gas-town presence + identity. Cached on the main side; safe to call

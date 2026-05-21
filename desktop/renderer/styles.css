@@ -409,6 +409,212 @@ html, body, #app {
 .pdf-nav-saved[data-state="bundle"] { color: var(--level-comment); }
 .pdf-nav-saved[data-state="error"] { color: #ff8a8a; }
 
+/* §10.1 step 4 — Submit-state pill. Sits next to #pdfSaved in the title bar
+ * and stays visible from `pending_send` through `complete`. Hidden when the
+ * state machine is `idle`. Color tracks the spec's banner palette so the
+ * round banner and the pill never read as conflicting signals. */
+.pdf-nav-submit {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+}
+.pdf-nav-submit[hidden] { display: none; }
+.pdf-nav-submit[data-state="pending_send"] {
+  background: #2a3a55; color: var(--text); border-color: #4a6a8a;
+}
+.pdf-nav-submit[data-state="sent_unconfirmed"] {
+  background: #1f3a1f; color: var(--text); border-color: #2f5a2f;
+}
+.pdf-nav-submit[data-state="timeout"] {
+  background: #3a2e10; color: var(--text); border-color: #6a5418;
+}
+.pdf-nav-submit[data-state="send_failed"] {
+  background: #3a1818; color: #ffb3b3; border-color: #7a2a2a;
+}
+.pdf-nav-submit[data-state="complete"] {
+  background: #14361a; color: #b9e6b9; border-color: #1f5a2a;
+}
+.pdf-nav-submit[data-state="complete-failed"] {
+  background: #3a1818; color: #ffb3b3; border-color: #7a2a2a;
+}
+
+/* Persistent error / timeout banner for Submit. Stacks below #roundBanner
+ * (same flex-flow rules as the round banner). Pre-styled so a stderr blob
+ * stays legible — wrap, mono font, scroll. */
+.submit-banner {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--pane-border);
+  background: #3a1818;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.submit-banner[data-severity="warn"] {
+  background: #3a2e10;
+  border-bottom-color: #6a5418;
+}
+.submit-banner-head {
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+.submit-banner-detail {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 6px 8px;
+  border-radius: 3px;
+}
+.submit-banner-actions {
+  display: flex;
+  gap: 6px;
+}
+.submit-banner-actions button {
+  font-size: 12px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid #7a3a3a;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.submit-banner-actions button:hover { background: rgba(255,255,255,0.05); }
+.submit-banner-actions button.is-primary {
+  background: #7a2a2a;
+  border-color: #aa3a3a;
+}
+
+/* §10.5 destination picker. Same modal pattern as the quick-open palette
+ * (z-index above panes, scrim, centered card) but anchored mid-screen since
+ * the list is short. */
+.dest-picker {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 110;
+}
+.dest-picker[hidden] { display: none; }
+.dest-picker-card {
+  width: min(520px, 90vw);
+  max-height: 70vh;
+  background: #1c1c1c;
+  border: 1px solid var(--pane-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dest-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 13px;
+}
+.dest-picker-title { font-weight: 600; color: var(--text); }
+.dest-picker-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.dest-picker-close:hover { color: var(--text); }
+.dest-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 40vh;
+}
+.dest-picker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.dest-picker-row.is-selected {
+  background: #143352;
+  border-left-color: var(--accent);
+}
+.dest-picker-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.dest-picker-row-name {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.dest-picker-row-desc {
+  font-size: 11px;
+  color: var(--muted);
+}
+.dest-picker-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--pane-border);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.dest-picker-custom {
+  flex: 1 1 auto;
+  background: #0e0e0e;
+  color: var(--text);
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  outline: none;
+}
+.dest-picker-custom:focus { border-color: var(--accent); }
+.dest-picker-submit {
+  background: #2a5a8a;
+  color: var(--text);
+  border: 1px solid #3a7aba;
+  border-radius: 3px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dest-picker-submit:disabled {
+  background: #2a3a4a;
+  border-color: #3a4a5a;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.dest-picker-submit:hover:not(:disabled) { background: #3a6a9a; }
+.dest-picker-hint {
+  padding: 6px 14px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 16px;
+}
+
 .pdf-nav-sep {
   color: var(--pane-border);
   font-size: 11px;

@@ -53,6 +53,16 @@
             error   — drafts or bundle write failed (hover for detail)
         -->
         <span class="pdf-nav-saved" id="pdfSaved" data-state="idle" aria-live="polite"></span>
+        <!--
+          §10.1 Submit state pill (rev-1md.4). Hidden in `idle`; reflects
+          the renderer's Submit state machine:
+            pending_send     — "Slinging to <rig>…"
+            sent_unconfirmed — "Submitted to <rig> — awaiting pickup"
+            timeout          — "Still waiting (10 min)" + sibling banner
+            send_failed      — surfaces gt stderr in a banner (pill stays terse)
+            acknowledged/processing/complete — handled by #roundBanner
+        -->
+        <span class="pdf-nav-submit" id="pdfSubmit" data-state="idle" hidden aria-live="polite"></span>
         <span class="pdf-nav-controls">
           <button id="pdfOpen" type="button" title="Open a PDF (⌘O)">Open…</button>
           <span class="pdf-nav-sep" aria-hidden="true">│</span>
@@ -73,6 +83,13 @@
            watcher reflects a round into the UI. Distinct element from
            #pdfBanner so the two can stack when both are relevant. -->
       <div id="roundBanner" class="round-banner" hidden role="status" aria-live="polite"></div>
+      <!--
+        §10.1 step 4 — Submit state-machine banner. Persistent error/timeout
+        surface (verbatim gt stderr + [Retry] / [Re-sling] / [Show payload]).
+        Stacks below #roundBanner; both can be visible at once when a prior
+        round is in-progress AND the current submit failed.
+      -->
+      <div id="submitBanner" class="submit-banner" hidden role="status" aria-live="polite"></div>
       <div class="pane-body document-area">
         <div class="pdf-empty" id="pdfEmpty">
           <div class="pdf-empty-title">No PDF loaded</div>
@@ -186,6 +203,32 @@
              spellcheck="false" placeholder="Type to fuzzy-match PDF filename or path…" />
       <ul id="paletteList" class="palette-list" role="listbox" aria-label="Quick-open matches"></ul>
       <div id="paletteEmpty" class="palette-empty" hidden>No matches.</div>
+    </div>
+  </div>
+
+  <!--
+    §10.5 standalone destination picker. Opens at Submit time when no
+    origin is recorded. Single-select list: Reviewer (local), recently-used
+    rigs, "Pick another rig…". Capability labels visible per option.
+    Remembers last choice per doc (drives the default selection).
+  -->
+  <div id="destinationPicker" class="dest-picker" hidden role="dialog" aria-modal="true" aria-label="Submit destination">
+    <div class="dest-picker-card" role="document">
+      <header class="dest-picker-header">
+        <span class="dest-picker-title">Send to</span>
+        <button id="destPickerClose" type="button" class="dest-picker-close"
+                aria-label="Cancel">✗</button>
+      </header>
+      <ul id="destPickerList" class="dest-picker-list" role="listbox"
+          aria-label="Submit destinations"></ul>
+      <footer class="dest-picker-footer">
+        <input id="destPickerCustom" type="text" autocomplete="off"
+               spellcheck="false" class="dest-picker-custom"
+               placeholder="Pick another rig… (type rig-id, e.g. report-engine/anthony)" />
+        <button id="destPickerSubmit" type="button" class="dest-picker-submit"
+                disabled>Send</button>
+      </footer>
+      <div id="destPickerHint" class="dest-picker-hint"></div>
     </div>
   </div>
 

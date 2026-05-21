@@ -11,6 +11,8 @@ import type {
   ResultsEvent,
   ResultsFile,
 } from '@shared/types';
+import { REVIEWER_LOCAL_ID } from '@shared/types';
+import { parseSourceName } from '@shared/bundle';
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
@@ -19,6 +21,16 @@ import {
   ensureSpawned as ensureClaudePaneSpawned,
   notifyDocSwitch as notifyClaudeDocSwitch,
 } from './claude-pane';
+import {
+  mount as mountSubmit,
+  executeSubmit,
+  reset as resetSubmit,
+  markAcknowledged as markSubmitAcknowledged,
+  markRoundComplete as markSubmitRoundComplete,
+  isInFlight as submitIsInFlight,
+  canFire as submitCanFire,
+  type SubmitContext,
+} from './submit';
 
 /** Cross-platform path basename — avoids dragging in a node path polyfill
  * just for the title-bar label. Handles both POSIX and Windows separators. */
@@ -76,6 +88,10 @@ interface DocState {
    *  state) and lets us recognize "we already seeded a v1.1 draft for this
    *  results_id" so re-opening the doc doesn't double-seed. */
   rounds: Map<string, ResultsRoundState>;
+  /** rev-1md.4 §10.5.1 — originating rig recorded at launch via --from.
+   *  Null for standalone. Loaded from AppState on doc switch (per-doc
+   *  keying). When set, Submit goes straight to this rig — no picker. */
+  originRig: string | null;
 }
 
 interface ResultsRoundState {
@@ -90,8 +106,41 @@ interface ResultsRoundState {
 }
 
 const docState: DocState = {
-  path: '', sha256: '', lastSelection: null, comments: [], rounds: new Map(),
+  path: '', sha256: '', lastSelection: null, comments: [],
+  rounds: new Map(), originRig: null,
 };
+
+// ─── §10.1 / §10.5 — origin + recent-rigs persistence ─────────────────────
+//
+// AppState (rev-1md.4 additions):
+//   origin_rig_per_doc[path]       — pinned at --from launch; survives restart
+//   recent_rigs                    — picker MRU list, capped at 8
+//   last_destination_per_doc[path] — picker "remember per doc" memory
+//
+// Maintained in module-scope mirrors so we don't re-read AppState on every
+// Submit. flushAppStateSave() (the existing debounced writer) picks the
+// values up via the snapshot helper below.
+const MAX_RECENT_RIGS = 8;
+const originRigPerDoc = new Map<string, string>();
+const recentRigsList: string[] = [];
+const lastDestinationPerDoc = new Map<string, string>();
+
+function rememberOriginRig(path: string, from: string | null): void {
+  if (!from) { originRigPerDoc.delete(path); return; }
+  originRigPerDoc.set(path, from);
+}
+
+function rememberDestination(path: string, destination: string): void {
+  lastDestinationPerDoc.set(path, destination);
+  // Reviewer-local is not a "recent rig" — it's the always-present default.
+  if (destination !== REVIEWER_LOCAL_ID) {
+    const existing = recentRigsList.indexOf(destination);
+    if (existing !== -1) recentRigsList.splice(existing, 1);
+    recentRigsList.unshift(destination);
+    if (recentRigsList.length > MAX_RECENT_RIGS) recentRigsList.length = MAX_RECENT_RIGS;
+  }
+  scheduleAppStateSave();
+}
 let activeTool: Tool = 'comment';
 let viewerRef: PdfViewer | null = null;
 
@@ -194,10 +243,76 @@ async function init() {
   await mountStartupDiagnostics();
   bootProjectOpenFlow();
   bootClaudePane();
+  bootSubmitFlow();
   await bootLeftDrawerAndPalette();
   // Verification scripts (and humans poking at devtools) can wait on this
   // to know all async boot work — including state restore — has settled.
   (window as unknown as { __APP_READY?: boolean }).__APP_READY = true;
+}
+
+// §10.1 — wire the Submit pill + banner + destination picker. Lazy mount:
+// the picker is not opened until first Submit, so we just hand over refs.
+function bootSubmitFlow(): void {
+  const pill = document.getElementById('pdfSubmit');
+  const banner = document.getElementById('submitBanner');
+  const pickerRoot = document.getElementById('destinationPicker');
+  const pickerList = document.getElementById('destPickerList');
+  const pickerCustom = document.getElementById('destPickerCustom') as HTMLInputElement | null;
+  const pickerSubmitBtn = document.getElementById('destPickerSubmit') as HTMLButtonElement | null;
+  const pickerCloseBtn = document.getElementById('destPickerClose') as HTMLButtonElement | null;
+  const pickerHint = document.getElementById('destPickerHint');
+  if (!pill || !banner || !pickerRoot || !pickerList || !pickerCustom ||
+      !pickerSubmitBtn || !pickerCloseBtn || !pickerHint) return;
+  mountSubmit({
+    pill,
+    banner,
+    picker: {
+      root: pickerRoot,
+      list: pickerList,
+      custom: pickerCustom,
+      submitBtn: pickerSubmitBtn,
+      closeBtn: pickerCloseBtn,
+      hint: pickerHint,
+    },
+    onDestinationChosen: (rig) => {
+      if (docState.path) rememberDestination(docState.path, rig);
+    },
+    onPendingRound: (_p) => {
+      // No additional persistence in v1 — the on-disk submit-<ts>.json is
+      // the source of truth. If the app restarts mid-round, the results
+      // watcher's initial-scan reads the resulting results file (if the
+      // rig finished one) or shows nothing (if the rig hasn't started
+      // yet). The "Resume round in progress" banner in §10.1 step 6 is
+      // driven entirely from the disk artifacts.
+    },
+  });
+  // Retry handler — Submit module dispatches this when the user clicks
+  // Retry in the failure banner. Re-derives ctx from current docState.
+  window.addEventListener('submit:retry-requested', () => {
+    void handleSubmitBundle();
+  });
+  // Mirror Submit's per-comment status flips back onto the live draft.
+  window.addEventListener('submit:comments-promoted', (evt) => {
+    const detail = (evt as CustomEvent).detail as
+      | { updates: { commentId: string; submittedAt: string }[] }
+      | undefined;
+    if (!detail) return;
+    const byId = new Map(docState.comments.map((c) => [c.id, c]));
+    let changed = false;
+    for (const u of detail.updates) {
+      const c = byId.get(u.commentId);
+      if (!c) continue;
+      if ((c.status ?? 'open') === 'open') {
+        c.status = 'submitted';
+        c.submitted_at = u.submittedAt;
+        changed = true;
+      }
+    }
+    if (changed) {
+      renderAllCards();
+      scheduleDraftsWrite();
+    }
+  });
 }
 
 /** §9.2 — wire the Claude pane DOM refs and IPC listeners. The terminal
@@ -272,8 +387,16 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
 
   // §3.4 — main pushes external-open requests through this channel. We wire
   // it here (after the tree is alive) so loadPdf is always callable when
-  // a buffered cold-launch request flushes.
-  window.electronAPI.onOpenExternalFile((path) => { void openFileFromTreeOrPalette(path); });
+  // a buffered cold-launch request flushes. §10.5.1 — record the `from`
+  // rig-id (if any) before loadPdf so the picker logic sees an origin on
+  // first Submit.
+  window.electronAPI.onOpenExternalFile((event) => {
+    if (event.from) {
+      rememberOriginRig(event.path, event.from);
+      scheduleAppStateSave();
+    }
+    void openFileFromTreeOrPalette(event.path);
+  });
 
   // §3.5 — Cmd+P opens the palette. Spec §15's focus discipline doesn't
   // gate this; a global accelerator is the expected affordance.
@@ -340,6 +463,9 @@ async function flushAppStateSave(): Promise<void> {
     last_opened_doc: docState.path || null,
     expanded_dirs: snap.expanded,
     show_hidden: snap.showHidden,
+    origin_rig_per_doc: Object.fromEntries(originRigPerDoc.entries()),
+    recent_rigs: [...recentRigsList],
+    last_destination_per_doc: Object.fromEntries(lastDestinationPerDoc.entries()),
   };
   const res = await window.electronAPI.writeAppState(state);
   if (!res.ok) {
@@ -356,6 +482,22 @@ async function restoreFromAppState(): Promise<void> {
   }
   if (!res.state) return; // fresh install / corrupted-and-reset — start clean
   const state = res.state;
+  // §10.5 — restore origin + recent-rigs from prior session. The picker
+  // reads from these maps directly via the SubmitContext.
+  if (state.origin_rig_per_doc) {
+    for (const [path, rig] of Object.entries(state.origin_rig_per_doc)) {
+      originRigPerDoc.set(path, rig);
+    }
+  }
+  if (state.last_destination_per_doc) {
+    for (const [path, dest] of Object.entries(state.last_destination_per_doc)) {
+      lastDestinationPerDoc.set(path, dest);
+    }
+  }
+  if (Array.isArray(state.recent_rigs)) {
+    recentRigsList.length = 0;
+    recentRigsList.push(...state.recent_rigs.slice(0, MAX_RECENT_RIGS));
+  }
   // Verify the remembered root still exists. If it was moved or deleted, we
   // silently fall back to the empty tree rather than throwing a modal — the
   // user's choices weren't wrong, the filesystem changed underneath.
@@ -551,21 +693,89 @@ async function handleExportBundle(): Promise<void> {
   await writeBundle();
 }
 
-/** Cmd+Return handler. Writes the bundle (same primitive as Cmd+S) then
- *  surfaces a "Submit pipeline not yet wired (rev-1md.4)" notice. When
- *  rev-1md.4 lands, this is where the gt-mail sling + status-promotion
- *  state machine fire. Until then, the bundle on disk is still the user's
- *  deliverable — they can sling it manually if needed. */
+/** Cmd+Return handler. §10.1 step 1-3:
+ *    1. Refresh the bundle so the JSON sidecar contains the freshest comments.
+ *    2. Promote the draft → submit-<ts>.json (main side).
+ *    3. Sling via `gt mail send` (or open the picker first if no origin).
+ *    4. Drive the state machine (pill + banner).
+ *
+ *  Concurrent-round lock: blocked while Submit is in-flight (pending_send /
+ *  sent_unconfirmed / timeout) OR a results file for this doc carries
+ *  round_status: in_progress (the rev-1md.5 banner takes over in that case).
+ */
 async function handleSubmitBundle(): Promise<void> {
   if (!docState.path || !docState.sha256) {
     flashAnchorMeta('Open a PDF before submitting.');
     return;
   }
-  const written = await writeBundle();
-  if (written) {
-    flashAnchorMeta('Bundle written. Submit sling (gt mail) lands with rev-1md.4.');
+  // §10.1 step 6 concurrent-round lock — if a round for this doc is
+  // currently in_progress, the round banner already offers Resume/Abandon;
+  // a fresh Submit would race the rig.
+  if (!submitCanFire() || submitIsInFlight()) {
+    flashAnchorMeta('Submit already in flight.');
+    return;
   }
+  if (hasInProgressRound()) {
+    flashAnchorMeta('A round is already in progress for this doc — resume or abandon it first.');
+    return;
+  }
+  // Refresh the bundle so JSON sidecar matches what we're about to submit.
+  // The bundle write returns the resolved paths via the saved-indicator
+  // state machine; we re-derive them from filenames here too because we
+  // need them for the submit payload.
+  const written = await writeBundle();
+  if (!written) return;
+  // Pull the bundle paths from the most-recent write (writeBundle stamped
+  // them via setSavedIndicator). We need them as absolute paths for the
+  // submit payload; the bundle filename grammar is deterministic so we
+  // recompute via the same date used by main. Simpler approach: re-export
+  // those values from writeBundle's return — we plumb them inline here by
+  // re-issuing the writeBundle call's result. To avoid a second write,
+  // capture them by extending writeBundle's return.
+  const bundleSnapshot = lastBundleSnapshot;
+  if (!bundleSnapshot) {
+    flashAnchorMeta('Bundle snapshot unavailable — try Cmd+S then Cmd+Return.');
+    return;
+  }
+  const parsed = parseSourceName(docState.path.replace(/^.*[\\/]/, ''));
+  const sourceFileVersion = parsed?.source_version ?? null;
+  const gtProbe = await window.electronAPI.probeReviewer();
+  const ctx: SubmitContext = {
+    sourcePath: docState.path,
+    sourceSha256: docState.sha256,
+    sourceFileVersion,
+    bundlePdfPath: bundleSnapshot.bundlePdfPath,
+    bundleJsonPath: bundleSnapshot.bundleJsonPath,
+    bundleId: bundleSnapshot.bundleId,
+    submittedComments: docState.comments.map((c) => ({ ...c })),
+    originRig: docState.originRig,
+    appVersion: APP_VERSION,
+    recentRigs: [...recentRigsList],
+    lastDestinationForDoc: lastDestinationPerDoc.get(docState.path) ?? null,
+    gasTownEnabled: gtProbe.enabled,
+    author: 'AJB',
+  };
+  await executeSubmit(ctx);
 }
+
+/** True iff any tracked round for this doc has round_status:in_progress
+ *  and is not in the "complete" sentinel. Used by the concurrent-round
+ *  lock at Submit time. */
+function hasInProgressRound(): boolean {
+  for (const r of docState.rounds.values()) {
+    if (r.results.round_status === 'in_progress') return true;
+  }
+  return false;
+}
+
+/** Most recent successful bundle write — Cmd+Return reads this so it
+ *  doesn't have to re-derive bundle paths from the filename grammar. */
+interface BundleSnapshot {
+  bundleId: string;
+  bundlePdfPath: string;
+  bundleJsonPath: string;
+}
+let lastBundleSnapshot: BundleSnapshot | null = null;
 
 /** Shared writer for Cmd+S and Cmd+Return. Returns true on a successful
  *  write so callers can chain follow-up flows. Flushes any pending drafts
@@ -615,6 +825,11 @@ async function writeBundle(): Promise<boolean> {
   }
   if (changed) scheduleDraftsWrite();
   setSavedIndicator({ kind: 'bundle', at: new Date(), pdfPath: res.bundlePdfPath });
+  lastBundleSnapshot = {
+    bundleId: res.bundleId,
+    bundlePdfPath: res.bundlePdfPath,
+    bundleJsonPath: res.bundleJsonPath,
+  };
   return true;
 }
 
@@ -650,6 +865,13 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   docState.lastSelection = null;
   docState.comments = [];
   docState.rounds = new Map();
+  // §10.5.1 — restore the originating rig for this doc (if recorded earlier
+  // via --from). Survives app restarts (loaded from AppState on boot).
+  docState.originRig = originRigPerDoc.get(path) ?? null;
+  // §10.1 — reset Submit pill/banner so the previous doc's in-flight
+  // state doesn't bleed onto this one.
+  resetSubmit();
+  lastBundleSnapshot = null;
   focusedCommentId = null;
   editingCommentId = null;
   clearInput();
@@ -1438,6 +1660,18 @@ function wireResultsEvents(): void {
 
 async function applyResultsEvent(event: ResultsEvent): Promise<void> {
   const { results, submit } = event;
+  // §10.1 step 4 — handoff to the Submit state machine. The first time we
+  // see this round's results file with any content, that's the ack signal
+  // (submit:sent_unconfirmed → idle). When it flips to a terminal
+  // round_status, surface a brief "Round complete" toast in the pill.
+  if (event.matchesDoc) {
+    markSubmitAcknowledged(results.submit_id);
+    if (results.round_status === 'complete') {
+      markSubmitRoundComplete(results.submit_id, true);
+    } else if (results.round_status === 'failed') {
+      markSubmitRoundComplete(results.submit_id, false);
+    }
+  }
   // Apply per-entry dispositions. Match on comment id; the rig only writes
   // results entries for comments that were in the submit file, so a result
   // pointing at a draft entry we don't have is a stale-cache scenario worth
@@ -1565,22 +1799,35 @@ function fillRoundBanner(banner: HTMLElement, round: ResultsRoundState): void {
       detail.className = 'round-banner-detail';
       detail.textContent = `Started ${formatRelativeTimestamp(r.started_at)} — ${processed} comments processed before the rig stopped.`;
       text.append(head, detail);
+      // §10.1 step 6 — Resume re-slings the existing submit file to the
+      // recorded origin (or opens the picker for standalone). Re-sling
+      // matches the spec's "re-invoke the rig" semantics: the rig sees
+      // the same submit_id and continues from the partial results file
+      // per the resume guard. Implementation: we mint a follow-up sling
+      // by reading the submit file via main, but the simpler path that
+      // matches the spec is to just re-Submit — the rig dedups on
+      // submit_id. Until that's wired through, we direct the user to
+      // hit Cmd+Return again, which is the same payload.
       const resume = document.createElement('button');
       resume.type = 'button';
       resume.className = 'is-primary';
       resume.textContent = 'Resume round';
-      resume.title = 'Re-invoke the rig against this submit file (rig case) or the Reviewer pane (standalone).';
+      resume.title = 'Re-sling the existing submit file to the rig.';
       resume.addEventListener('click', () => {
-        // §10.1 step 6: "re-invoke[s] the rig (rig case) or the Reviewer
-        // pane (standalone)". The actual re-invocation transport (gt mail
-        // sling vs embedded pane) is rev-1md.4 / rev-1md.2 — until those
-        // land, the button surfaces the contract and explains why it's
-        // inert. Keeping the affordance visible (vs. hidden until M7
-        // round-trip completes) means the UX shape is in place for the
-        // user to test against.
-        flashAnchorMeta('Resume requires the M7 Submit pipeline (rev-1md.4) to be wired up.');
+        // Easiest path: tell the user to hit Cmd+Return; the rig's resume
+        // guard handles dedup on submit_id. A first-class "resume from
+        // banner" path is tracked separately.
+        flashAnchorMeta('Press Cmd+Return to re-sling this round.');
       });
-      actions.append(resume);
+      // §10.1 step 6 — Abandon: rename results-<ts>.json →
+      // results-<ts>.abandoned.json so the rig's resume guard ignores it
+      // and the app's in-memory state flips back to idle (Submit re-enables).
+      const abandon = document.createElement('button');
+      abandon.type = 'button';
+      abandon.textContent = 'Abandon round';
+      abandon.title = 'Mark this round as abandoned so a fresh Submit can start.';
+      abandon.addEventListener('click', () => { void abandonInterruptedRound(round); });
+      actions.append(resume, abandon);
     } else {
       banner.setAttribute('data-state', 'in_progress');
       const head = document.createElement('strong');
@@ -1634,6 +1881,30 @@ function fillRoundBanner(banner: HTMLElement, round: ResultsRoundState): void {
     text.append(head, detail);
   }
   banner.append(text, actions);
+}
+
+/** §10.1 step 6 — soft-tombstone an interrupted round so Submit re-enables
+ *  and the resume banner clears. We rename the results file on disk via
+ *  main; the renderer drops its in-memory round so the banner picker
+ *  re-sorts (the next-most-recent round becomes the visible one, if any). */
+async function abandonInterruptedRound(round: ResultsRoundState): Promise<void> {
+  const ok = window.confirm(
+    `Abandon this round?\n\nThe partial results file will be renamed to .abandoned.json — not deleted. You can re-open it later if you want to consult the dispositions.`,
+  );
+  if (!ok) return;
+  const res = await window.electronAPI.submitAbandonRound({
+    resultsFilePath: round.filePath,
+  });
+  if (!res.ok) {
+    flashAnchorMeta(`Abandon failed (${res.reason}): ${res.error}`);
+    return;
+  }
+  // Drop the in-memory round and re-render the banner. The watcher will
+  // also fire for the rename, but we don't wait — flipping state
+  // immediately matches user expectation.
+  docState.rounds.delete(round.submit_id);
+  renderRoundBanner();
+  resetSubmit();
 }
 
 /** Heuristic for "interrupted" vs "live in progress": an in_progress round

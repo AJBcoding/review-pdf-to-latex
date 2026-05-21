@@ -7,6 +7,11 @@ import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
+import {
+  promoteDraft,
+  slingViaGtMail,
+  abandonRound,
+} from './submit.js';
 import type {
   AppStateFile,
   AppStateReadResult,
@@ -26,6 +31,9 @@ import type {
   PathExistsResult,
   ReadPdfBytesResult,
   ResultsWatchStartResult,
+  SubmitAbandonRequest,
+  SubmitPromoteRequest,
+  SubmitSlingRequest,
 } from '@shared/types';
 
 /** Drafts file location per the user's decision: next to the PDF in a
@@ -73,13 +81,18 @@ function appStatePath(): string {
 // CLI args / second-instance argv / open-url events can arrive *before* the
 // renderer has wired its handler. Buffer them and flush once the renderer
 // signals it's ready, so a request never gets dropped on cold launch.
-const pendingExternalOpens: string[] = [];
+//
+// §10.5.1 — `--from <rig-id>` rides alongside the path so the renderer can
+// record the originating rig in AppState (per-doc keying) and route Submit
+// to it without a destination picker. Null means standalone.
+interface ExternalOpen { path: string; from: string | null }
+const pendingExternalOpens: ExternalOpen[] = [];
 let rendererReadyForExternalOpens = false;
 let primaryWindow: BrowserWindow | null = null;
 
-function queueExternalOpen(path: string): void {
-  const abs = isAbsolute(path) ? path : resolve(process.cwd(), path);
-  pendingExternalOpens.push(abs);
+function queueExternalOpen(open: ExternalOpen): void {
+  const abs = isAbsolute(open.path) ? open.path : resolve(process.cwd(), open.path);
+  pendingExternalOpens.push({ path: abs, from: open.from });
   flushExternalOpens();
 }
 
@@ -87,26 +100,28 @@ function flushExternalOpens(): void {
   if (!rendererReadyForExternalOpens) return;
   if (!primaryWindow || primaryWindow.isDestroyed()) return;
   while (pendingExternalOpens.length > 0) {
-    const path = pendingExternalOpens.shift()!;
-    try { primaryWindow.webContents.send('app:openExternalFile', path); }
+    const open = pendingExternalOpens.shift()!;
+    try { primaryWindow.webContents.send('app:openExternalFile', open); }
     catch { /* webContents may be torn down mid-flush; drop silently */ }
   }
 }
 
-/** Parse a `reviewpdf://open?path=/abs/path/to/file.pdf` URL.
- *  v1 only honors `path`; unrecognized keys are ignored with a warning per
- *  spec §3.4. Returns null if the URL is missing or malformed. */
-function parseReviewpdfUrl(raw: string): string | null {
+/** Parse a `reviewpdf://open?path=/abs/path/to/file.pdf&from=<rig-id>` URL.
+ *  v1 honors `path` (required) and `from` (optional, §10.5.1); unrecognized
+ *  keys are ignored with a warning per spec §3.4. Returns null if the URL
+ *  is missing or malformed. */
+function parseReviewpdfUrl(raw: string): { path: string; from: string | null } | null {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'reviewpdf:') return null;
     // Accept both reviewpdf://open?path=... and reviewpdf:open?path=...
     const path = url.searchParams.get('path');
     if (!path) return null;
+    const from = url.searchParams.get('from');
     for (const [k] of url.searchParams) {
-      if (k !== 'path') console.warn(`[reviewpdf://] ignoring unrecognized key: ${k}`);
+      if (k !== 'path' && k !== 'from') console.warn(`[reviewpdf://] ignoring unrecognized key: ${k}`);
     }
-    return path;
+    return { path, from: from || null };
   } catch {
     return null;
   }
@@ -118,17 +133,40 @@ function parseReviewpdfUrl(raw: string): string | null {
  *    review-pdf-app <path.pdf>      (any positional .pdf, for drag-and-drop
  *                                    or direct file association)
  *    reviewpdf://open?path=...      (URL handed in via argv on Windows/Linux)
- *  Returns the first match (v1 opens one doc at a time). */
-function extractPathFromArgv(argv: readonly string[]): string | null {
+ *
+ *  §10.5.1 `--from <rig-id>` may appear anywhere in argv. We extract it
+ *  whether or not a path was found, but only return it when paired with
+ *  a path (the rig context is meaningless without a doc to open). Bare
+ *  `--from=<rig-id>` is also accepted for shell convenience. */
+function extractPathFromArgv(argv: readonly string[]): { path: string; from: string | null } | null {
+  // First pass: find the `--from <rig-id>` (or `--from=<rig-id>`) flag.
+  let from: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a) continue;
-    if (a === 'open' && argv[i + 1]) return argv[i + 1];
+    if (a === '--from' && argv[i + 1]) {
+      from = argv[i + 1];
+      break;
+    }
+    if (a.startsWith('--from=')) {
+      from = a.slice('--from='.length);
+      break;
+    }
+  }
+  // Second pass: find the doc path. Skip --from values so they don't get
+  // picked up as positional .pdf candidates if someone passes them in an
+  // unusual order.
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a) continue;
+    if (a === '--from') { i += 1; continue; }
+    if (a.startsWith('--from=')) continue;
+    if (a === 'open' && argv[i + 1]) return { path: argv[i + 1], from };
     if (a.startsWith('reviewpdf://')) {
       const p = parseReviewpdfUrl(a);
-      if (p) return p;
+      if (p) return { path: p.path, from: p.from ?? from };
     }
-    if (a.toLowerCase().endsWith('.pdf') && !a.startsWith('-')) return a;
+    if (a.toLowerCase().endsWith('.pdf') && !a.startsWith('-')) return { path: a, from };
   }
   return null;
 }
@@ -250,25 +288,26 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    const path = extractPathFromArgv(argv);
+    const open = extractPathFromArgv(argv);
     if (primaryWindow) {
       if (primaryWindow.isMinimized()) primaryWindow.restore();
       primaryWindow.focus();
     }
-    if (path) queueExternalOpen(path);
+    if (open) queueExternalOpen(open);
   });
   // `open-url` (macOS) fires for reviewpdf:// invocations. Listener must be
   // registered before whenReady() so a cold-launch URL isn't missed.
   app.on('open-url', (event, url) => {
     event.preventDefault();
-    const path = parseReviewpdfUrl(url);
-    if (path) queueExternalOpen(path);
+    const parsed = parseReviewpdfUrl(url);
+    if (parsed) queueExternalOpen(parsed);
   });
   // `open-file` (macOS) fires when a file is dragged onto the dock icon /
-  // double-clicked while we're the default handler. Same buffering path.
+  // double-clicked while we're the default handler. Same buffering path —
+  // drag-from-Finder has no rig context, so `from: null`.
   app.on('open-file', (event, path) => {
     event.preventDefault();
-    queueExternalOpen(path);
+    queueExternalOpen({ path, from: null });
   });
   // Register reviewpdf:// scheme. In dev (electron-vite spawns electron with
   // an argv chain) we have to pass our entry point so the OS can re-launch us.
@@ -280,8 +319,8 @@ if (!app.requestSingleInstanceLock()) {
   // Initial argv: skip the electron exe at [0] and (in dev) the script path
   // at [1]; everything from there is user-supplied.
   const userArgv = process.defaultApp ? process.argv.slice(2) : process.argv.slice(1);
-  const initialPath = extractPathFromArgv(userArgv);
-  if (initialPath) queueExternalOpen(initialPath);
+  const initialOpen = extractPathFromArgv(userArgv);
+  if (initialOpen) queueExternalOpen(initialOpen);
 }
 
 void app.whenReady().then(() => {
@@ -636,6 +675,23 @@ void app.whenReady().then(() => {
     async (_event, request: BundleWriteRequest): Promise<BundleWriteResult> => {
       return writeBundleImpl(request);
     }
+  );
+
+  // §10.1 Submit flow (rev-1md.4) — three operations:
+  //   submit:promote        write `.review-state/submit-<ts>.json`
+  //   submit:sling          spawn `gt mail send` with the rev-2k7 payload
+  //   submit:abandonRound   soft-tombstone an in-progress results file
+  ipcMain.handle(
+    'submit:promote',
+    async (_event, request: SubmitPromoteRequest) => promoteDraft(request),
+  );
+  ipcMain.handle(
+    'submit:sling',
+    async (_event, request: SubmitSlingRequest) => slingViaGtMail(request),
+  );
+  ipcMain.handle(
+    'submit:abandonRound',
+    async (_event, request: SubmitAbandonRequest) => abandonRound(request),
   );
 
   // §9.2 embedded Claude pane — pty manager (rev-1md.2).
