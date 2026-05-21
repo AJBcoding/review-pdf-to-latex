@@ -144,6 +144,31 @@ function probeReviewer(): ReviewerProbe {
 
 // ─── Spawn the conversational pty ─────────────────────────────────────────
 
+/**
+ * Send a multi-line message to claude's TUI as a single user turn by
+ * wrapping it in xterm bracketed-paste markers and committing with \r.
+ *
+ * Why this matters: claude's TUI treats a bare \r as "submit the current
+ * buffer." Writing a multi-line string with \r between lines causes it to
+ * submit each line as its own turn, which produces the "Enter hangs after
+ * first round" symptom (claude is mid-response on the first line while
+ * subsequent lines pile into the input queue). Bracketed paste signals to
+ * the TUI that the content is from a paste, so newlines are taken as soft
+ * newlines (the TUI buffers them) and only the trailing \r commits.
+ *
+ * Sequence reference: xterm DEC mode 2004 (https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode).
+ * ESC [ 200 ~  = paste start; ESC [ 201 ~  = paste end.
+ */
+function writeBracketedPaste(p: IPty, text: string): void {
+  const PASTE_START = '\x1b[200~';
+  const PASTE_END = '\x1b[201~';
+  // Normalize line endings to \n inside the paste; the TUI handles \n as soft
+  // newlines under bracketed-paste mode. A stray \r mid-paste would still
+  // submit early on some TUIs, so we strip them.
+  const normalized = text.replace(/\r\n?/g, '\n');
+  p.write(`${PASTE_START}${normalized}${PASTE_END}\r`);
+}
+
 function buildPtyEnv(reviewer: ReviewerProbe): Record<string, string> {
   const env: Record<string, string> = {
     ...Object.fromEntries(
@@ -236,7 +261,15 @@ function spawnConversational(
       // empirically the slash echo + skill banner take ~150-300ms.
       setTimeout(() => {
         if (convHandle !== handle) return;
-        try { p.write(`${primingExtra}\r`); } catch { /* pty closed */ }
+        try {
+          // Single-line: bare \r. Multi-line: bracketed-paste so claude
+          // sees it as one user turn (same fix as worker pty).
+          if (primingExtra.includes('\n') || primingExtra.includes('\r')) {
+            writeBracketedPaste(p, primingExtra);
+          } else {
+            p.write(`${primingExtra}\r`);
+          }
+        } catch { /* pty closed */ }
       }, 350);
     }
   }, 500);
@@ -544,15 +577,14 @@ function spawnWorker(
     setTimeout(() => {
       if (!workerHandles.has(workerId)) return;
       try {
-        // Send the priming text as a single composite message. claude reads
-        // stdin line-buffered; for multi-line input we use \r between lines
-        // and a final \r to commit.
-        const lines = primingText.split('\n');
-        for (const line of lines) {
-          // Empty lines are sent as bare \r so claude sees a blank line in
-          // the message body rather than two separate inputs.
-          p.write(`${line}\r`);
-        }
+        // Multi-line priming uses bracketed-paste mode so claude's TUI
+        // treats the entire prompt as a single user turn. The previous
+        // approach (write each line followed by \r) made claude submit
+        // each line as its own message, which produced the "Enter hangs
+        // after first round" bug AJB hit during M7 verification.
+        // ESC [ 200 ~ ... ESC [ 201 ~ is the standard xterm bracketed-paste
+        // start/end; the final \r commits the now-multi-line buffer.
+        writeBracketedPaste(p, primingText);
       } catch { /* pty closed */ }
     }, 400);
   }, 500);
