@@ -124,9 +124,8 @@ Behavior:
 
 ### 5.1 Tools available on PDF
 
-- **Highlight + comment.** Highlight a region, comment is captured against it.
-- **Strikethrough.** Delete-this signal.
-- **Standalone comment.** Place a comment at a point without a highlight (margin-style note).
+- **Highlight + comment.** Highlight a region, comment is captured against it. (v1 PDF tool.)
+- **Strikethrough** and **standalone comment** are deferred to v2 (see open-questions table). M7 ships highlights-only; the strikethrough/standalone gestures and tool-palette surface are not yet implemented. v1 users anchor every comment to a text selection — AJB's review-against-source workflow supports this.
 
 ### 5.2 Highlight must capture underlying text (load-bearing)
 
@@ -411,19 +410,58 @@ The user works through comments. When ready: clicks Submit (`Cmd+Return`). The a
 
 2. **Writes the review bundle** to the source dir if not already current. Bundle = PDF + JSON sidecar with matching basenames, dated; see §10.4 for full contract. Cmd+S writes this same bundle without firing Submit, so often the bundle is already on disk by the time Submit runs; Submit just confirms it's up to date.
 
-3. **Slings the bundle to the target rig** via `gt mail`. Sling payload includes:
-   - `submit_file`: absolute path to `.review-state/submit-<timestamp>.json`
-   - `bundle_pdf`: absolute path to `<date> <base>-<v> (AJB edits).pdf`
-   - `bundle_json`: absolute path to `<date> <base>-<v> (AJB edits).json`
-   - `source_doc`: absolute path to the original source file
-   - `origin_rig`: the originating rig identity recorded at app launch (§10.5)
-   - `bundle_id`: the timestamp used as the round identifier
+3. **Slings the bundle to the target rig** via `gt mail`. Verbatim invocation:
+
+   ```bash
+   gt mail send "<origin_rig>/" \
+     --type task --priority 1 --permanent \
+     --subject "review-pdf submit · <base>-<source_version> · <bundle_id>" \
+     --stdin <<'BODY'
+   {
+     "schema_version": 1,
+     "kind": "review-pdf.submit",
+     "app_version": "0.x.y",
+     "bundle_id": "<bundle_id>",
+     "submit_id": "<submit_id>",
+     "origin_rig": "<origin_rig>",
+     "destination_rig": "<destination_rig>",
+     "source_doc": "<abs path>",
+     "submit_file": "<abs path>",
+     "bundle_pdf": "<abs path>",
+     "bundle_json": "<abs path>",
+     "expected_skill": "/review-pdf process",
+     "submitted_at": "<iso8601>"
+   }
+   BODY
+   ```
+
+   Notes on the envelope:
+   - **Body is a JSON string** (gt mail has no attachment surface; body is one string). Use `--stdin` to avoid shell-quoting bugs on paths with spaces (bundle filenames contain them).
+   - **All artifacts are absolute paths**; rig + app share a filesystem (gt assumption), so paths are the cheap transport — no inlined PDF bytes.
+   - **Address is the broadcast `<rig>/` form**, not skill-specific. `gt mail` routes to agents, not skills; the rig session decides whether to run `/review-pdf process` based on `expected_skill` + subject prefix.
+   - `--type task --priority 1` reflects "required processing, user actively waiting." `--permanent` ensures the round is recoverable if the rig session restarts before pickup.
 
    Target rig selection:
    - **Rig case** (most common): originating rig recorded via `--from <rig-id>` CLI flag at launch (§10.5). Submit goes there.
    - **Standalone case** (no origin recorded): a destination picker opens (§10.5); user picks Reviewer (local) or another rig.
 
-4. **App goes idle.** The current doc shows a "submitted, awaiting rig" indicator. The user manually switches to the originating rig terminal to continue (or, if standalone-via-Reviewer, the embedded pane). The Electron app does *not* watch for completion in real time; results arrive via the file watcher (§10.3) and reflect into the UI whenever they land (live if the app is open) or on next doc open (if the app was closed).
+4. **App enters the `sent_unconfirmed` state and tracks delivery.** A state machine drives the user-visible banners and disables re-submit until the round resolves:
+
+   | State | Transition out | UI |
+   |---|---|---|
+   | `idle` | `submit-click` → `pending_send` | Title-bar "Saved" indicator only |
+   | `pending_send` | `gt-exit-0` → `sent_unconfirmed`; `gt-exit-≠0` → `send_failed`; 30s deadline → `send_failed` | Spinner pill: "Slinging to `<rig>`…"; Cmd+Return hard-locked at IPC boundary |
+   | `sent_unconfirmed` | results file appears → `acknowledged`; 10min elapsed → timeout-banner overlay (still `sent_unconfirmed`) | Pill: "Submitted to `<rig>` — awaiting pickup" |
+   | `sent_unconfirmed` + timeout | user clicks Re-sling → `pending_send` | Pill + sibling banner: "Still waiting (10 min). [Re-sling] [Show gt mail status]" |
+   | `acknowledged` | first `results[]` entry → `processing` | Banner: "Round in progress — 0 of M comments processed" |
+   | `processing` | `round_status: complete` → `complete`; `round_status: failed` → `complete-failed` | Banner: "Round in progress — N of M comments processed" (live counter) |
+   | `complete` | 5s auto-clear → `idle` | Toast: "Round complete — N applied, M failed. [View results]" |
+   | `complete-failed` | user dismisses → `idle` | Persistent banner: "Round failed — see results" |
+   | `send_failed` | user clicks Retry → `pending_send` | Persistent error banner with **verbatim gt stderr** + [Retry] |
+
+   **Ack mechanism is implicit.** The rig writes `.review-state/results-<bundle_id>.json` incrementally per Gap 3; its *existence* with `round_status: in_progress` + `results: []` is the acknowledgement, the first appended entry is the heartbeat. No separate ack file. This matches §10.3's existing contract; nothing new on the rig side.
+
+   The user manually switches to the originating rig terminal to continue conversational work (or, if standalone-via-Reviewer, the embedded pane). The Electron app does *not* poll for completion; results arrive via the file watcher (§10.3) and reflect into the UI whenever they land (live if the app is open) or on next doc open (if the app was closed).
 
 5. **Rig processes the bundle.** Rig session starts fresh-context, picks up the handoff, runs `/review-pdf process <submit-file>`. The skill:
    - Reads the submit file and bundle JSON
@@ -435,12 +473,19 @@ The user works through comments. When ready: clicks Submit (`Cmd+Return`). The a
    - Finalizes `results-<ts>.json` with `round_status: complete` and `new_source_path`
    - Single git commit summarizing the round (per §10.6)
 
-6. **App reflects results.** The renderer's file watcher on `.review-state/` (§10.3) picks up the results file as it's written (incrementally per Gap 3 resume mechanism, finalized at round end). The renderer:
+6. **App reflects results + enforces concurrent-round lock.** The renderer's file watcher on `.review-state/` (§10.3) picks up the results file as it's written (incrementally per Gap 3 resume mechanism, finalized at round end). The renderer:
    - Updates statuses on matching comments in the live draft → cards re-bucket in the right drawer (§9.1)
-   - On `round_status: in_progress` (live), shows a banner: "Round in progress — N of M comments processed"
-   - On `round_status: in_progress` (discovered at doc open), shows "Previous round was interrupted — resume?" with a button that re-invokes the rig (rig case) or the Reviewer pane (standalone)
+   - On `round_status: in_progress` (live), shows: "Round in progress — N of M comments processed"
    - On `round_status: complete`, shows "Round complete — N applied, M failed [view results]" briefly; new versioned source file becomes available in the tree
-   - Seeds a fresh draft keyed on the new file's sha256: `deferred` + `needs-followup` items become fresh `open` comments with `derived_from: <original_id>` (§8.5); `applied` / `rejected` / `build_failed` are archived only
+   - Seeds a fresh draft keyed on the new file's sha256: `deferred` + `needs-followup` + `build_failed` items become fresh `open` comments with `derived_from: <original_id>` (§8.5); `applied` / `rejected` are archived only
+
+   **Concurrent-round Submit lock.** Submit is enabled iff no `results-*.json` for the current `doc_version` carries `round_status: in_progress` AND the in-memory state is in `{idle, complete, send_failed, timeout}`. Cmd+Return is hard-disabled at the IPC boundary in `pending_send`/`sent_unconfirmed` — not just visually — with a belt-and-braces 200ms IPC debounce.
+
+   **On doc open**, the renderer scans `.review-state/` for `results-*.json` matching the current `submit_id`/`doc_version`:
+   - **Fresh in-progress** (mtime ≤ 7 days, `round_status: in_progress`) → replace Submit button with the "Resume round in progress" banner; Cmd+Return becomes "focus the rig" rather than fire a new sling. Banner carries `[Abandon round]` secondary action.
+   - **Stale in-progress** (mtime > 7 days, `round_status: in_progress`) → different banner: "Previous round didn't finish (started `<date>`, N of M processed) — [Resume] [Abandon and start fresh]." No auto-resume; explicit user choice. A week-old `in_progress` almost certainly means the rig session was abandoned.
+
+   **Abandon semantics.** Renames `results-<ts>.json` → `results-<ts>.abandoned.json`. The `.abandoned` suffix is a soft tombstone: the rig's resume guard ignores it, the app's in-memory state flips to `idle`, Submit re-enables. The file is *not deleted* — partial results may include real L3 dispositions the user wants to consult.
 
 #### 10.1.1 Why this shape (load-bearing reasoning)
 
@@ -601,9 +646,7 @@ The PDF is the rendered view of the JSON. With the source PDF + the bundle JSON,
 #### PDF rendering rules (rendered_pdf side)
 
 - Use a PDF-mutation library (e.g., `pdf-lib`) to layer annotations onto a copy of the source PDF — never modify source
-- **Highlight** annotations for selected regions; popup carries the user's `comment` text
-- **Strikethrough** annotations for `kind: strikethrough` PDF comments
-- **Sticky-note** annotations for standalone-anchor or whole-region comments
+- **Highlight** annotations for selected regions; popup carries the user's `comment` text. v1 emits Highlight only; Strikethrough and Sticky-note annotation paths are deferred to v2, tracking §5.1's tool deferral.
 - Annotation `author` field = bundle's `author`
 - Color-coded by engagement level (e.g., L1 yellow, L2 blue, L3 red — exact palette TBD; consistent with right-drawer card colors)
 - Redraft text included in the popup, prefixed `[redraft] <new text>`
@@ -665,7 +708,14 @@ In standalone-via-Reviewer:
 
 If gas-town integration is disabled or `gt` is not on PATH, the picker shows only the "Reviewer (local)" option (which itself requires gas-town to actually function as a Reviewer rig — without gas-town, Reviewer falls back to a plain pty that can only L3-discuss; L1/L2 still go to `needs-followup`). The "pick another rig" option is greyed out with the popover from §9.2.5.
 
-LaTeX-specific clarification: LaTeX engine processing is only meaningful when the target rig has the engine on PATH AND has the source tree. In practice, that's the rig case. Standalone-via-Reviewer never touches LaTeX — by design.
+LaTeX-specific clarification: LaTeX engine processing is only meaningful when the target rig has the engine on PATH AND has the source tree. In practice, that's the rig case.
+
+**Standalone-via-Reviewer never touches LaTeX — enforced, not by convention.** Two gates:
+
+1. **Skill-level gate.** The rig-side `/review-pdf process` skill (§13.18, post-split) probes its own rig identity (via `gt`) AND reads the submit-file's `destination_rig`. If either says `reviewer-local` or the rig identity starts with `reviewer/`, the skill takes a no-mutate branch: L1/L2 → `status: needs-followup` with the §10.5.2 agent_note, L3 → full conversational treatment, no `apply`/`build`/`revert`/commit/version-bump invoked.
+2. **Engine-level gate (belt-and-braces).** The engine's `apply`, `build`, and `revert` atomic subcommands refuse to run when `$GT_RIG` starts with `reviewer/`, with a clear refusal message citing §10.5.2. A user who tries to invoke the engine binary directly from a Reviewer pty hits this and stops cleanly.
+
+PATH-level scrubbing is intentionally not used; the guard lives at the capability/skill boundary, matching the §10.5.2 contract surface. The pty itself is not sandboxed — a user can still manually edit files inside the Reviewer pty if they explicitly choose to (and ad-hoc Claude conversations there can edit files at the user's request). What's enforced is the *automated pipeline boundary*: no Submit-driven flow touches LaTeX in a Reviewer destination.
 
 ### 10.6 Source-file version bumping
 
