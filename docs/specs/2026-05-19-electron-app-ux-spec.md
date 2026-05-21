@@ -266,8 +266,8 @@ Rules:
 - **`open`**: default state on creation. Mutable: edit text, change level (§11), change redraft, delete.
 - **`submitted`**: set when the comment is promoted into a submit file (§10.3). Immutable from this point — frozen for audit.
 - **`applied` / `deferred` / `needs-followup` / `rejected` / `build_failed`**: terminal states written by the rig into the results file (§10.3). The app reflects these into the live draft via the results-file watcher (§10.1 step 5 / §10.3).
-- **`build_failed`**: introduced in the round-based flow. Set when an edit applied cleanly but the post-apply LaTeX build failed; the rig reverts the edit and marks this status, preserving the build-error message in `agent_note`. Does not re-raise in v1 (user re-files manually if wanted; see §10.6 for round-end handling).
-- **Round-trip re-raise**: when v1.1's draft is seeded (§10.1 step 5), `deferred` + `needs-followup` items are *copied* into the new draft as fresh `open` comments, with `derived_from: <original_id>` linking back. `applied`, `rejected`, and `build_failed` are archived only. v1.0's archived comment retains its terminal status; the v1.1 fresh comment starts the cycle over.
+- **`build_failed`**: introduced in the round-based flow. Set when an edit applied cleanly but the post-apply LaTeX build failed; the rig reverts the edit and marks this status, preserving the build-error message in `agent_note`. Re-raises into the next round's draft (see Round-trip re-raise below) — the user's intent was good, only the engine failed, so the comment deserves another pass rather than being silently archived.
+- **Round-trip re-raise**: when v1.1's draft is seeded (§10.1 step 5), `deferred` + `needs-followup` + `build_failed` items are *copied* into the new draft as fresh `open` comments, with `derived_from: <original_id>` linking back. `applied` and `rejected` are archived only. v1.0's archived comment retains its terminal status; the v1.1 fresh comment starts the cycle over.
 
 The `derived_from` chain lets the right drawer (§9.1) render "re-raised from v1.0" badges for L3 Surface items that span multiple rounds.
 
@@ -610,12 +610,16 @@ The PDF is the rendered view of the JSON. With the source PDF + the bundle JSON,
 
 #### Bundle discovery on load
 
-When the user opens a PDF, the app checks the source dir for a matching `(AJB edits).{pdf,json}` pair:
-- Sidecar JSON present → fully restore session (statuses, history, derived_from chain)
-- Sidecar JSON missing, PDF-only bundle present → degraded restore: read PDF annotations only; engagement levels missing → user re-classifies, redraft text missing → only popup text is recoverable
-- Neither present → fresh review
+When the user opens a PDF, the app checks the source dir for matching `(AJB edits).{pdf,json}` files. The bundle is keyed to the source's `<base>-<source_version>` (parsed per §10.6), **not** to its sha256 — so opening `report-1.0.pdf` finds bundles for `report-1.0` regardless of how many were written across multiple days.
+
+- **Multiple dated bundles for the same source version** (e.g., yesterday's and today's): the most recent date prefix wins; older bundles remain on disk as audit trail but are not auto-restored. Lexicographic sort on the `YYYY-MM-DD` prefix is the tiebreaker (date format is sortable by design).
+- **Sidecar JSON present** → fully restore session (statuses, history, derived_from chain).
+- **Sidecar JSON missing, PDF-only bundle present** → degraded restore: read PDF annotations only; engagement levels missing → user re-classifies, redraft text missing → only popup text is recoverable.
+- **Neither present** → fresh review.
 
 The draft (`.review-state/drafts/<sha256>.json`) is checked first regardless; if present, it's the authoritative working state. The bundle is a deliverable snapshot, not the source of truth for in-progress work.
+
+**Post-bump behavior is "fresh review, intentionally."** When the rig writes a new versioned source file (e.g., `report-1.1.pdf` per §10.6), opening that file finds no bundle keyed to `report-1.1` — and that's correct. The v1.1 file represents the rig's post-apply state; a fresh review against it produces a new dated bundle keyed to `-1.1`. The v1.0 bundle stays put as audit trail. Re-raised comments (`deferred` + `needs-followup` + `build_failed`, per §8.5) arrive via the seeded draft for v1.1, not via the bundle.
 
 ### 10.5 Standalone Submit and the destination picker
 
@@ -750,6 +754,8 @@ Engagement level is **mutable pre-submit**. The level chip on each comment card 
 ### 11.3 The rig does not reclassify
 
 If the rig disagrees with a comment's level (e.g., a v1.0 L1 looks like a structural problem to the rig), it returns `status: needs-followup` with an `agent_note` explaining why. It does **not** rewrite the level in the results file. The user remains the sole authority on intent; the rig can advise but not override.
+
+**Capability-driven `needs-followup` is also status-only, not reclassification.** When a destination rig lacks the capabilities to act on a level (e.g., Reviewer-local per §10.5.2 has no source access and so cannot apply L1/L2), the rig returns `needs-followup` with an `agent_note` describing the missing capability. The `engagement_level` is unchanged; only the status carries the signal. This keeps §11.3's rule whole — the rig is reporting "I can't act on this here," not asserting "this is the wrong level."
 
 A common pattern this produces: a v1.0 L1 returns `needs-followup`; the seeded v1.1 draft contains a fresh `open` comment with `derived_from` pointing back. The user reads the rig's note in the right drawer (status filter "Needs-followup"), decides whether to re-file at L3, edits the level on the v1.1 comment, and Submits again.
 
