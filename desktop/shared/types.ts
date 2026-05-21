@@ -332,6 +332,14 @@ export interface AppStateFile {
   /** Whether the left drawer (file tree) is collapsed to a thin strip.
    *  Persisted so the user's preference survives restart. */
   left_drawer_collapsed?: boolean;
+  /** Persisted pane widths from the splitter gutters. All fields optional;
+   *  defaults (240 / 440 / 50%) apply when missing. Clamped on apply.
+   *  Sizes are CSS pixels. */
+  layout_widths?: {
+    col_left?: number;
+    col_right?: number;
+    rd_comments_h?: number;
+  };
   /** §10.5.1 — originating rig per source-doc path. Populated when the app
    *  is launched via `review-pdf-app open <path> --from <rig-id>`; survives
    *  app restart so re-opening the same doc still routes Submit to the same

@@ -41,6 +41,10 @@
       </div>
     </aside>
 
+    <div class="gutter gutter-v" id="gutterLeft" data-gutter="left"
+         role="separator" aria-orientation="vertical"
+         aria-label="Resize file tree" tabindex="0"></div>
+
     <main class="pane middle" data-pane="document">
       <header class="pane-header pdf-nav" id="pdfNav">
         <span class="pdf-nav-title" id="pdfTitle">Document viewer</span>
@@ -136,6 +140,10 @@
       </footer>
     </main>
 
+    <div class="gutter gutter-v" id="gutterRight" data-gutter="right"
+         role="separator" aria-orientation="vertical"
+         aria-label="Resize right drawer" tabindex="0"></div>
+
     <aside class="pane right-drawer" data-pane="comments-and-claude">
       <!--
         §9 right drawer. Split into top ⅔ (comment stream) and bottom ⅓
@@ -154,6 +162,9 @@
           <div class="placeholder" id="commentStreamEmpty">No comments yet — highlight text in the PDF, pick a tool, and press Enter.</div>
         </div>
       </section>
+      <div class="gutter gutter-h" id="gutterRdSplit" data-gutter="rd-split"
+           role="separator" aria-orientation="horizontal"
+           aria-label="Resize Claude pane" tabindex="0"></div>
       <!--
         §9.2 embedded Claude pane. Hosts the conversational pty (Assistant tab,
         pinned) and any worker pty tabs spawned via the toolbar (rev-1md.3).

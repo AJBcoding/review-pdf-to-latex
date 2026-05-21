@@ -22,6 +22,7 @@ import {
   notifyDocSwitch as notifyClaudeDocSwitch,
 } from './claude-pane';
 import { mountToolbar } from './toolbar';
+import { bootSplitters, applyLayoutWidths, type LayoutWidths } from './splitter';
 import {
   mount as mountSubmit,
   executeSubmit,
@@ -427,6 +428,10 @@ const APP_STATE_DEBOUNCE_MS = 250;
  *  chevron button + Cmd+\; persisted via the existing app-state debounce. */
 let leftDrawerCollapsed = false;
 
+/** Mirror of AppStateFile.layout_widths. Updated by the splitter on every
+ *  drag commit; flushed via the existing scheduleAppStateSave debounce. */
+let layoutWidths: LayoutWidths = {};
+
 function setLeftDrawerCollapsed(next: boolean): void {
   leftDrawerCollapsed = next;
   const layout = document.querySelector<HTMLElement>('.layout');
@@ -503,6 +508,21 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
     });
   }
 
+  // Splitter gutters between the three columns + the right-drawer row split.
+  // Widths persist via AppStateFile.layout_widths; defaults apply on first run.
+  const layoutEl = document.querySelector<HTMLElement>('.layout');
+  const rightDrawerEl = document.querySelector<HTMLElement>('.right-drawer');
+  if (layoutEl && rightDrawerEl) {
+    bootSplitters({
+      layout: layoutEl,
+      rightDrawer: rightDrawerEl,
+      onChange: (delta) => {
+        layoutWidths = { ...layoutWidths, ...delta };
+        scheduleAppStateSave();
+      },
+    });
+  }
+
   // §3.3 — restore last session.
   await restoreFromAppState();
 }
@@ -560,6 +580,7 @@ async function flushAppStateSave(): Promise<void> {
     expanded_dirs: snap.expanded,
     show_hidden: snap.showHidden,
     left_drawer_collapsed: leftDrawerCollapsed,
+    layout_widths: layoutWidths,
     origin_rig_per_doc: Object.fromEntries(originRigPerDoc.entries()),
     recent_rigs: [...recentRigsList],
     last_destination_per_doc: Object.fromEntries(lastDestinationPerDoc.entries()),
@@ -598,6 +619,16 @@ async function restoreFromAppState(): Promise<void> {
   // Left-drawer collapsed state (optional field; defaults to expanded).
   if (state.left_drawer_collapsed) {
     setLeftDrawerCollapsed(true);
+  }
+  // Splitter widths: apply to the CSS variables BEFORE the tree restore so
+  // PDF.js and the Claude pane size themselves correctly on first paint.
+  if (state.layout_widths) {
+    layoutWidths = state.layout_widths;
+    const layoutEl = document.querySelector<HTMLElement>('.layout');
+    const rightDrawerEl = document.querySelector<HTMLElement>('.right-drawer');
+    if (layoutEl && rightDrawerEl) {
+      applyLayoutWidths(layoutEl, rightDrawerEl, state.layout_widths);
+    }
   }
   // Verify the remembered root still exists. If it was moved or deleted, we
   // silently fall back to the empty tree rather than throwing a modal — the

@@ -34,11 +34,25 @@ html, body, #app {
  */
 .layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 440px;
+  grid-template-columns: var(--col-left, 240px) 5px minmax(0, 1fr) 5px var(--col-right, 440px);
   grid-template-rows: 100vh;
-  gap: 1px;
   background: var(--pane-border);
 }
+
+/*
+ * Splitter gutters. 5px wide; cursor advertises direction; thin accent
+ * highlight on hover so the affordance is discoverable. Drag handlers
+ * live in renderer/index.ts and update --col-left / --col-right /
+ * --rd-comments-h on .layout (or .right-drawer for the row split).
+ * Constraints + persistence per AppStateFile.layout_widths.
+ */
+.gutter { background: var(--pane-border); user-select: none; }
+.gutter-v { cursor: col-resize; }
+.gutter-h { cursor: row-resize; height: 5px; }
+.gutter:hover, .gutter.is-dragging { background: var(--accent); }
+.gutter:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+.layout.left-collapsed #gutterLeft { pointer-events: none; opacity: 0.3; }
 
 .pane {
   background: var(--pane-bg);
@@ -937,7 +951,7 @@ html, body, #app {
  * advertise re-expansion. Persisted via AppStateFile.left_drawer_collapsed.
  */
 .layout.left-collapsed {
-  grid-template-columns: 28px minmax(0, 1fr) 440px;
+  grid-template-columns: 28px 5px minmax(0, 1fr) 5px var(--col-right, 440px);
 }
 .left-collapsed .left-drawer .tree-header-title,
 .left-collapsed .left-drawer .tree-header-controls,
@@ -1122,8 +1136,14 @@ html, body, #app {
   flex-direction: column;
   min-height: 0;
 }
-.rd-comments { flex: 1 1 0; border-bottom: 1px solid var(--pane-border); }
-.rd-claude   { flex: 1 1 0; min-height: 320px; }
+/*
+ * Right-drawer row split. Comments height is driven by --rd-comments-h
+ * (set on .right-drawer by the JS drag handler). Default 50% so the
+ * Claude pane gets equal real estate. Clamped in JS to [120px,
+ * container - 280px] so neither side can fully collapse.
+ */
+.rd-comments { flex: 0 0 var(--rd-comments-h, 50%); border-bottom: 1px solid var(--pane-border); }
+.rd-claude   { flex: 1 1 0; min-height: 280px; }
 
 /*
  * §9.2 embedded Claude pane shell.
