@@ -4,6 +4,7 @@ import type {
   BundleWriteRequest,
   DraftsFile,
   ElectronAPI,
+  FreshStartParams,
   PtyDataEvent,
   PtyExitEvent,
   PtyStartParams,
@@ -11,6 +12,10 @@ import type {
   SubmitAbandonRequest,
   SubmitPromoteRequest,
   SubmitSlingRequest,
+  WorkerDataEvent,
+  WorkerExitEvent,
+  WorkerProgressEvent,
+  WorkerStartParams,
 } from '@shared/types';
 
 // Expose a minimal, typed IPC surface to the renderer.
@@ -81,6 +86,32 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('pty:onExit', listener);
     return () => { ipcRenderer.off('pty:onExit', listener); };
   },
+
+  // ─── §9.2.6 toolbar / worker ptys (rev-1md.3) ─────────────────────────
+  startWorkerPty: (params: WorkerStartParams) => ipcRenderer.invoke('pty:startWorker', params),
+  workerPtyInput: (workerId: string, data: string) => {
+    ipcRenderer.send('pty:workerInput', workerId, data);
+  },
+  resizeWorkerPty: (workerId: string, cols: number, rows: number) => {
+    ipcRenderer.send('pty:workerResize', workerId, cols, rows);
+  },
+  killWorkerPty: (workerId: string) => ipcRenderer.invoke('pty:killWorker', workerId),
+  onWorkerPtyData: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: WorkerDataEvent) => cb(event);
+    ipcRenderer.on('pty:onWorkerData', listener);
+    return () => { ipcRenderer.off('pty:onWorkerData', listener); };
+  },
+  onWorkerPtyExit: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: WorkerExitEvent) => cb(event);
+    ipcRenderer.on('pty:onWorkerExit', listener);
+    return () => { ipcRenderer.off('pty:onWorkerExit', listener); };
+  },
+  onWorkerPtyProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: WorkerProgressEvent) => cb(event);
+    ipcRenderer.on('pty:onWorkerProgress', listener);
+    return () => { ipcRenderer.off('pty:onWorkerProgress', listener); };
+  },
+  freshStartPty: (params: FreshStartParams) => ipcRenderer.invoke('pty:freshStart', params),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

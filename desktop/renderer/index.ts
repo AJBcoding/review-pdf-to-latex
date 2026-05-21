@@ -21,6 +21,7 @@ import {
   ensureSpawned as ensureClaudePaneSpawned,
   notifyDocSwitch as notifyClaudeDocSwitch,
 } from './claude-pane';
+import { mountToolbar } from './toolbar';
 import {
   mount as mountSubmit,
   executeSubmit,
@@ -323,9 +324,20 @@ function bootClaudePane(): void {
   const error = document.getElementById('claudeError');
   const identity = document.getElementById('claudeIdentity');
   const body = document.getElementById('claudeBody');
-  if (!empty || !term || !error || !identity || !body) return;
+  const tabs = document.getElementById('claudeTabs');
+  const progressStrip = document.getElementById('progressStrip');
+  const tasksToggle = document.getElementById('tasksPanelToggle') as HTMLButtonElement | null;
+  const tasksCount = document.getElementById('tasksPanelCount');
+  const tasksPanel = document.getElementById('tasksPanel');
+  const tasksList = document.getElementById('tasksPanelList');
+  const tasksEmpty = document.getElementById('tasksPanelEmpty');
+  const tasksClose = document.getElementById('tasksPanelClose') as HTMLButtonElement | null;
+  if (!empty || !term || !error || !identity || !body || !tabs ||
+      !progressStrip || !tasksToggle || !tasksCount || !tasksPanel ||
+      !tasksList || !tasksEmpty || !tasksClose) return;
   mountClaudePane({
-    empty, term, error, identity, body,
+    empty, term, error, identity, body, tabs, progressStrip,
+    tasksToggle, tasksCount, tasksPanel, tasksList, tasksEmpty, tasksClose,
     // App theme is dark in v1 (§13.6 toggle is a spike-only affordance).
     themeMode: 'dark',
   });
@@ -334,6 +346,60 @@ function bootClaudePane(): void {
   window.addEventListener('claude-pane:restart-requested', () => {
     if (!docState.path) return;
     void ensureClaudePaneSpawned({ docSourceDir: dirnameOf(docState.path) });
+  });
+
+  bootToolbar();
+}
+
+/** §9.2.6 right-drawer toolbar (rev-1md.3). Wires the three buttons + their
+ *  modals + the context provider that exposes current doc state to the
+ *  toolbar at click-time. */
+function bootToolbar(): void {
+  const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
+  const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
+  const freshBtn = document.getElementById('toolbarFreshStart') as HTMLButtonElement | null;
+  const toolbar = document.getElementById('claudeToolbar');
+  const ctxModal = document.getElementById('ctxModal');
+  const ctxBundle = document.getElementById('ctxBundle');
+  const ctxPrompt = document.getElementById('ctxPrompt') as HTMLTextAreaElement | null;
+  const ctxIterations = document.getElementById('ctxIterations') as HTMLInputElement | null;
+  const ctxSubmit = document.getElementById('ctxSubmit') as HTMLButtonElement | null;
+  const slingModal = document.getElementById('slingModal');
+  const slingBundle = document.getElementById('slingBundle');
+  const slingPrompt = document.getElementById('slingPrompt') as HTMLTextAreaElement | null;
+  const slingDestination = document.getElementById('slingDestination') as HTMLInputElement | null;
+  const slingHint = document.getElementById('slingHint');
+  const slingSubmit = document.getElementById('slingSubmit') as HTMLButtonElement | null;
+  const freshModal = document.getElementById('freshModal');
+  const freshHandoff = document.getElementById('freshHandoff') as HTMLTextAreaElement | null;
+  const freshSubmit = document.getElementById('freshSubmit') as HTMLButtonElement | null;
+  if (!toolbar || !createBtn || !slingBtn || !freshBtn ||
+      !ctxModal || !ctxBundle || !ctxPrompt || !ctxIterations || !ctxSubmit ||
+      !slingModal || !slingBundle || !slingPrompt || !slingDestination || !slingHint || !slingSubmit ||
+      !freshModal || !freshHandoff || !freshSubmit) return;
+  mountToolbar({
+    refs: {
+      toolbar, createBtn, slingBtn, freshBtn,
+      ctxModal, ctxBundle, ctxPrompt, ctxIterations, ctxSubmit,
+      slingModal, slingBundle, slingPrompt, slingDestination, slingHint, slingSubmit,
+      freshModal, freshHandoff, freshSubmit,
+    },
+    ctx: {
+      docPath: () => docState.path,
+      docSourceDir: () => docState.path ? dirnameOf(docState.path) : '',
+      currentPage: () => viewerRef?.currentPage ?? null,
+      pageCount: () => viewerRef?.totalPages ?? null,
+      selection: () => {
+        const sel = docState.lastSelection;
+        if (!sel) return null;
+        return {
+          page: sel.page,
+          region: sel.region,
+          highlightedText: sel.highlighted_text,
+        };
+      },
+      comments: () => docState.comments,
+    },
   });
 }
 
@@ -956,6 +1022,10 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   // Safe to no-op when boot ordering hasn't wired them up yet.
   fileTree?.setActiveFile(path);
   scheduleAppStateSave();
+  // rev-1md.3 — let the toolbar re-evaluate its enabled state now that a
+  // doc is active. Pty-spawn-state is already broadcast separately by
+  // claude-pane via 'claude-pane:spawn-state-changed'.
+  window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
 }
 
 async function loadDraftsForCurrentDoc(): Promise<void> {

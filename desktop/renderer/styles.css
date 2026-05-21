@@ -1186,3 +1186,424 @@ html, body, #app {
   cursor: pointer;
 }
 .rd-claude-restart:hover { filter: brightness(1.1); }
+
+/*
+ * §9.2.6 toolbar (rev-1md.3). Three icon buttons above the conversational
+ * pty: ✨ Create Context / 🪃 Sling / 🌅 Fresh Start. Compact band — the
+ * Claude pane sits in the bottom ⅓ of the right drawer and pixels are
+ * precious.
+ */
+.rd-claude-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 0;
+  background: var(--pane-bg);
+}
+.rd-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.rd-toolbar-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: #2a2a2a;
+  border-color: var(--pane-border);
+}
+.rd-toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.rd-toolbar-icon { font-size: 14px; line-height: 1; }
+.rd-toolbar-label { font-weight: 500; }
+
+/* §9.2.7 inline β progress strip. Sits above the tabs; one row per active
+ * worker. Compact, single-line per row; the [log] button opens the worker
+ * tab even if it was dropped to γ. */
+.rd-progress-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  background: #161616;
+  border-top: 1px solid var(--pane-border);
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 11px;
+}
+.rd-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  min-height: 16px;
+}
+.rd-progress-row[data-state="running"] .rd-progress-icon { color: var(--accent); }
+.rd-progress-row[data-state="done"] .rd-progress-icon { color: #6fd589; }
+.rd-progress-row[data-state="failed"] .rd-progress-icon { color: #f87171; }
+.rd-progress-icon {
+  flex: 0 0 12px;
+  text-align: center;
+  font-size: 11px;
+}
+.rd-progress-text {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rd-progress-row .rd-progress-text { color: var(--text); }
+.rd-progress-actions {
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.rd-progress-actions button {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  font: inherit;
+  font-size: 10px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.rd-progress-actions button:hover {
+  color: var(--text);
+  border-color: var(--pane-border);
+}
+
+/*
+ * §9.2.6 toolbar modals. Three modals share the same shell (.toolbar-modal);
+ * specific bodies fill in mode/destination/handoff content. Anchored mid-
+ * screen because the user's attention is already on the right drawer when
+ * they click a toolbar button.
+ */
+.toolbar-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 115;
+}
+.toolbar-modal[hidden] { display: none; }
+.toolbar-modal-card {
+  width: min(560px, 92vw);
+  max-height: 80vh;
+  background: #1c1c1c;
+  border: 1px solid var(--pane-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.toolbar-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 13px;
+}
+.toolbar-modal-title { font-weight: 600; color: var(--text); }
+.toolbar-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.toolbar-modal-close:hover { color: var(--text); }
+.toolbar-modal-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.toolbar-modal-bundle {
+  background: #0e0e0e;
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.toolbar-modal-bundle strong { color: var(--text); font-weight: 600; }
+.toolbar-modal-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.toolbar-modal-textarea, .toolbar-modal-input {
+  width: 100%;
+  background: #0e0e0e;
+  color: var(--text);
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+  resize: vertical;
+}
+.toolbar-modal-input { font-family: ui-monospace, monospace; font-size: 12px; }
+.toolbar-modal-textarea:focus, .toolbar-modal-input:focus {
+  border-color: var(--accent);
+}
+.toolbar-modal-mode {
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #161616;
+}
+.toolbar-modal-mode legend {
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.toolbar-modal-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.toolbar-modal-radio input[type="radio"] {
+  accent-color: var(--accent);
+}
+.toolbar-modal-num {
+  width: 60px;
+  background: #0e0e0e;
+  color: var(--text);
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  outline: none;
+}
+.toolbar-modal-num:focus { border-color: var(--accent); }
+.toolbar-modal-num:disabled { opacity: 0.5; cursor: not-allowed; }
+.toolbar-modal-hint {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+.toolbar-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--pane-border);
+}
+.toolbar-modal-cancel, .toolbar-modal-submit {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid var(--pane-border);
+}
+.toolbar-modal-cancel {
+  background: transparent;
+  color: var(--muted);
+}
+.toolbar-modal-cancel:hover { color: var(--text); background: #2a2a2a; }
+.toolbar-modal-submit.is-primary {
+  background: #2a5a8a;
+  color: var(--text);
+  border-color: #3a7aba;
+  font-weight: 600;
+}
+.toolbar-modal-submit.is-primary:hover:not(:disabled) { background: #3a6a9a; }
+.toolbar-modal-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/*
+ * §9.2.7 γ tasks panel. Slide-in drawer from the right edge. Lists running,
+ * recently-completed, and failed workers with [log] + [↻ retry] actions.
+ */
+.rd-tasks-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.rd-tasks-toggle:hover {
+  color: var(--text);
+  background: #2a2a2a;
+  border-color: var(--pane-border);
+}
+.rd-tasks-toggle[aria-expanded="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: #143352;
+}
+.rd-tasks-toggle-icon { font-size: 12px; }
+.rd-tasks-toggle-count {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+.tasks-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 90vw);
+  background: #1c1c1c;
+  border-left: 1px solid var(--pane-border);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  z-index: 105;
+}
+.tasks-panel[hidden] { display: none; }
+.tasks-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tasks-panel-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.tasks-panel-close:hover { color: var(--text); }
+.tasks-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.tasks-panel-empty {
+  padding: 14px;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
+.tasks-panel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.tasks-panel-row[data-state="running"] { border-left: 3px solid var(--accent); padding-left: 11px; }
+.tasks-panel-row[data-state="done"]    { border-left: 3px solid #6fd589; padding-left: 11px; opacity: 0.85; }
+.tasks-panel-row[data-state="failed"]  { border-left: 3px solid #f87171; padding-left: 11px; }
+.tasks-panel-row[data-state="killed"]  { border-left: 3px solid var(--muted); padding-left: 11px; opacity: 0.6; }
+.tasks-panel-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.tasks-panel-row-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.tasks-panel-row-summary {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tasks-panel-row-meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+.tasks-panel-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.tasks-panel-row-actions button {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.tasks-panel-row-actions button:hover { color: var(--text); background: #2a2a2a; }
+
+/*
+ * Worker pty tabs and per-worker terminal mount points. Each worker terminal
+ * is a sibling of #claudeTerm; the active one is shown, others are hidden via
+ * inline display:none from claude-pane.ts.
+ */
+.rd-claude-tab[data-pty-kind="worker"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.rd-claude-tab-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.rd-claude-tab-close:hover { color: #f87171; }
+.rd-claude-worker-term {
+  position: absolute;
+  inset: 0;
+  padding: 4px 0 0 4px;
+}
+.rd-claude-worker-term .xterm { height: 100%; width: 100%; }
+.rd-claude-worker-term .xterm-viewport { background-color: transparent !important; }

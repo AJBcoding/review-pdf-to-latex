@@ -162,11 +162,57 @@
         <header class="pane-header rd-claude-header">
           <span class="rd-claude-title">Claude</span>
           <span class="rd-claude-identity" id="claudeIdentity" hidden></span>
+          <!--
+            §9.2.7 γ tasks panel toggle — small badge in the header that
+            opens the tasks drawer. Hidden until at least one worker exists
+            so the empty state stays clean.
+          -->
+          <button id="tasksPanelToggle" class="rd-tasks-toggle" type="button"
+                  hidden aria-expanded="false"
+                  title="Open tasks panel (worker history)">
+            <span class="rd-tasks-toggle-icon" aria-hidden="true">⚙</span>
+            <span class="rd-tasks-toggle-count" id="tasksPanelCount">0</span>
+          </button>
         </header>
         <!--
+          §9.2.6 toolbar — three icon buttons above the conversational pty.
+          Picks landed in bd rev-ul7: ✨ Create Context / 🪃 Sling / 🌅 Fresh
+          Start. Hover copy mirrors that bead's decision. Sling is greyed out
+          when gas-town is absent (popover explains).
+        -->
+        <div class="rd-claude-toolbar" id="claudeToolbar" role="toolbar"
+             aria-label="Claude worker toolbar">
+          <button class="rd-toolbar-btn" id="toolbarCreateContext" type="button"
+                  data-action="create-context"
+                  title="Spawn worker with current context" disabled>
+            <span class="rd-toolbar-icon" aria-hidden="true">✨</span>
+            <span class="rd-toolbar-label">Context</span>
+          </button>
+          <button class="rd-toolbar-btn" id="toolbarSling" type="button"
+                  data-action="sling"
+                  title="Sling to another rig or crew" disabled>
+            <span class="rd-toolbar-icon" aria-hidden="true">🪃</span>
+            <span class="rd-toolbar-label">Sling</span>
+          </button>
+          <button class="rd-toolbar-btn" id="toolbarFreshStart" type="button"
+                  data-action="fresh-start"
+                  title="Reset conversation — handoff + restart" disabled>
+            <span class="rd-toolbar-icon" aria-hidden="true">🌅</span>
+            <span class="rd-toolbar-label">Fresh</span>
+          </button>
+        </div>
+        <!--
+          §9.2.7 inline β progress strip. Empty when no workers active;
+          otherwise one row per active worker with [log] expand. Compact band
+          right under the toolbar so the user's eyeline stays on Claude.
+        -->
+        <div class="rd-progress-strip" id="progressStrip" hidden
+             aria-label="Worker progress"></div>
+        <!--
           Tab strip. Assistant tab is pinned (the conversational pty). Worker
-          tabs (Create Context spawns) get added at runtime by rev-1md.3, up
-          to 3 worker tabs total.
+          tabs (Create Context spawns) get added at runtime, up to 3 tabs.
+          Sling workers go straight to γ. 4th+ Create Context spawn lands
+          γ-only.
         -->
         <div class="rd-claude-tabs" id="claudeTabs" role="tablist" aria-label="Claude sessions">
           <button class="rd-claude-tab is-active" id="claudeTabAssistant"
@@ -177,8 +223,8 @@
         </div>
         <!--
           Mount point. claude-pane.ts attaches an xterm.js Terminal to this
-          div on first PDF open (lazy spawn, §9.2.2). Until then the empty
-          state below is shown.
+          div on first PDF open (lazy spawn, §9.2.2). Worker terminals
+          attach to per-worker mount divs inserted next to it at runtime.
         -->
         <div class="rd-claude-body" id="claudeBody">
           <div class="rd-claude-empty" id="claudeEmpty">
@@ -229,6 +275,120 @@
                 disabled>Send</button>
       </footer>
       <div id="destPickerHint" class="dest-picker-hint"></div>
+    </div>
+  </div>
+
+  <!--
+    §9.2.6 toolbar modals (rev-1md.3). One per button; only one is open at
+    a time. Modal-Dialog pattern from the destination picker — esc / click-
+    outside dismisses, primary action commits.
+  -->
+  <div id="ctxModal" class="toolbar-modal" hidden role="dialog" aria-modal="true"
+       aria-label="Create Context worker">
+    <div class="toolbar-modal-card" role="document">
+      <header class="toolbar-modal-header">
+        <span class="toolbar-modal-title">✨ Create Context</span>
+        <button class="toolbar-modal-close" type="button"
+                data-action="close" aria-label="Cancel">✗</button>
+      </header>
+      <div class="toolbar-modal-body">
+        <div class="toolbar-modal-bundle" id="ctxBundle"></div>
+        <label class="toolbar-modal-label" for="ctxPrompt">Prompt</label>
+        <textarea id="ctxPrompt" class="toolbar-modal-textarea" rows="4"
+                  placeholder="What should this worker do with the bundled context?"></textarea>
+        <fieldset class="toolbar-modal-mode" aria-label="Run mode">
+          <legend>Run mode</legend>
+          <label class="toolbar-modal-radio">
+            <input type="radio" name="ctxMode" value="single-shot" checked>
+            <span>Single-shot — interactive conversation</span>
+          </label>
+          <label class="toolbar-modal-radio">
+            <input type="radio" name="ctxMode" value="ralph-loop">
+            <span>Ralph loop — iterate N times:</span>
+            <input id="ctxIterations" class="toolbar-modal-num"
+                   type="number" min="2" max="50" step="1" value="5" disabled>
+          </label>
+        </fieldset>
+      </div>
+      <footer class="toolbar-modal-footer">
+        <button class="toolbar-modal-cancel" type="button" data-action="close">Cancel</button>
+        <button class="toolbar-modal-submit is-primary" id="ctxSubmit" type="button">
+          Spawn worker
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="slingModal" class="toolbar-modal" hidden role="dialog" aria-modal="true"
+       aria-label="Sling worker">
+    <div class="toolbar-modal-card" role="document">
+      <header class="toolbar-modal-header">
+        <span class="toolbar-modal-title">🪃 Sling</span>
+        <button class="toolbar-modal-close" type="button"
+                data-action="close" aria-label="Cancel">✗</button>
+      </header>
+      <div class="toolbar-modal-body">
+        <div class="toolbar-modal-bundle" id="slingBundle"></div>
+        <label class="toolbar-modal-label" for="slingPrompt">Prompt</label>
+        <textarea id="slingPrompt" class="toolbar-modal-textarea" rows="3"
+                  placeholder="What should the recipient do with this context?"></textarea>
+        <label class="toolbar-modal-label" for="slingDestination">Destination</label>
+        <input id="slingDestination" class="toolbar-modal-input" type="text"
+               autocomplete="off" spellcheck="false"
+               placeholder="mayor, rig-id, or crew/agent (e.g. report-engine/anthony)">
+        <div class="toolbar-modal-hint" id="slingHint"></div>
+      </div>
+      <footer class="toolbar-modal-footer">
+        <button class="toolbar-modal-cancel" type="button" data-action="close">Cancel</button>
+        <button class="toolbar-modal-submit is-primary" id="slingSubmit" type="button">
+          Sling
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="freshModal" class="toolbar-modal" hidden role="dialog" aria-modal="true"
+       aria-label="Fresh Start">
+    <div class="toolbar-modal-card" role="document">
+      <header class="toolbar-modal-header">
+        <span class="toolbar-modal-title">🌅 Fresh Start</span>
+        <button class="toolbar-modal-close" type="button"
+                data-action="close" aria-label="Cancel">✗</button>
+      </header>
+      <div class="toolbar-modal-body">
+        <div class="toolbar-modal-hint">
+          Kills the conversational pty and respawns it with the handoff
+          summary as a priming message. The new session starts with the
+          standard skill activation, then this note as the first turn.
+        </div>
+        <label class="toolbar-modal-label" for="freshHandoff">Handoff summary</label>
+        <textarea id="freshHandoff" class="toolbar-modal-textarea" rows="5"
+                  placeholder="What's been done? What matters next? (Optional — empty = clean restart.)"></textarea>
+      </div>
+      <footer class="toolbar-modal-footer">
+        <button class="toolbar-modal-cancel" type="button" data-action="close">Cancel</button>
+        <button class="toolbar-modal-submit is-primary" id="freshSubmit" type="button">
+          Restart with handoff
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <!--
+    §9.2.7 γ tasks panel. Slide-in drawer listing running, completed, and
+    failed workers. [log] opens the worker's mounted terminal even if its
+    tab was dropped; [↻ retry] respawns with the same bundle + prompt.
+  -->
+  <div id="tasksPanel" class="tasks-panel" hidden role="dialog" aria-modal="false"
+       aria-label="Tasks">
+    <header class="tasks-panel-header">
+      <span class="tasks-panel-title">Tasks</span>
+      <button id="tasksPanelClose" class="tasks-panel-close" type="button"
+              aria-label="Close tasks panel">✗</button>
+    </header>
+    <ul id="tasksPanelList" class="tasks-panel-list" aria-label="Worker history"></ul>
+    <div id="tasksPanelEmpty" class="tasks-panel-empty">
+      No worker tasks yet. Spawn one from the ✨/🪃 toolbar buttons.
     </div>
   </div>
 
