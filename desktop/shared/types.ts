@@ -332,6 +332,10 @@ export interface AppStateFile {
   /** Whether the left drawer (file tree) is collapsed to a thin strip.
    *  Persisted so the user's preference survives restart. */
   left_drawer_collapsed?: boolean;
+  /** Whether to pass `--dangerously-skip-permissions` when spawning the
+   *  embedded claude pty. Defaults to true (no per-directory trust prompts);
+   *  set false in Settings to opt back in. */
+  claude_dangerous_skip_permissions?: boolean;
   /** Persisted pane widths from the splitter gutters. All fields optional;
    *  defaults (240 / 440 / 50%) apply when missing. Clamped on apply.
    *  Sizes are CSS pixels. */
@@ -744,6 +748,11 @@ export interface PtyStartParams {
   docSourceDir: string;
   cols?: number;
   rows?: number;
+  /** Pass `--dangerously-skip-permissions` to the claude CLI. Default is
+   *  true (matches the user's gas-town workflow — fresh cwd doesn't stall
+   *  on the trust prompt). Set false to opt back into per-directory prompts.
+   *  Persisted via AppStateFile.claude_dangerous_skip_permissions. */
+  dangerouslySkipPermissions?: boolean;
 }
 
 export type PtyStartResult =
@@ -846,6 +855,9 @@ export interface WorkerStartParams {
   docSourceDir: string;
   cols?: number;
   rows?: number;
+  /** Same flag as conversational pty — defaults true; set false to opt back
+   *  into per-directory permission prompts. */
+  dangerouslySkipPermissions?: boolean;
   /** §9.2.6 bundle. */
   bundle: ToolbarContextBundle;
   /** Create Context only. Ignored for sling workers. */
@@ -933,6 +945,9 @@ export interface FreshStartParams {
   docSourceDir: string;
   cols?: number;
   rows?: number;
+  /** Same flag as conversational pty — defaults true; set false to opt back
+   *  into per-directory permission prompts. */
+  dangerouslySkipPermissions?: boolean;
 }
 
 export type FreshStartResult =

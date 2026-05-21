@@ -188,9 +188,15 @@ function spawnConversational(
   const cols = Math.max(20, params.cols ?? 80);
   const rows = Math.max(5, params.rows ?? 24);
 
+  // AJB ask: default to --dangerously-skip-permissions so a fresh source dir
+  // doesn't stall the pane on the trust prompt. Toggle in Settings to opt
+  // back into per-directory prompts (params.dangerouslySkipPermissions = false).
+  const skipPerms = params.dangerouslySkipPermissions !== false;
+  const claudeArgs: string[] = skipPerms ? ['--dangerously-skip-permissions'] : [];
+
   let p: IPty;
   try {
-    p = pty.spawn(claudeBin, [], {
+    p = pty.spawn(claudeBin, claudeArgs, {
       name: 'xterm-256color',
       cols,
       rows,
@@ -286,6 +292,7 @@ function freshStart(
       docSourceDir: params.docSourceDir,
       cols: params.cols,
       rows: params.rows,
+      dangerouslySkipPermissions: params.dangerouslySkipPermissions,
     },
     buildFreshStartPriming(params.handoffNotes),
   );
@@ -471,9 +478,15 @@ function spawnWorker(
   const cols = Math.max(20, params.cols ?? 100);
   const rows = Math.max(5, params.rows ?? 24);
 
+  // AJB ask: default to --dangerously-skip-permissions so a fresh source dir
+  // doesn't stall the pane on the trust prompt. Toggle in Settings to opt
+  // back into per-directory prompts (params.dangerouslySkipPermissions = false).
+  const skipPerms = params.dangerouslySkipPermissions !== false;
+  const claudeArgs: string[] = skipPerms ? ['--dangerously-skip-permissions'] : [];
+
   let p: IPty;
   try {
-    p = pty.spawn(claudeBin, [], {
+    p = pty.spawn(claudeBin, claudeArgs, {
       name: 'xterm-256color',
       cols,
       rows,
