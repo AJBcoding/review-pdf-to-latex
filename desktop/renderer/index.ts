@@ -1,11 +1,15 @@
 import type {
   AppStateFile,
   CommentPayload,
+  CommentStatus,
   DraftsFile,
   EngagementLevel,
   EngineResult,
   PdfHealthResult,
   ReadPdfBytesResult,
+  ResultEntry,
+  ResultsEvent,
+  ResultsFile,
 } from '@shared/types';
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
 import { FileTree } from './tree';
@@ -62,9 +66,27 @@ interface DocState {
   /** In-memory mirror of the drafts file. The render-the-stream code reads
    *  this — main only sees it on debounced writes. */
   comments: CommentPayload[];
+  /** rev-1md.5: per-submit_id tracking of the latest results file we've seen
+   *  for this doc. Drives the round-status banner (showing the freshest
+   *  state) and lets us recognize "we already seeded a v1.1 draft for this
+   *  results_id" so re-opening the doc doesn't double-seed. */
+  rounds: Map<string, ResultsRoundState>;
 }
 
-const docState: DocState = { path: '', sha256: '', lastSelection: null, comments: [] };
+interface ResultsRoundState {
+  submit_id: string;
+  results_id: string;
+  filePath: string;
+  results: ResultsFile;
+  /** True once we've written the seeded v1.1 draft for this completed round.
+   *  Prevents double-seeding when the same results file re-emits (e.g., the
+   *  user re-opens the doc later). */
+  seeded: boolean;
+}
+
+const docState: DocState = {
+  path: '', sha256: '', lastSelection: null, comments: [], rounds: new Map(),
+};
 let activeTool: Tool = 'comment';
 let viewerRef: PdfViewer | null = null;
 
@@ -99,6 +121,7 @@ async function flushDraftsWrite(): Promise<void> {
 
 async function init() {
   wireDraftsQuitFlush();
+  wireResultsEvents();
   await mountStartupDiagnostics();
   bootProjectOpenFlow();
   await bootLeftDrawerAndPalette();
@@ -418,16 +441,22 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     await flushDraftsWrite();
   }
   // Reset per-doc state. selection cache and in-memory drafts belong to the
-  // previous document.
+  // previous document. Results-watcher state likewise resets so banners for
+  // the previous doc's rounds don't bleed onto this one.
   docState.path = path;
   docState.sha256 = '';
   docState.lastSelection = null;
   docState.comments = [];
+  docState.rounds = new Map();
   focusedCommentId = null;
   editingCommentId = null;
   clearInput();
   renderAllCards();
   updateAnchorMeta();
+  hideRoundBanner();
+  // Stop watching the previous doc's `.review-state/` (no-op when nothing
+  // was being watched). Stop is awaitable but we don't need the result.
+  void window.electronAPI.watchResultsStop();
 
   // Kick off bytes + health in parallel. Both round-trip through main; running
   // them concurrently shaves ~engine-startup-time off the visible load latency.
@@ -449,9 +478,27 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
 
   docState.sha256 = bytesResult.sha256;
 
-  // Drafts load races bytes-render — both are independent of each other,
-  // and rendering the cards before the canvas is ready is fine.
-  void loadDraftsForCurrentDoc();
+  // §10.1 step 6 / §10.3 — load drafts *before* starting the results
+  // watcher. The watcher's initial scan immediately emits events for
+  // pre-existing results files; if drafts haven't populated docState.comments
+  // by then, those events find no matching ids and drop their dispositions
+  // on the floor. Serializing the two avoids that race; loadDrafts is a
+  // single readFile so the added latency is negligible.
+  await loadDraftsForCurrentDoc();
+  // Bail if the user opened a different doc while drafts were loading —
+  // applies-to-different-doc state is meaningless now.
+  if (docState.path !== path || docState.sha256 !== bytesResult.sha256) {
+    // continue with viewer load below; the new loadPdf will have already
+    // reset state — nothing to do here.
+  } else {
+    // Start watching `.review-state/`. Failures aren't fatal; we just flash
+    // the anchor meta so the user knows reflection is offline.
+    void window.electronAPI.watchResultsStart(path, bytesResult.sha256).then((res) => {
+      if (!res.ok) {
+        flashAnchorMeta(`Results watcher failed (${res.reason ?? 'unknown'}): ${res.error ?? ''}`);
+      }
+    });
+  }
 
   try {
     showViewer(h);
@@ -932,20 +979,24 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   card.className = 'comment-card';
   card.dataset.level = c.engagement_level;
   card.dataset.id = c.id;
+  // rev-1md.5: status drives the badge + the dimmed-for-terminal-state look.
+  // Default to 'open' if a legacy draft predates the status field.
+  card.dataset.status = c.status ?? 'open';
   // rev-680: cards are individually focusable so Tab walks them and the
   // spec's `j`/`k`/`Enter` bindings have a clear "currently focused card"
   // to operate on. role=button so AT users hear "button" semantics — click
   // and Enter both reveal the anchor.
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
-  card.setAttribute('aria-label', `${labelFor(c.engagement_level)} on page ${c.anchor.page}`);
+  // For comments with a `new_anchor` (rig moved the text on apply), the
+  // reveal points at the new location — that's where the resulting text
+  // actually lives. Original anchor is kept on the comment for audit only.
+  const revealAnchor = c.new_anchor ?? c.anchor;
+  card.setAttribute('aria-label', `${labelFor(c.engagement_level)} on page ${revealAnchor.page}`);
   card.addEventListener('focus', () => { focusedCommentId = c.id; });
-  // Click to reveal: jumps to the anchor's page and repaints the persistent
-  // highlight at the captured PDF-space region. Stable across zoom because
-  // the region was stored in PDF points.
   card.addEventListener('click', () => {
     if (!viewerRef) return;
-    void viewerRef.revealAnchor(c.anchor.page, c.anchor.region);
+    void viewerRef.revealAnchor(revealAnchor.page, revealAnchor.region);
   });
 
   const head = document.createElement('div');
@@ -953,11 +1004,27 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   const level = document.createElement('span');
   level.className = 'comment-card-level';
   level.textContent = labelFor(c.engagement_level);
+  const status = document.createElement('span');
+  status.className = 'comment-card-status';
+  status.textContent = statusLabel(c.status ?? 'open');
+  // §8.5 — re-raised v1.1 comment. Card retains the derived_from link so
+  // the user can see at a glance "this is a follow-on from a prior round".
+  // Click-through to the original submit file is deferred to a later
+  // milestone (we don't have an archived-submit viewer yet).
+  let derived: HTMLSpanElement | null = null;
+  if (c.derived_from) {
+    derived = document.createElement('span');
+    derived.className = 'comment-card-derived';
+    derived.textContent = '(re-raised from a prior round)';
+    derived.title = `derived_from: ${c.derived_from}`;
+  }
   const anchor = document.createElement('span');
   anchor.className = 'comment-card-anchor';
-  const r = c.anchor.region;
-  anchor.textContent = `· p.${c.anchor.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)}`;
-  head.append(level, anchor, buildCardActions(c));
+  const r = revealAnchor.region;
+  anchor.textContent = `· p.${revealAnchor.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)}`;
+  head.append(level, status);
+  if (derived) head.append(derived);
+  head.append(anchor, buildCardActions(c));
 
   const quote = document.createElement('div');
   quote.className = 'comment-card-quote';
@@ -977,8 +1044,29 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
     redraft.textContent = c.redraft;
     card.append(redraft);
   }
+  // Agent note from the rig (status-dependent: build error excerpt, redirect-
+  // to-L3 advice, terse confirmation, etc.). Rendered as a quoted aside under
+  // the user's body so it's clearly someone else's voice.
+  if (c.agent_note) {
+    const note = document.createElement('div');
+    note.className = 'comment-card-agent-note';
+    note.textContent = c.agent_note;
+    card.append(note);
+  }
 
   return card;
+}
+
+function statusLabel(s: CommentStatus): string {
+  switch (s) {
+    case 'open': return 'open';
+    case 'submitted': return 'submitted';
+    case 'applied': return 'applied';
+    case 'deferred': return 'deferred';
+    case 'needs-followup': return 'needs follow-up';
+    case 'rejected': return 'rejected';
+    case 'build_failed': return 'build failed';
+  }
 }
 
 /** rev-b8t: per-card edit + delete controls. Both stop propagation so
@@ -1100,6 +1188,331 @@ function formatEngineResult(r: EngineResult): string {
 
 function shortenPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+}
+
+// ─── rev-1md.5: results-file watcher → status reflection ─────────────────
+//
+// Main pushes a `results:event` whenever a `.review-state/results-*.json`
+// file changes. We:
+//   1. Drop events that target a different doc (matchesDoc=false).
+//   2. Apply the rig's per-comment dispositions onto our in-memory drafts,
+//      then re-render + debounce-persist (so the live draft has the new
+//      statuses + agent notes after the watcher reflects them).
+//   3. Track the round in docState.rounds so we can render the most-recent
+//      banner (in-progress / complete / interrupted).
+//   4. On round_status:complete with a new_source_path, seed the v1.1
+//      draft (deferred + needs-followup → fresh `open` comments with
+//      derived_from set), then surface the "Round complete — [open v1.1]"
+//      CTA in the banner.
+
+function wireResultsEvents(): void {
+  window.electronAPI.onResultsEvent((event) => {
+    // Ignore events for doc-versions that don't match the currently-open
+    // doc. Main also surfaces these (deliberately, for diagnostics) so we
+    // can debug a misaligned submit/results pair from devtools — but for
+    // normal UI flow they're noise.
+    if (!event.matchesDoc) return;
+    void applyResultsEvent(event);
+  });
+}
+
+async function applyResultsEvent(event: ResultsEvent): Promise<void> {
+  const { results, submit } = event;
+  // Apply per-entry dispositions. Match on comment id; the rig only writes
+  // results entries for comments that were in the submit file, so a result
+  // pointing at a draft entry we don't have is a stale-cache scenario worth
+  // surfacing rather than silently dropping.
+  const byId = new Map<string, CommentPayload>(docState.comments.map((c) => [c.id, c]));
+  let changed = false;
+  for (const r of results.results) {
+    const target = byId.get(r.id);
+    if (!target) {
+      // Could happen if the user manually edited the drafts file; not fatal.
+      continue;
+    }
+    if (applyEntry(target, r)) changed = true;
+  }
+  if (changed) {
+    renderAllCards();
+    scheduleDraftsWrite();
+  }
+
+  // Track this round's latest snapshot. We keep one entry per submit_id so
+  // the banner reflects whichever round is most recent. If we've already
+  // seeded this completed round, preserve `seeded:true` so re-emits don't
+  // re-seed.
+  const prev = docState.rounds.get(results.submit_id);
+  docState.rounds.set(results.submit_id, {
+    submit_id: results.submit_id,
+    results_id: results.results_id,
+    filePath: event.filePath,
+    results,
+    seeded: prev?.seeded ?? false,
+  });
+  renderRoundBanner();
+
+  // §10.1 step 6 / §10.3 — on round complete, seed a fresh draft for the
+  // new versioned source file. The seeded draft re-raises every
+  // `deferred` / `needs-followup` item as a new `open` comment keyed on
+  // the new file's sha256, with derived_from set to the original id.
+  if (
+    results.round_status === 'complete' &&
+    results.new_source_path &&
+    submit !== null &&
+    !(docState.rounds.get(results.submit_id)?.seeded)
+  ) {
+    void seedNextVersionDraft(event);
+  }
+}
+
+/** Mutate `target` in place per the rig's result entry. Returns true if any
+ *  field actually changed (drives the dirty-flag for re-render + write). */
+function applyEntry(target: CommentPayload, r: ResultEntry): boolean {
+  let changed = false;
+  const nextStatus: CommentStatus = r.status;
+  if (target.status !== nextStatus) {
+    target.status = nextStatus;
+    changed = true;
+  }
+  // agent_note overwrites (the rig is the authority on its own commentary;
+  // an updated note replaces the previous one — typically only the
+  // last-write matters in practice).
+  if ((target.agent_note ?? null) !== (r.agent_note ?? null)) {
+    target.agent_note = r.agent_note ?? null;
+    changed = true;
+  }
+  if ((target.new_anchor ?? null) !== (r.new_anchor ?? null)) {
+    // Shallow compare-by-reference would miss a re-emit with the same
+    // values; deep-compare via JSON is fine at this scale.
+    const a = JSON.stringify(target.new_anchor ?? null);
+    const b = JSON.stringify(r.new_anchor ?? null);
+    if (a !== b) {
+      target.new_anchor = r.new_anchor ?? null;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function hideRoundBanner(): void {
+  const banner = document.getElementById('roundBanner');
+  if (!banner) return;
+  banner.hidden = true;
+  banner.removeAttribute('data-state');
+  banner.replaceChildren();
+}
+
+/** Render the banner for the most-relevant round in `docState.rounds`.
+ *  Selection rule: prefer an `in_progress` round (live or interrupted),
+ *  otherwise the latest `complete` (its CTA stays visible until the user
+ *  opens the new version or switches docs), otherwise hidden. */
+function renderRoundBanner(): void {
+  const banner = document.getElementById('roundBanner');
+  if (!banner) return;
+  const rounds = Array.from(docState.rounds.values());
+  if (rounds.length === 0) { hideRoundBanner(); return; }
+  // Sort by results_id (timestamp prefix) descending — most recent first.
+  rounds.sort((a, b) => b.results_id.localeCompare(a.results_id));
+  // Pick the highest-priority round to surface.
+  const inProgress = rounds.find((r) => r.results.round_status === 'in_progress');
+  const failed = rounds.find((r) => r.results.round_status === 'failed');
+  const complete = rounds.find((r) => r.results.round_status === 'complete');
+  const pick = inProgress ?? failed ?? complete;
+  if (!pick) { hideRoundBanner(); return; }
+  fillRoundBanner(banner, pick);
+}
+
+function fillRoundBanner(banner: HTMLElement, round: ResultsRoundState): void {
+  banner.hidden = false;
+  banner.replaceChildren();
+  const r = round.results;
+  const text = document.createElement('div');
+  text.className = 'round-banner-text';
+  const actions = document.createElement('div');
+  actions.className = 'round-banner-actions';
+
+  if (r.round_status === 'in_progress') {
+    const processed = r.results.length;
+    // The submit file would tell us the total; without it we report the
+    // partial count alone. (matchesDoc:true means the submit was found —
+    // could plumb its comment count through if needed for "N of M".)
+    const interrupted = isLikelyInterrupted(r);
+    if (interrupted) {
+      banner.setAttribute('data-state', 'interrupted');
+      const head = document.createElement('strong');
+      head.textContent = 'Previous round was interrupted.';
+      const detail = document.createElement('span');
+      detail.className = 'round-banner-detail';
+      detail.textContent = `Started ${formatRelativeTimestamp(r.started_at)} — ${processed} comments processed before the rig stopped.`;
+      text.append(head, detail);
+      const resume = document.createElement('button');
+      resume.type = 'button';
+      resume.className = 'is-primary';
+      resume.textContent = 'Resume round';
+      resume.title = 'Re-invoke the rig against this submit file (rig case) or the Reviewer pane (standalone).';
+      resume.addEventListener('click', () => {
+        // §10.1 step 6: "re-invoke[s] the rig (rig case) or the Reviewer
+        // pane (standalone)". The actual re-invocation transport (gt mail
+        // sling vs embedded pane) is rev-1md.4 / rev-1md.2 — until those
+        // land, the button surfaces the contract and explains why it's
+        // inert. Keeping the affordance visible (vs. hidden until M7
+        // round-trip completes) means the UX shape is in place for the
+        // user to test against.
+        flashAnchorMeta('Resume requires the M7 Submit pipeline (rev-1md.4) to be wired up.');
+      });
+      actions.append(resume);
+    } else {
+      banner.setAttribute('data-state', 'in_progress');
+      const head = document.createElement('strong');
+      head.textContent = 'Round in progress.';
+      const detail = document.createElement('span');
+      detail.className = 'round-banner-detail';
+      detail.textContent = `${processed} comments processed so far. Started ${formatRelativeTimestamp(r.started_at)}.`;
+      text.append(head, detail);
+    }
+  } else if (r.round_status === 'complete') {
+    banner.setAttribute('data-state', 'complete');
+    const applied = r.results.filter((x) => x.status === 'applied').length;
+    const failedCount = r.results.filter((x) => x.status === 'build_failed').length;
+    const followup = r.results.filter((x) => x.status === 'needs-followup').length;
+    const deferred = r.results.filter((x) => x.status === 'deferred').length;
+    const rejected = r.results.filter((x) => x.status === 'rejected').length;
+    const head = document.createElement('strong');
+    head.textContent = `Round complete — ${applied} applied, ${failedCount} build failures.`;
+    const detail = document.createElement('span');
+    detail.className = 'round-banner-detail';
+    const parts: string[] = [];
+    if (deferred > 0) parts.push(`${deferred} deferred`);
+    if (followup > 0) parts.push(`${followup} need follow-up`);
+    if (rejected > 0) parts.push(`${rejected} rejected`);
+    detail.textContent = parts.length > 0
+      ? `${parts.join(', ')} — re-raised in the new version's draft.`
+      : 'No items re-raised; the new versioned source is ready.';
+    text.append(head, detail);
+    if (r.new_source_path) {
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'is-primary';
+      open.textContent = r.version_chosen
+        ? `Open ${r.version_chosen}`
+        : 'Open new version';
+      open.addEventListener('click', () => {
+        // The seeded draft (if any) was written before this banner
+        // rendered, so loadPdf reads the freshly-seeded draft file when
+        // it opens the new doc.
+        void openFileFromTreeOrPalette(r.new_source_path!);
+      });
+      actions.append(open);
+    }
+  } else if (r.round_status === 'failed') {
+    banner.setAttribute('data-state', 'failed');
+    const head = document.createElement('strong');
+    head.textContent = 'Round failed.';
+    const detail = document.createElement('span');
+    detail.className = 'round-banner-detail';
+    detail.textContent = 'The rig couldn’t finish the round. Check the rig session for details.';
+    text.append(head, detail);
+  }
+  banner.append(text, actions);
+}
+
+/** Heuristic for "interrupted" vs "live in progress": an in_progress round
+ *  whose `started_at` is more than ~2 minutes in the past with no recent
+ *  results-file change is almost certainly an abandoned run. We use the
+ *  event's `source` (initial vs change) as a stronger signal: an initial
+ *  scan reading `in_progress` means the rig wasn't running when we opened
+ *  the doc. */
+function isLikelyInterrupted(r: ResultsFile): boolean {
+  if (r.round_status !== 'in_progress') return false;
+  if (!r.started_at) return false;
+  const startedMs = Date.parse(r.started_at);
+  if (Number.isNaN(startedMs)) return false;
+  const ageMs = Date.now() - startedMs;
+  // 2 minutes: rounds normally complete or progress within this window;
+  // longer than that without a fresh results-file write is interrupted.
+  return ageMs > 2 * 60 * 1000;
+}
+
+function formatRelativeTimestamp(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const deltaSec = Math.round((Date.now() - t) / 1000);
+  if (deltaSec < 60) return `${deltaSec}s ago`;
+  if (deltaSec < 3600) return `${Math.round(deltaSec / 60)}m ago`;
+  if (deltaSec < 86400) return `${Math.round(deltaSec / 3600)}h ago`;
+  return `${Math.round(deltaSec / 86400)}d ago`;
+}
+
+/** §10.1 step 6 — write the v1.1 draft for the just-completed round so the
+ *  new versioned source file opens with re-raised comments already in place.
+ *
+ *  Re-raise policy (§8.5):
+ *    - `applied` / `rejected` / `build_failed` → archived only (don't appear
+ *      in the new draft).
+ *    - `deferred` / `needs-followup` → fresh `open` comments with
+ *      `derived_from` pointing at the original id, anchored at `new_anchor`
+ *      if set (the redraft may have shifted text) else at the original
+ *      `anchor`.
+ *
+ *  The new file's sha256 is computed by re-reading its bytes through main
+ *  (`readPdfBytes` already returns the digest), so the seeded draft is keyed
+ *  on `<new_sha256>.json` and loadPdf will pick it up on open. */
+async function seedNextVersionDraft(event: ResultsEvent): Promise<void> {
+  const { results, submit } = event;
+  if (!submit) return;
+  if (!results.new_source_path) return;
+
+  // Read the new file's bytes to compute its sha256 = new doc_version.
+  const bytes = await window.electronAPI.readPdfBytes(results.new_source_path);
+  if (!bytes.ok) {
+    flashAnchorMeta(`Couldn’t seed next-version draft: ${bytes.reason} ${results.new_source_path}`);
+    return;
+  }
+  const newSha = bytes.sha256;
+  const newDocId = bytes.resolvedPath;
+
+  // Build the re-raise list: only deferred + needs-followup carry forward.
+  const submitById = new Map(submit.comments.map((c) => [c.id, c]));
+  const reraised: CommentPayload[] = [];
+  for (const r of results.results) {
+    if (r.status !== 'deferred' && r.status !== 'needs-followup') continue;
+    const original = submitById.get(r.id);
+    if (!original) continue; // results entry without a submit-side twin; skip.
+    const anchor = r.new_anchor ?? original.anchor;
+    reraised.push({
+      id: crypto.randomUUID(),
+      doc_id: newDocId,
+      doc_version: newSha,
+      anchor,
+      highlighted_text: original.highlighted_text,
+      comment: original.comment,
+      redraft: original.redraft,
+      redraft_suggestion: null,
+      engagement_level: original.engagement_level,
+      author: original.author,
+      kind: 'comment',
+      status: 'open',
+      created_at: new Date().toISOString(),
+      derived_from: original.id,
+      agent_note: r.agent_note ?? null,
+    });
+  }
+
+  const file: DraftsFile = {
+    schema_version: 1,
+    doc_version: newSha,
+    comments: reraised,
+  };
+  const res = await window.electronAPI.writeDrafts(newDocId, newSha, file);
+  if (!res.ok) {
+    flashAnchorMeta(`Couldn’t write next-version draft (${res.reason}): ${res.error}`);
+    return;
+  }
+  // Mark the round as seeded so re-emits don't duplicate the draft. The
+  // existing draft would be overwritten cleanly (same sha256 path) but
+  // the dup work is wasted I/O.
+  const round = docState.rounds.get(results.submit_id);
+  if (round) round.seeded = true;
 }
 
 void init();

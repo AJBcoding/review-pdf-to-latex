@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { AppStateFile, DraftsFile, ElectronAPI } from '@shared/types';
+import type { AppStateFile, DraftsFile, ElectronAPI, ResultsEvent } from '@shared/types';
 
 // Expose a minimal, typed IPC surface to the renderer.
 // Anything the renderer can call must be declared here — this is the security boundary.
@@ -32,6 +32,15 @@ const electronAPI: ElectronAPI = {
     // Tell main we're ready to receive the buffered cold-launch queue.
     ipcRenderer.send('app:externalOpenReady');
     return () => { ipcRenderer.off('app:openExternalFile', listener); };
+  },
+
+  watchResultsStart: (pdfPath: string, sha256: string) =>
+    ipcRenderer.invoke('results:watchStart', pdfPath, sha256),
+  watchResultsStop: () => ipcRenderer.invoke('results:watchStop'),
+  onResultsEvent: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: ResultsEvent) => cb(event);
+    ipcRenderer.on('results:event', listener);
+    return () => { ipcRenderer.off('results:event', listener); };
   },
 };
 

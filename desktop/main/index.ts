@@ -4,6 +4,7 @@ import { dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { engineVersion, pdfHealth } from './engine.js';
+import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import type {
   AppStateFile,
   AppStateReadResult,
@@ -20,6 +21,7 @@ import type {
   OpenPdfDialogResult,
   PathExistsResult,
   ReadPdfBytesResult,
+  ResultsWatchStartResult,
 } from '@shared/types';
 
 /** Drafts file location per the user's decision: next to the PDF in a
@@ -597,12 +599,40 @@ void app.whenReady().then(() => {
     return { ok: true, root: resolvedRoot, pdfs };
   });
 
+  // §10.1 step 6 + §10.3 — results-file watcher lifecycle. Renderer calls
+  // start right after loadPdf resolves a sha256; stop fires on doc switch
+  // or app teardown. Main pushes parsed events to the renderer via
+  // `results:event`. See results-watcher.ts for the full contract.
+  ipcMain.handle(
+    'results:watchStart',
+    async (event, pdfPath: string, sha256: string): Promise<ResultsWatchStartResult> => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win) {
+        return {
+          ok: false,
+          reviewStateDir: dirname(resolve(pdfPath)),
+          reason: 'watch_failed',
+          error: 'no window for sender',
+        };
+      }
+      return startResultsWatch(win, resolve(pdfPath), sha256);
+    }
+  );
+  ipcMain.handle('results:watchStop', () => {
+    stopResultsWatch();
+  });
+
   createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// Tear the watcher down on quit so the underlying fs.watch handle releases
+// cleanly. before-quit fires before window close on Cmd+Q; window-all-closed
+// covers the non-darwin path.
+app.on('before-quit', () => { stopResultsWatch(); });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

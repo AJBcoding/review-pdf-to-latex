@@ -58,6 +58,10 @@
       <!-- pdf-health banner (§5.2 load-time pre-flight). Hidden until a PDF
            is loaded; populated by the renderer based on the parsed report. -->
       <div id="pdfBanner" class="pdf-banner" hidden role="status" aria-live="polite"></div>
+      <!-- round-status banner (§10.1 step 6). Hidden until the results-file
+           watcher reflects a round into the UI. Distinct element from
+           #pdfBanner so the two can stack when both are relevant. -->
+      <div id="roundBanner" class="round-banner" hidden role="status" aria-live="polite"></div>
       <div class="pane-body document-area">
         <div class="pdf-empty" id="pdfEmpty">
           <div class="pdf-empty-title">No PDF loaded</div>

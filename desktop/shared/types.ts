@@ -104,20 +104,56 @@ export interface OpenPdfDialogResult {
  */
 export type EngagementLevel = 'comment' | 'redraft' | 'surface';
 
+/** §8.5 status enum. `open` is the renderer's only writer; everything from
+ *  `submitted` onward is written by Submit (rev-1md.4) or by the results-file
+ *  watcher (rev-1md.5) reflecting the rig's terminal dispositions. */
+export type CommentStatus =
+  | 'open'
+  | 'submitted'
+  | 'applied'
+  | 'deferred'
+  | 'needs-followup'
+  | 'rejected'
+  | 'build_failed';
+
+/** Anchor region — shared by `CommentPayload.anchor` and the optional
+ *  `new_anchor` written by the rig when a redraft moved text. */
+export interface AnchorRegion {
+  page: number;
+  region: { x: number; y: number; w: number; h: number };
+}
+
 export interface CommentPayload {
   id: string;
   doc_id: string;
   doc_version: string;
-  anchor: { page: number; region: { x: number; y: number; w: number; h: number } };
+  anchor: AnchorRegion;
   highlighted_text: string;
   comment: string;
   redraft: string | null;
-  redraft_suggestion: null;
+  /** Agent's proposed redraft from live-redraft (§10.2). Distinct from the
+   *  user's own `redraft` field. Null until a live-redraft result lands. */
+  redraft_suggestion: string | null;
   engagement_level: EngagementLevel;
   author: string;
   kind: 'comment';
-  status: 'open';
+  status: CommentStatus;
   created_at: string;
+  /** Set when Submit promotes this comment to a submit file (rev-1md.4). */
+  submitted_at?: string | null;
+  /** Set by the rig in results-<ts>.json: free-text note explaining the
+   *  disposition (build error excerpt, why it's a thesis problem, etc.). */
+  agent_note?: string | null;
+  /** Set by the rig when an `applied` redraft moved the underlying text and
+   *  the comment's logical anchor changed. The original `anchor` is kept
+   *  alongside this so re-raised v1.1 comments can point to the new location. */
+  new_anchor?: AnchorRegion | null;
+  /** When a v1.1 comment is seeded from a v1.0 `deferred` / `needs-followup`
+   *  result, this is the original comment's id (§8.5 round-trip re-raise). */
+  derived_from?: string | null;
+  /** PDF-only: links this comment to the corresponding annotation in the
+   *  rendered bundle PDF (§10.4). Written by Submit; not used by the watcher. */
+  pdf_annotation_id?: string | null;
 }
 
 /**
@@ -140,6 +176,102 @@ export type DraftsReadResult =
 export type DraftsWriteResult =
   | { ok: true; filePath: string }
   | { ok: false; reason: 'write_failed' | 'mkdir_failed'; filePath: string; error: string };
+
+// ─── §10.3 submit + results files ─────────────────────────────────────────
+//
+// Submit file: frozen audit copy of the comments sent to the rig in one round.
+// Written by Submit (rev-1md.4); read by the rig and by the watcher (to
+// disambiguate which doc a results file belongs to — sha256 lives here, not
+// in the results file).
+export interface SubmitFile {
+  schema_version?: 1;
+  submit_id: string;
+  doc_id: string;
+  /** sha256 of the source-file bytes at submit time. The watcher matches this
+   *  against the currently-open doc's sha256 to decide whether a results file
+   *  in the same `.review-state/` dir applies to the open doc. */
+  doc_version: string;
+  source_file_version: string;
+  submitted_at: string;
+  origin_rig: string | null;
+  bundle_pdf?: string;
+  bundle_json?: string;
+  comments: CommentPayload[];
+}
+
+/** Per-comment terminal status the rig writes into `results-<ts>.json`.
+ *  Note this is narrower than `CommentStatus` — the rig can't return `open`
+ *  or `submitted`; those are app-side states. */
+export type ResultEntryStatus =
+  | 'applied'
+  | 'deferred'
+  | 'needs-followup'
+  | 'rejected'
+  | 'build_failed';
+
+export interface ResultEntry {
+  id: string;
+  status: ResultEntryStatus;
+  /** Required when `status === 'rejected'`; explains why the rig declined to
+   *  apply. Spec §10.3. */
+  reason?: string;
+  /** Set when an `applied` redraft moved text and the comment's anchor
+   *  position changed. Carried into the comment via `new_anchor`. */
+  new_anchor?: AnchorRegion | null;
+  /** Free-text agent commentary: build-error excerpt for `build_failed`,
+   *  redirect-to-L3 advice for `needs-followup`, terse confirmation for
+   *  `applied`, etc. */
+  agent_note?: string | null;
+}
+
+export type RoundStatus = 'in_progress' | 'complete' | 'failed';
+
+/** Results file written by the rig in `.review-state/results-<ts>.json`.
+ *  Mutates as the rig processes (per-comment atomic append); `round_status`
+ *  flips `in_progress` → `complete` / `failed` at round end. */
+export interface ResultsFile {
+  schema_version?: 1;
+  submit_id: string;
+  results_id: string;
+  round_status: RoundStatus;
+  started_at: string;
+  completed_at: string | null;
+  /** Path of the new versioned source file the rig wrote at round end (§10.6).
+   *  Null until `round_status: complete`. Drives the "open new version" CTA. */
+  new_source_path: string | null;
+  /** Human-facing version label (e.g., `"1.1"`). Informational. */
+  version_chosen: string | null;
+  results: ResultEntry[];
+}
+
+/** Event main pushes to renderer when a results file is created / modified.
+ *  `submit` is the matched submit file (needed to verify doc_version) — null
+ *  if the submit file couldn't be found / parsed; in that case `matchesDoc`
+ *  is false and the renderer should ignore this event. */
+export interface ResultsEvent {
+  /** Absolute path of the results-*.json file. */
+  filePath: string;
+  results: ResultsFile;
+  submit: SubmitFile | null;
+  /** True when the matched submit file's doc_version equals the currently
+   *  watched doc's sha256 — i.e., this results file applies to this doc. */
+  matchesDoc: boolean;
+  /** `initial`: discovered during the scan that happens on watchStart.
+   *  `change`: detected after watchStart via fs.watch. The renderer uses
+   *  this to distinguish "previous round was interrupted — resume?" (initial
+   *  scan finding round_status:in_progress) from a live update of the round
+   *  currently being processed. */
+  source: 'initial' | 'change';
+}
+
+export interface ResultsWatchStartResult {
+  ok: boolean;
+  /** Resolved `.review-state/` directory. Returned even when ok:false so the
+   *  renderer can surface a useful diagnostic. */
+  reviewStateDir: string;
+  reason?: 'enoent' | 'watch_failed';
+  error?: string;
+}
 
 /** Native folder picker (§3.1 — single root the tree is scoped to).
  *  `path === null` means the user canceled. */
@@ -270,6 +402,17 @@ export interface ElectronAPI {
   // Renderer pivots the middle pane to the doc; per §10.3 the prior doc's
   // draft state is preserved by the existing loadPdf flow.
   onOpenExternalFile(cb: (path: string) => void): () => void;
+
+  // §10.1 step 6 + §10.3 — start watching `.review-state/` next to the
+  // currently-open doc for new/changed results-*.json files. Renderer calls
+  // this immediately after loadPdf completes (sha256 in hand). Switching
+  // docs calls watchStop first, then watchStart against the new doc. Main
+  // does an initial scan of pre-existing results files (the "resume?"
+  // banner) before returning, so events for in-progress rounds will already
+  // be flowing by the time this resolves.
+  watchResultsStart(pdfPath: string, sha256: string): Promise<ResultsWatchStartResult>;
+  watchResultsStop(): Promise<void>;
+  onResultsEvent(cb: (event: ResultsEvent) => void): () => void;
 }
 
 declare global {

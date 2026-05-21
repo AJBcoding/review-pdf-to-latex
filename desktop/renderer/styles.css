@@ -144,6 +144,135 @@ html, body, #app {
 }
 
 /*
+ * Round-status banner (§10.1 step 6). Surfaces the rig's processing state
+ * for the current doc — in-progress, complete, interrupted-with-resume.
+ * Stacks under #pdfBanner when both are visible. Distinct color palette
+ * (info-blue / success-green) so it doesn't read as a pdf-health failure.
+ */
+.round-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--pane-border);
+  color: var(--text);
+  background: #1a2a3a;
+}
+.round-banner[data-state="in_progress"] {
+  background: #1a2a3a;
+  border-bottom-color: #2a4a6a;
+}
+.round-banner[data-state="interrupted"] {
+  background: #3a2e10;
+  border-bottom-color: #6a5418;
+}
+.round-banner[data-state="complete"] {
+  background: #14361a;
+  border-bottom-color: #1f5a2a;
+}
+.round-banner[data-state="failed"] {
+  background: #3a1818;
+  border-bottom-color: #7a2a2a;
+}
+.round-banner-text { flex: 1 1 auto; }
+.round-banner-text strong { font-weight: 600; }
+.round-banner-text .round-banner-detail {
+  display: block;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.round-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.round-banner-actions button {
+  font-size: 12px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid #4a6a8a;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.round-banner-actions button:hover { background: rgba(255,255,255,0.05); }
+.round-banner-actions button.is-primary {
+  background: #2a5a8a;
+  border-color: #3a7aba;
+}
+.round-banner-actions button.is-primary:hover { background: #3a6a9a; }
+
+/*
+ * Status badge on individual comment cards. Set by the results-file watcher
+ * (rev-1md.5) reflecting the rig's terminal disposition. Hidden when the
+ * comment is still `open` (the default for new comments).
+ */
+.comment-card-status {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+.comment-card[data-status="open"] .comment-card-status,
+.comment-card:not([data-status]) .comment-card-status { display: none; }
+.comment-card[data-status="submitted"] .comment-card-status {
+  background: #2a3a4a; color: #9ec5e8;
+}
+.comment-card[data-status="applied"] .comment-card-status {
+  background: #14361a; color: #6fd589;
+}
+.comment-card[data-status="deferred"] .comment-card-status {
+  background: #2a2a14; color: #d5c46f;
+}
+.comment-card[data-status="needs-followup"] .comment-card-status {
+  background: #3a2e10; color: #d59c4a;
+}
+.comment-card[data-status="rejected"] .comment-card-status {
+  background: #3a1818; color: #d56f6f;
+}
+.comment-card[data-status="build_failed"] .comment-card-status {
+  background: #3a1818; color: #d56f6f;
+}
+/* Terminal-state cards are dimmed slightly — they're audit, not active work. */
+.comment-card[data-status="applied"],
+.comment-card[data-status="rejected"],
+.comment-card[data-status="submitted"] {
+  opacity: 0.78;
+}
+
+/* Agent note rendered under the comment body when the rig returned one. */
+.comment-card-agent-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 2px solid #4a6a8a;
+  background: rgba(74,106,138,0.08);
+  white-space: pre-wrap;
+}
+.comment-card-agent-note::before {
+  content: "agent — ";
+  color: #6e95b8;
+  font-weight: 600;
+}
+
+/* "from v1.0" derived-from badge for re-raised comments (§8.5). */
+.comment-card-derived {
+  display: inline-block;
+  font-size: 10px;
+  color: #b89e6e;
+  margin-left: 6px;
+  font-style: italic;
+}
+
+/*
  * PDF viewer (renderer/pdf-viewer.ts). The text layer must absolutely overlay
  * the canvas at exact dimensions so PDF.js's positioned <span>s land on the
  * glyphs underneath — that's what makes native text selection snap.
