@@ -17,9 +17,26 @@
 </head>
 <body>
   <div id="app" class="layout">
+    <!--
+      §3 left-drawer file tree. Header carries the root-folder label + the
+      "Open Folder…" / "show hidden" controls; body renders the tree (or an
+      empty-state prompt when no root is set).
+    -->
     <aside class="pane left-drawer" data-pane="file-tree">
-      <header class="pane-header">File tree</header>
-      <div class="pane-body placeholder">empty shell — file tree lands here per §2 of the spec</div>
+      <header class="pane-header tree-header">
+        <span class="tree-header-title" id="treeTitle" title="No folder open">File tree</span>
+        <span class="tree-header-controls">
+          <button id="treeOpenFolder" type="button" title="Open Folder…">📁</button>
+          <button id="treeToggleHidden" type="button" aria-pressed="false"
+                  title="Show hidden files (.git, node_modules, dotfiles, …)">👁</button>
+        </span>
+      </header>
+      <div class="pane-body tree-body" id="treeBody">
+        <div class="placeholder" id="treeEmpty">
+          <div>No folder open.</div>
+          <div style="margin-top:6px"><a href="#" id="treeEmptyOpen">Open Folder…</a></div>
+        </div>
+      </div>
     </aside>
 
     <main class="pane middle" data-pane="document">
@@ -96,6 +113,21 @@
         <div class="placeholder" id="commentStreamEmpty">No comments yet — highlight text in the PDF, pick a tool, and press Enter.</div>
       </div>
     </aside>
+  </div>
+
+  <!--
+    §3.5 quick-open palette. Modal overlay, hidden until Cmd+P opens it.
+    Eagerly indexed PDF list with fuzzy ranking; arrow keys navigate, Enter
+    opens, Esc / click-outside dismisses. Lives outside the .layout grid so
+    it can z-index above all panes without disturbing flex/grid sizing.
+  -->
+  <div id="palette" class="palette" hidden role="dialog" aria-modal="true" aria-label="Quick open">
+    <div class="palette-card" role="document">
+      <input id="paletteInput" class="palette-input" type="text" autocomplete="off"
+             spellcheck="false" placeholder="Type to fuzzy-match PDF filename or path…" />
+      <ul id="paletteList" class="palette-list" role="listbox" aria-label="Quick-open matches"></ul>
+      <div id="paletteEmpty" class="palette-empty" hidden>No matches.</div>
+    </div>
   </div>
 
   <div id="diag" class="diag" aria-live="polite"></div>

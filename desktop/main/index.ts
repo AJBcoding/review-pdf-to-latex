@@ -1,14 +1,24 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { engineVersion, pdfHealth } from './engine.js';
 import type {
+  AppStateFile,
+  AppStateReadResult,
+  AppStateWriteResult,
+  DirEntry,
   DraftsFile,
   DraftsReadResult,
   DraftsWriteResult,
+  FileKind,
+  IndexPdfsResult,
+  IndexedPdf,
+  ListDirResult,
+  OpenFolderDialogResult,
   OpenPdfDialogResult,
+  PathExistsResult,
   ReadPdfBytesResult,
 } from '@shared/types';
 
@@ -17,6 +27,104 @@ import type {
  *  copying or renaming the PDF doesn't lose the drafts. */
 function draftsPathFor(pdfPath: string, sha256: string): string {
   return join(dirname(resolve(pdfPath)), '.review-state', 'drafts', `${sha256}.json`);
+}
+
+// ─── §3.2 hidden ignore list ───────────────────────────────────────────────
+//
+// Names that are hidden by default in the tree (and skipped entirely by the
+// recursive PDF index, no "show hidden" override there — the user doesn't
+// search Cmd+P for files inside node_modules). Spec calls out exact set; the
+// `.reviewignore` file is a future extension.
+const HIDDEN_DIR_NAMES: ReadonlySet<string> = new Set([
+  '.git', 'node_modules', '__pycache__', '.venv', 'dist', 'build',
+]);
+
+function classifyFile(name: string): FileKind {
+  const ext = extname(name).toLowerCase();
+  if (ext === '.pdf') return 'pdf';
+  if (ext === '.md' || ext === '.markdown') return 'md';
+  if (ext === '.docx') return 'docx';
+  return 'other';
+}
+
+function isHiddenName(name: string, isDir: boolean): boolean {
+  if (name.startsWith('.')) return true;
+  if (isDir && HIDDEN_DIR_NAMES.has(name)) return true;
+  return false;
+}
+
+// ─── §3.3 app state path ───────────────────────────────────────────────────
+//
+// `app.getPath('userData')` resolves to ~/Library/Application Support/<name>
+// on macOS, %APPDATA%/<name> on Windows, ~/.config/<name> on Linux. We pin a
+// single file so the schema is one atomic write.
+function appStatePath(): string {
+  return join(app.getPath('userData'), 'state.json');
+}
+
+// ─── §3.4 external-open queue ──────────────────────────────────────────────
+//
+// CLI args / second-instance argv / open-url events can arrive *before* the
+// renderer has wired its handler. Buffer them and flush once the renderer
+// signals it's ready, so a request never gets dropped on cold launch.
+const pendingExternalOpens: string[] = [];
+let rendererReadyForExternalOpens = false;
+let primaryWindow: BrowserWindow | null = null;
+
+function queueExternalOpen(path: string): void {
+  const abs = isAbsolute(path) ? path : resolve(process.cwd(), path);
+  pendingExternalOpens.push(abs);
+  flushExternalOpens();
+}
+
+function flushExternalOpens(): void {
+  if (!rendererReadyForExternalOpens) return;
+  if (!primaryWindow || primaryWindow.isDestroyed()) return;
+  while (pendingExternalOpens.length > 0) {
+    const path = pendingExternalOpens.shift()!;
+    try { primaryWindow.webContents.send('app:openExternalFile', path); }
+    catch { /* webContents may be torn down mid-flush; drop silently */ }
+  }
+}
+
+/** Parse a `reviewpdf://open?path=/abs/path/to/file.pdf` URL.
+ *  v1 only honors `path`; unrecognized keys are ignored with a warning per
+ *  spec §3.4. Returns null if the URL is missing or malformed. */
+function parseReviewpdfUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'reviewpdf:') return null;
+    // Accept both reviewpdf://open?path=... and reviewpdf:open?path=...
+    const path = url.searchParams.get('path');
+    if (!path) return null;
+    for (const [k] of url.searchParams) {
+      if (k !== 'path') console.warn(`[reviewpdf://] ignoring unrecognized key: ${k}`);
+    }
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/** Scan a process-argv array (initial process.argv OR second-instance argv)
+ *  for an openable file path. Recognizes:
+ *    review-pdf-app open <path>     (shim form)
+ *    review-pdf-app <path.pdf>      (any positional .pdf, for drag-and-drop
+ *                                    or direct file association)
+ *    reviewpdf://open?path=...      (URL handed in via argv on Windows/Linux)
+ *  Returns the first match (v1 opens one doc at a time). */
+function extractPathFromArgv(argv: readonly string[]): string | null {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a) continue;
+    if (a === 'open' && argv[i + 1]) return argv[i + 1];
+    if (a.startsWith('reviewpdf://')) {
+      const p = parseReviewpdfUrl(a);
+      if (p) return p;
+    }
+    if (a.toLowerCase().endsWith('.pdf') && !a.startsWith('-')) return a;
+  }
+  return null;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,6 +156,10 @@ function createWindow(): BrowserWindow {
   }
 
   attachDraftsFlushHandshake(win);
+  primaryWindow = win;
+  win.on('closed', () => {
+    if (primaryWindow === win) primaryWindow = null;
+  });
   return win;
 }
 
@@ -122,10 +234,63 @@ app.on('before-quit', (event) => {
   });
 });
 
+// ─── §3.4 single-instance + URL scheme ────────────────────────────────────
+//
+// `requestSingleInstanceLock` returns false in any secondary process; we exit
+// immediately so the first instance can claim focus and pivot to the new doc.
+// macOS handles file/URL handoff via `open-file`/`open-url`; Windows + Linux
+// hand it through `second-instance` argv.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const path = extractPathFromArgv(argv);
+    if (primaryWindow) {
+      if (primaryWindow.isMinimized()) primaryWindow.restore();
+      primaryWindow.focus();
+    }
+    if (path) queueExternalOpen(path);
+  });
+  // `open-url` (macOS) fires for reviewpdf:// invocations. Listener must be
+  // registered before whenReady() so a cold-launch URL isn't missed.
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    const path = parseReviewpdfUrl(url);
+    if (path) queueExternalOpen(path);
+  });
+  // `open-file` (macOS) fires when a file is dragged onto the dock icon /
+  // double-clicked while we're the default handler. Same buffering path.
+  app.on('open-file', (event, path) => {
+    event.preventDefault();
+    queueExternalOpen(path);
+  });
+  // Register reviewpdf:// scheme. In dev (electron-vite spawns electron with
+  // an argv chain) we have to pass our entry point so the OS can re-launch us.
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('reviewpdf', process.execPath, [resolve(process.argv[1])]);
+  } else {
+    app.setAsDefaultProtocolClient('reviewpdf');
+  }
+  // Initial argv: skip the electron exe at [0] and (in dev) the script path
+  // at [1]; everything from there is user-supplied.
+  const userArgv = process.defaultApp ? process.argv.slice(2) : process.argv.slice(1);
+  const initialPath = extractPathFromArgv(userArgv);
+  if (initialPath) queueExternalOpen(initialPath);
+}
+
 void app.whenReady().then(() => {
   // Smoke-test IPC retained from the empty-shell milestone.
   ipcMain.handle('ping', (_event, message: string) => {
     return `pong: ${message}`;
+  });
+
+  // Renderer signals readiness for external-open events once it has wired
+  // its handler. Anything we queued during cold launch flushes here.
+  ipcMain.on('app:externalOpenReady', (event) => {
+    if (primaryWindow && event.sender === primaryWindow.webContents) {
+      rendererReadyForExternalOpens = true;
+      flushExternalOpens();
+    }
   });
 
   // Engine version probe — walks the §13.1 resolution chain and spawns
@@ -250,6 +415,187 @@ void app.whenReady().then(() => {
       }
     }
   );
+
+  // §3.1 — native folder picker for the left-drawer root.
+  ipcMain.handle('dialog:openFolder', async (event): Promise<OpenFolderDialogResult> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showOpenDialog(win ?? undefined as any, {
+      title: 'Open Folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { path: null };
+    return { path: result.filePaths[0] };
+  });
+
+  // §3.2 — non-recursive directory listing. Entries are sorted folders-first
+  // then alphabetic (stable, matches what users expect from finders/IDEs).
+  // The `isHidden` flag rides along so the renderer can filter without a
+  // second pass over the list.
+  ipcMain.handle('fs:listDir', async (_event, path: string): Promise<ListDirResult> => {
+    const resolvedPath = resolve(path);
+    try {
+      const s = await stat(resolvedPath);
+      if (!s.isDirectory()) {
+        return { ok: false, reason: 'not_a_dir', path: resolvedPath, error: 'not a directory' };
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ENOENT') {
+        return { ok: false, reason: 'not_found', path: resolvedPath, error: e.message };
+      }
+      return { ok: false, reason: 'read_failed', path: resolvedPath, error: e.message };
+    }
+    let dirents;
+    try {
+      dirents = await readdir(resolvedPath, { withFileTypes: true });
+    } catch (err) {
+      return {
+        ok: false, reason: 'read_failed', path: resolvedPath,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const entries: DirEntry[] = dirents.map((d) => {
+      // Treat symlinks pessimistically — readdir doesn't follow, and we
+      // can't classify the target without an extra stat. Reporting them
+      // as files is fine for v1; the tree just won't expand them.
+      const isDir = d.isDirectory();
+      return {
+        name: d.name,
+        path: join(resolvedPath, d.name),
+        isDir,
+        isHidden: isHiddenName(d.name, isDir),
+        kind: isDir ? 'other' : classifyFile(d.name),
+      };
+    });
+    entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+    return { ok: true, entries, path: resolvedPath };
+  });
+
+  // §3.3 launch boot — check the remembered root still exists before we try
+  // to list it. Renderer falls back to the empty state if not.
+  ipcMain.handle('fs:pathExists', async (_event, path: string): Promise<PathExistsResult> => {
+    const resolvedPath = resolve(path);
+    try {
+      const s = await stat(resolvedPath);
+      return {
+        ok: true, exists: true,
+        isDir: s.isDirectory(), isFile: s.isFile(),
+        path: resolvedPath,
+      };
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ENOENT') {
+        return { ok: true, exists: false, isDir: false, isFile: false, path: resolvedPath };
+      }
+      return { ok: false, reason: 'stat_failed', path: resolvedPath, error: e.message };
+    }
+  });
+
+  // §3.3 persisted state. Same atomic-write pattern as drafts (temp + rename)
+  // so a crash mid-write can't corrupt the boot record.
+  ipcMain.handle('appState:read', async (): Promise<AppStateReadResult> => {
+    const filePath = appStatePath();
+    let raw: string;
+    try {
+      raw = await readFile(filePath, 'utf8');
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ENOENT') {
+        return { ok: true, state: null, filePath, reason: 'not_found' };
+      }
+      return { ok: false, reason: 'read_failed', filePath, error: e.message };
+    }
+    try {
+      const parsed = JSON.parse(raw) as AppStateFile;
+      // Defensive: future schema_version means we don't know the layout, so
+      // treat as not-found rather than crash. v1 has only one version.
+      if (parsed.schema_version !== 1) {
+        return { ok: true, state: null, filePath, reason: 'not_found' };
+      }
+      return { ok: true, state: parsed, filePath };
+    } catch (err) {
+      return {
+        ok: false, reason: 'parse_failed', filePath,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  ipcMain.handle('appState:write', async (_event, state: AppStateFile): Promise<AppStateWriteResult> => {
+    const filePath = appStatePath();
+    try {
+      await mkdir(dirname(filePath), { recursive: true });
+    } catch (err) {
+      return {
+        ok: false, reason: 'mkdir_failed', filePath,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const tmpPath = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(state, null, 2), 'utf8');
+      await rename(tmpPath, filePath);
+      return { ok: true, filePath };
+    } catch (err) {
+      await unlink(tmpPath).catch(() => {});
+      return {
+        ok: false, reason: 'write_failed', filePath,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  // §3.5 — recursive PDF index for the Cmd+P palette. Walks under `root`,
+  // skipping the hidden-by-default dir list (no override; the user doesn't
+  // Cmd+P search for files inside node_modules). Soft cap at 20 000 hits to
+  // bound the walk on accidentally-pointed-at home dirs.
+  ipcMain.handle('fs:indexPdfs', async (_event, root: string): Promise<IndexPdfsResult> => {
+    const resolvedRoot = resolve(root);
+    try {
+      const s = await stat(resolvedRoot);
+      if (!s.isDirectory()) {
+        return { ok: false, reason: 'not_a_dir', root: resolvedRoot, error: 'not a directory' };
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ENOENT') {
+        return { ok: false, reason: 'not_found', root: resolvedRoot, error: e.message };
+      }
+      return { ok: false, reason: 'read_failed', root: resolvedRoot, error: e.message };
+    }
+    const MAX_HITS = 20000;
+    const pdfs: IndexedPdf[] = [];
+    const stack: string[] = [resolvedRoot];
+    while (stack.length > 0) {
+      if (pdfs.length >= MAX_HITS) break;
+      const dir = stack.pop()!;
+      let dirents;
+      try {
+        dirents = await readdir(dir, { withFileTypes: true });
+      } catch {
+        // Single unreadable dir shouldn't fail the whole index. Skip silently.
+        continue;
+      }
+      for (const d of dirents) {
+        if (d.isDirectory()) {
+          if (isHiddenName(d.name, true)) continue;
+          stack.push(join(dir, d.name));
+        } else if (d.isFile()) {
+          if (classifyFile(d.name) !== 'pdf') continue;
+          const path = join(dir, d.name);
+          // Normalize relPath to forward slashes for stable display + match
+          // ranking, regardless of platform.
+          const relPath = relative(resolvedRoot, path).split(sep).join('/');
+          pdfs.push({ path, name: d.name, relPath });
+        }
+      }
+    }
+    pdfs.sort((a, b) => a.relPath.localeCompare(b.relPath, undefined, { sensitivity: 'base' }));
+    return { ok: true, root: resolvedRoot, pdfs };
+  });
 
   createWindow();
 

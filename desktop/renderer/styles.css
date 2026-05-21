@@ -502,6 +502,193 @@ html, body, #app {
 }
 
 /*
+ * §3 left drawer — file tree.
+ *
+ * The header carries the root label + the open-folder / show-hidden toggles
+ * inline; the body is a vertical list of tree rows. Folders are lazy-loaded
+ * (cache in tree.ts), so rendering is just a flat <ul> that re-paints on
+ * expand/collapse. Indent is driven by inline padding-left so depth doesn't
+ * need nested <ul> elements.
+ */
+.tree-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.tree-header-title {
+  flex: 1 1 auto;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tree-header-controls {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.tree-header-controls button {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tree-header-controls button:hover {
+  color: var(--text);
+  background: #2a2a2a;
+  border-color: var(--pane-border);
+}
+.tree-header-controls button.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: #143352;
+}
+
+.tree-body {
+  padding: 4px 0;
+}
+.tree-root {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+}
+.tree-row:hover { background: #2a2a2a; }
+.tree-row.is-active {
+  background: #143352;
+  color: var(--text);
+}
+.tree-row:focus { outline: none; }
+.tree-row:focus-visible {
+  outline: none;
+  background: #2a2a2a;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.tree-row.is-dimmed { color: var(--muted); cursor: default; }
+.tree-row.is-dimmed:hover { background: transparent; }
+.tree-row.is-hidden-entry { opacity: 0.55; font-style: italic; }
+.tree-row.tree-row-error {
+  color: #f87171;
+  font-style: italic;
+  cursor: default;
+}
+.tree-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+.tree-chevron-blank { color: transparent; }
+.tree-icon {
+  flex: 0 0 16px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1;
+}
+.tree-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * §3.5 quick-open palette. Modal overlay anchored top-of-window so the
+ * results list grows downward without jumping when the input is empty.
+ */
+.palette {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 100;
+  padding-top: 12vh;
+}
+.palette[hidden] { display: none; }
+.palette-card {
+  width: min(600px, 90vw);
+  max-height: 60vh;
+  background: #1c1c1c;
+  border: 1px solid var(--pane-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.palette-input {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--pane-border);
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.palette-input::placeholder { color: var(--muted); }
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.palette-row.is-selected { background: #143352; }
+.palette-row-name {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-weight: 600;
+}
+.palette-row-path {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-hl { color: var(--accent); font-weight: 600; }
+.palette-empty {
+  padding: 12px 14px;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
+/*
  * Diagnostic strip — small text in the TOP-right of the renderer so it
  * doesn't fight the bottom-input echo for screen space. Pointer-events:
  * none so it never intercepts clicks on the panes underneath.

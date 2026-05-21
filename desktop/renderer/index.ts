@@ -1,4 +1,5 @@
 import type {
+  AppStateFile,
   CommentPayload,
   DraftsFile,
   EngagementLevel,
@@ -7,6 +8,8 @@ import type {
   ReadPdfBytesResult,
 } from '@shared/types';
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
+import { FileTree } from './tree';
+import { QuickOpenPalette } from './palette';
 
 /** Cross-platform path basename — avoids dragging in a node path polyfill
  * just for the title-bar label. Handles both POSIX and Windows separators. */
@@ -98,6 +101,167 @@ async function init() {
   wireDraftsQuitFlush();
   await mountStartupDiagnostics();
   bootProjectOpenFlow();
+  await bootLeftDrawerAndPalette();
+  // Verification scripts (and humans poking at devtools) can wait on this
+  // to know all async boot work — including state restore — has settled.
+  (window as unknown as { __APP_READY?: boolean }).__APP_READY = true;
+}
+
+// ─── §3 left drawer + §3.5 palette ────────────────────────────────────────
+//
+// Owns: a FileTree instance, a QuickOpenPalette instance, the AppState
+// snapshot, and the external-file open handler. Glue only — the tree and
+// palette modules are presentation; persistence + cross-module wiring lives
+// here so the modules stay focused on their UI concerns.
+
+let fileTree: FileTree | null = null;
+let palette: QuickOpenPalette | null = null;
+let viewerHandlesRef: ViewerHandles | null = null;
+let appStateSaveTimer: number | null = null;
+const APP_STATE_DEBOUNCE_MS = 250;
+
+async function bootLeftDrawerAndPalette(): Promise<void> {
+  const body = document.getElementById('treeBody');
+  const title = document.getElementById('treeTitle');
+  const empty = document.getElementById('treeEmpty');
+  const openBtn = document.getElementById('treeOpenFolder') as HTMLButtonElement | null;
+  const hiddenBtn = document.getElementById('treeToggleHidden') as HTMLButtonElement | null;
+  const emptyOpenLink = document.getElementById('treeEmptyOpen');
+  const paletteRoot = document.getElementById('palette');
+  const paletteInput = document.getElementById('paletteInput') as HTMLInputElement | null;
+  const paletteList = document.getElementById('paletteList');
+  const paletteEmpty = document.getElementById('paletteEmpty');
+  if (!body || !title || !empty || !openBtn || !hiddenBtn || !emptyOpenLink ||
+      !paletteRoot || !paletteInput || !paletteList || !paletteEmpty) return;
+
+  fileTree = new FileTree({
+    body, title, empty, toggleHiddenBtn: hiddenBtn,
+    onOpenFile: (path) => { void openFileFromTreeOrPalette(path); },
+    onStateChange: () => { scheduleAppStateSave(); },
+  });
+
+  palette = new QuickOpenPalette({
+    root: paletteRoot, input: paletteInput, list: paletteList, empty: paletteEmpty,
+    onPick: (path) => { void openFileFromTreeOrPalette(path); },
+  });
+
+  openBtn.addEventListener('click', () => { void openFolderPicker(); });
+  emptyOpenLink.addEventListener('click', (e) => { e.preventDefault(); void openFolderPicker(); });
+
+  // §3.4 — main pushes external-open requests through this channel. We wire
+  // it here (after the tree is alive) so loadPdf is always callable when
+  // a buffered cold-launch request flushes.
+  window.electronAPI.onOpenExternalFile((path) => { void openFileFromTreeOrPalette(path); });
+
+  // §3.5 — Cmd+P opens the palette. Spec §15's focus discipline doesn't
+  // gate this; a global accelerator is the expected affordance.
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+      e.preventDefault();
+      palette?.open();
+    }
+  });
+
+  // §3.3 — restore last session.
+  await restoreFromAppState();
+}
+
+async function openFolderPicker(): Promise<void> {
+  const picked = await window.electronAPI.openFolderDialog();
+  if (!picked.path) return;
+  await setRootAndIndex(picked.path);
+  scheduleAppStateSave();
+}
+
+async function setRootAndIndex(root: string): Promise<void> {
+  if (!fileTree) return;
+  await fileTree.setRoot(root);
+  // Fan out PDF indexing without blocking the tree from showing. Failures
+  // are surfaced through the diagnostic strip rather than as a modal — the
+  // tree itself is still useful even if Cmd+P doesn't work.
+  void refreshPdfIndex(root);
+}
+
+async function refreshPdfIndex(root: string): Promise<void> {
+  if (!palette) return;
+  const res = await window.electronAPI.indexPdfs(root);
+  if (!res.ok) {
+    flashAnchorMeta(`Quick-open index failed (${res.reason}): ${res.error}`);
+    palette.setIndex([]);
+    return;
+  }
+  palette.setIndex(res.pdfs);
+}
+
+/** One canonical "open this PDF" entry point shared by the tree, the palette,
+ *  and external handoff. loadPdf already handles the active-row + state-save
+ *  side effects, so this is just a guarded passthrough. */
+async function openFileFromTreeOrPalette(path: string): Promise<void> {
+  if (!viewerHandlesRef) return;
+  await loadPdf(viewerHandlesRef, path);
+}
+
+function scheduleAppStateSave(): void {
+  if (appStateSaveTimer !== null) window.clearTimeout(appStateSaveTimer);
+  appStateSaveTimer = window.setTimeout(() => {
+    appStateSaveTimer = null;
+    void flushAppStateSave();
+  }, APP_STATE_DEBOUNCE_MS);
+}
+
+async function flushAppStateSave(): Promise<void> {
+  if (!fileTree) return;
+  const snap = fileTree.snapshot();
+  const state: AppStateFile = {
+    schema_version: 1,
+    root: snap.root,
+    last_opened_doc: docState.path || null,
+    expanded_dirs: snap.expanded,
+    show_hidden: snap.showHidden,
+  };
+  const res = await window.electronAPI.writeAppState(state);
+  if (!res.ok) {
+    flashAnchorMeta(`App-state save failed (${res.reason}): ${res.error}`);
+  }
+}
+
+async function restoreFromAppState(): Promise<void> {
+  if (!fileTree) return;
+  const res = await window.electronAPI.readAppState();
+  if (!res.ok) {
+    flashAnchorMeta(`App-state load failed (${res.reason}): ${res.error}`);
+    return;
+  }
+  if (!res.state) return; // fresh install / corrupted-and-reset — start clean
+  const state = res.state;
+  // Verify the remembered root still exists. If it was moved or deleted, we
+  // silently fall back to the empty tree rather than throwing a modal — the
+  // user's choices weren't wrong, the filesystem changed underneath.
+  if (state.root) {
+    const exists = await window.electronAPI.pathExists(state.root);
+    if (exists.ok && exists.exists && exists.isDir) {
+      await fileTree.restoreState({
+        root: state.root,
+        expanded: state.expanded_dirs,
+        showHidden: state.show_hidden,
+      });
+      void refreshPdfIndex(state.root);
+    } else {
+      await fileTree.restoreState({ root: null, expanded: [], showHidden: state.show_hidden });
+    }
+  } else {
+    await fileTree.restoreState({ root: null, expanded: [], showHidden: state.show_hidden });
+  }
+  // Re-open the last doc if it still exists and (when a root is set) lives
+  // under that root. We don't enforce containment for the doc — external
+  // handoff or pre-tree usage may have opened something outside the tree.
+  if (state.last_opened_doc && viewerHandlesRef) {
+    const exists = await window.electronAPI.pathExists(state.last_opened_doc);
+    if (exists.ok && exists.exists && exists.isFile) {
+      await loadPdf(viewerHandlesRef, state.last_opened_doc);
+      fileTree.setActiveFile(state.last_opened_doc);
+    }
+  }
 }
 
 /** rev-cm6: drain the debounced drafts write before the window/app goes away.
@@ -204,6 +368,9 @@ function bootProjectOpenFlow(): void {
     viewer, mount, empty, title, banner,
     prevBtn, nextBtn, fitPageBtn, fitWidthBtn, darkBtn,
   };
+  // Exposed to bootLeftDrawerAndPalette so file-tree / palette / external
+  // handoff all open through the same loadPdf path the Open… button uses.
+  viewerHandlesRef = handles;
 
   bootToolPaletteAndInput();
 
@@ -296,6 +463,10 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     showLoadError(h, null, err);
     setViewerControlsEnabled(h, false);
   }
+  // §3.3 — persist last-opened-doc and reflect the active row in the tree.
+  // Safe to no-op when boot ordering hasn't wired them up yet.
+  fileTree?.setActiveFile(path);
+  scheduleAppStateSave();
 }
 
 async function loadDraftsForCurrentDoc(): Promise<void> {

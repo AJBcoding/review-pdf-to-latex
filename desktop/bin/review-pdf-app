@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# review-pdf-app — CLI shim for the §3.4 external handoff path.
+#
+# Usage:
+#   review-pdf-app open <path>          # spec form
+#   review-pdf-app <path.pdf>           # positional convenience
+#   review-pdf-app reviewpdf://open?path=<abs>
+#
+# v1 surface is just `path`. The shim forwards any trailing key=value pairs
+# verbatim into argv; main parses them in extractPathFromArgv() and ignores
+# unrecognized keys with a warning (spec §3.4).
+#
+# Single-instance is enforced in main via app.requestSingleInstanceLock(), so
+# invoking this shim while the app is already running focuses the existing
+# window and pivots the middle pane to the new doc — no second window.
+#
+# Distribution story (post-packaging): this shim ships inside the bundle and
+# a postinstall step symlinks it into a $PATH dir. For dev (and until we
+# package), invoke it directly from this path.
+
+set -euo pipefail
+
+# Resolve the desktop/ root regardless of where the shim itself lives (it
+# may be symlinked into /usr/local/bin by the user).
+SCRIPT_PATH="$(readlink -f -- "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")"
+DESKTOP_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
+# In dev we hand the open request to `electron-vite dev` via process argv;
+# main's extractPathFromArgv picks it up. The double `--` ensures the
+# downstream npm script forwards everything intact rather than swallowing
+# args starting with `-`.
+if [ -n "${REVIEW_PDF_APP_BIN:-}" ] && [ -x "$REVIEW_PDF_APP_BIN" ]; then
+  # Packaged binary path (set by the launcher after we have one). Forward
+  # all argv verbatim.
+  exec "$REVIEW_PDF_APP_BIN" "$@"
+fi
+
+# Fall back to dev launch. `npm run dev` boots electron-vite, which spawns
+# Electron with our main entry — argv after `--` reach process.argv.
+cd "$DESKTOP_DIR"
+exec npm --silent run dev -- "$@"
