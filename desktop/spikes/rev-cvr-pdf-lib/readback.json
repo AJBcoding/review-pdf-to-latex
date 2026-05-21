@@ -1,0 +1,76 @@
+[
+  {
+    "page": 0,
+    "subtype": "Highlight",
+    "rect": {
+      "x": 72,
+      "y": 698,
+      "w": 377,
+      "h": 16
+    },
+    "contents": "claude surface this",
+    "author": "test-author",
+    "color": [
+      1,
+      1,
+      0
+    ],
+    "quads": [
+      {
+        "ul": {
+          "x": 72,
+          "y": 714
+        },
+        "ur": {
+          "x": 449,
+          "y": 714
+        },
+        "ll": {
+          "x": 72,
+          "y": 698
+        },
+        "lr": {
+          "x": 449,
+          "y": 698
+        }
+      }
+    ]
+  },
+  {
+    "page": 0,
+    "subtype": "Highlight",
+    "rect": {
+      "x": 72,
+      "y": 626,
+      "w": 208,
+      "h": 16
+    },
+    "contents": "tighten the prose",
+    "author": "test-author",
+    "color": [
+      1,
+      1,
+      0
+    ],
+    "quads": [
+      {
+        "ul": {
+          "x": 72,
+          "y": 642
+        },
+        "ur": {
+          "x": 280,
+          "y": 642
+        },
+        "ll": {
+          "x": 72,
+          "y": 626
+        },
+        "lr": {
+          "x": 280,
+          "y": 626
+        }
+      }
+    ]
+  }
+]
