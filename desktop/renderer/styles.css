@@ -367,7 +367,32 @@ html, body, #app {
  * Click a card → viewer.revealAnchor jumps to its page + repaints the
  * persistent highlight at the captured PDF-space region.
  */
-.comment-stream { display: flex; flex-direction: column; gap: 8px; }
+.comment-stream { display: flex; flex-direction: column; gap: 16px; }
+
+/* rev-6vc: bucket cards under their engagement level. Header text uses the
+ * same accent color the card's left border uses, so the section heading
+ * and its cards read as one visual group. */
+.comment-section { display: flex; flex-direction: column; gap: 8px; }
+.comment-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 4px;
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.comment-section-label { font-weight: 600; }
+.comment-section-count {
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+  font-weight: 500;
+}
+.comment-section[data-level="comment"] .comment-section-label { color: #4a9eff; }
+.comment-section[data-level="redraft"] .comment-section-label { color: #c084fc; }
+.comment-section[data-level="surface"] .comment-section-label { color: #38bdf8; }
 .comment-card {
   background: #181818;
   border: 1px solid var(--pane-border);
@@ -380,6 +405,15 @@ html, body, #app {
   transition: background 80ms ease, border-color 80ms ease;
 }
 .comment-card:hover { background: #1f1f1f; border-color: #3a3a3a; }
+/* rev-680: focus ring on the keyboard-focused card. Mirrors the textarea
+ * focus accent so the active selection is obvious without being loud. */
+.comment-card:focus { outline: none; }
+.comment-card:focus-visible {
+  outline: none;
+  background: #1f1f1f;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 .comment-card[data-level="comment"]  { border-left-color: #4a9eff; }
 .comment-card[data-level="redraft"]  { border-left-color: #c084fc; }
 .comment-card[data-level="surface"]  { border-left-color: #38bdf8; }
@@ -400,9 +434,49 @@ html, body, #app {
 .comment-card[data-level="redraft"] .comment-card-level { color: #c084fc; }
 .comment-card[data-level="surface"] .comment-card-level { color: #38bdf8; }
 .comment-card-anchor {
+  flex: 1 1 auto;
   font-family: ui-monospace, monospace;
   font-size: 10px;
   color: var(--muted);
+}
+/* rev-b8t: edit + delete buttons live in the card head. Hidden until the
+ * card is hovered / focused so the resting state stays clean — discoverable
+ * but not visually loud. */
+.comment-card-actions {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+.comment-card:hover .comment-card-actions,
+.comment-card:focus-within .comment-card-actions,
+.comment-card:focus-visible .comment-card-actions { opacity: 1; }
+.comment-card-action {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.comment-card-action:hover {
+  color: var(--text);
+  background: #2a2a2a;
+  border-color: var(--pane-border);
+}
+.comment-card-action[data-action="delete"]:hover {
+  color: #f87171;
+  border-color: #5a2424;
+  background: #2a1818;
 }
 .comment-card-quote {
   font-style: italic;

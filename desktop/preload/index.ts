@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { DraftsFile, ElectronAPI } from '@shared/types';
 
 // Expose a minimal, typed IPC surface to the renderer.
@@ -13,6 +13,12 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke('drafts:read', pdfPath, sha256),
   writeDrafts: (pdfPath: string, sha256: string, file: DraftsFile) =>
     ipcRenderer.invoke('drafts:write', pdfPath, sha256, file),
+  onDraftsFlushRequest: (cb) => {
+    const listener = (_e: IpcRendererEvent, id: string) => cb(id);
+    ipcRenderer.on('drafts:flushRequest', listener);
+    return () => { ipcRenderer.off('drafts:flushRequest', listener); };
+  },
+  sendDraftsFlushAck: (id: string) => { ipcRenderer.send('drafts:flushAck', id); },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

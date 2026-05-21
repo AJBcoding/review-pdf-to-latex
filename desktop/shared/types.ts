@@ -164,6 +164,14 @@ export interface ElectronAPI {
   // Writes the snapshot atomically (temp file + rename). Mkdir -p the
   // drafts dir first. Renderer debounces calls 250ms per spec §10.3.
   writeDrafts(pdfPath: string, sha256: string, file: DraftsFile): Promise<DraftsWriteResult>;
+  // Flush handshake: main asks the renderer to drain its pending drafts
+  // debounce before window close / app quit; renderer flushes, then acks
+  // with the same id. Without this, a Cmd+Q within 250ms of a submit
+  // loses the comment (debounce hasn't fired yet — see rev-cm6).
+  // Returns an unsubscribe fn so callers can detach (the renderer wires
+  // this once at boot and leaves it attached for the process lifetime).
+  onDraftsFlushRequest(cb: (id: string) => void): () => void;
+  sendDraftsFlushAck(id: string): void;
 }
 
 declare global {

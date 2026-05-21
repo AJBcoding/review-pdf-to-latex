@@ -95,8 +95,43 @@ async function flushDraftsWrite(): Promise<void> {
 }
 
 async function init() {
+  wireDraftsQuitFlush();
   await mountStartupDiagnostics();
   bootProjectOpenFlow();
+}
+
+/** rev-cm6: drain the debounced drafts write before the window/app goes away.
+ *
+ *  Two paths:
+ *    1. Main-side handshake — main sends `drafts:flushRequest` from its
+ *       `before-quit` / `window.close` handlers and awaits our ack. This is
+ *       the reliable path for Cmd+Q / Cmd+W.
+ *    2. `beforeunload` fallback — covers paths the main-side hook can't
+ *       intercept (devtools reload, navigation). Best-effort: async writes
+ *       may not complete before the page is torn down, so this isn't a
+ *       substitute for the handshake — just defense in depth.
+ */
+function wireDraftsQuitFlush(): void {
+  window.electronAPI.onDraftsFlushRequest(async (id) => {
+    // Only write if a debounced write was actually pending — otherwise the
+    // ack is a no-op. Avoids writing an empty drafts file for documents the
+    // user opens and closes without commenting (would litter the .review-state
+    // dir next to every PDF the user even peeks at).
+    if (writeTimer === null) {
+      window.electronAPI.sendDraftsFlushAck(id);
+      return;
+    }
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    try { await flushDraftsWrite(); }
+    finally { window.electronAPI.sendDraftsFlushAck(id); }
+  });
+  window.addEventListener('beforeunload', () => {
+    if (writeTimer === null) return;
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    void flushDraftsWrite();
+  });
 }
 
 async function mountStartupDiagnostics(): Promise<void> {
@@ -124,6 +159,15 @@ async function mountStartupDiagnostics(): Promise<void> {
     engineLine.textContent = `engine ✗  IPC error: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
+
+/** rev-680: ID of the card the user last focused. Tracked at module scope
+ *  so renderAllCards (which replaces the DOM nodes) can restore focus to
+ *  the same logical comment if it still exists after a submit. */
+let focusedCommentId: string | null = null;
+
+/** rev-b8t: when set, the next submit replaces the named comment's body
+ *  instead of creating a new one. Cleared on submit, Esc, or doc switch. */
+let editingCommentId: string | null = null;
 
 function bootProjectOpenFlow(): void {
   const mount = document.getElementById('pdfMount');
@@ -174,6 +218,8 @@ function bootProjectOpenFlow(): void {
 
   openBtn.addEventListener('click', () => { void handleOpenClick(handles, openBtn); });
 
+  bindCommentStreamKeyboard();
+
   // ⌘O / Ctrl+O as a convenience accelerator. Spec doesn't mandate it for
   // this milestone, but it's expected on macOS and one event listener.
   document.addEventListener('keydown', (e) => {
@@ -210,6 +256,9 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   docState.sha256 = '';
   docState.lastSelection = null;
   docState.comments = [];
+  focusedCommentId = null;
+  editingCommentId = null;
+  clearInput();
   renderAllCards();
   updateAnchorMeta();
 
@@ -443,7 +492,11 @@ function bootToolPaletteAndInput(): void {
       void handleSubmit();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      clearInput();
+      // rev-b8t: Esc cancels an in-progress edit (restoring the original
+      // body to the card) before falling through to the standard "just
+      // clear the buffer" behavior.
+      if (editingCommentId) cancelEdit();
+      else clearInput();
     }
   });
   clearBtn.addEventListener('click', () => { clearInput(); input.focus(); });
@@ -498,6 +551,17 @@ function handleSelection(payload: SelectionPayload): void {
 function updateAnchorMeta(): void {
   const meta = document.getElementById('commentAnchor');
   if (!meta) return;
+  // rev-b8t: in edit mode the meta line tells the user what they're doing
+  // (and how to bail) instead of showing the live-selection breadcrumb.
+  if (editingCommentId) {
+    const c = docState.comments.find((x) => x.id === editingCommentId);
+    if (c) {
+      meta.textContent = `Editing ${labelFor(c.engagement_level)} · Enter to save · Esc to cancel`;
+      meta.classList.add('has-selection');
+      return;
+    }
+    editingCommentId = null;
+  }
   const sel = docState.lastSelection;
   if (!sel) {
     meta.textContent = docState.path
@@ -526,6 +590,26 @@ async function handleSubmit(): Promise<void> {
   if (!input) return;
   const buf = input.value.trim();
   if (!buf) return; // nothing to submit — silent no-op
+
+  // rev-b8t: in edit mode, update the body field of the existing comment
+  // and don't touch its anchor / engagement_level / id. Bail without
+  // surfacing the no-anchor flash even if the user has cleared selection
+  // since they started editing — the anchor was captured at create time.
+  if (editingCommentId) {
+    const c = docState.comments.find((x) => x.id === editingCommentId);
+    if (c) {
+      if (c.engagement_level === 'redraft') c.redraft = buf;
+      else c.comment = buf;
+      renderAllCards();
+      scheduleDraftsWrite();
+    }
+    editingCommentId = null;
+    clearInput();
+    updateAnchorMeta();
+    input.focus();
+    return;
+  }
+
   if (!docState.lastSelection) {
     // milestone #3 requires an anchor; standalone point-comments (§5.1) land
     // in a later milestone alongside the click-to-anchor affordance.
@@ -566,7 +650,13 @@ function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload
 
 /** Rebuild the comment stream from `docState.comments`. Cheap enough for
  *  the v1 scale (10s-100s of cards per doc) — if this ever shows up in a
- *  flame graph, switch to incremental DOM updates keyed by `c.id`. */
+ *  flame graph, switch to incremental DOM updates keyed by `c.id`.
+ *
+ *  rev-6vc: cards are grouped by engagement level (spec §9.1), in L1→L3
+ *  order with chronological (newest-first) ordering preserved within each
+ *  bucket. Empty buckets are omitted so an all-Comment session doesn't
+ *  show two stub headers below.
+ */
 function renderAllCards(): void {
   const stream = document.getElementById('commentStream');
   if (!stream) return;
@@ -574,8 +664,88 @@ function renderAllCards(): void {
     stream.replaceChildren(buildEmptyPlaceholder());
     return;
   }
-  const cards = docState.comments.map((c) => buildCommentCard(c));
-  stream.replaceChildren(...cards);
+  const sections: HTMLElement[] = [];
+  for (const level of LEVEL_ORDER) {
+    const bucket = docState.comments.filter((c) => c.engagement_level === level);
+    if (bucket.length === 0) continue;
+    sections.push(buildLevelSection(level, bucket));
+  }
+  stream.replaceChildren(...sections);
+  // rev-680: a card we'd previously focused may no longer exist after a
+  // doc switch or delete; restore focus only if it survived the rebuild.
+  if (focusedCommentId) {
+    const restore = stream.querySelector<HTMLElement>(
+      `.comment-card[data-id="${CSS.escape(focusedCommentId)}"]`
+    );
+    if (restore) restore.focus({ preventScroll: true });
+    else focusedCommentId = null;
+  }
+}
+
+const LEVEL_ORDER: readonly EngagementLevel[] = ['comment', 'redraft', 'surface'];
+
+function buildLevelSection(level: EngagementLevel, cards: CommentPayload[]): HTMLElement {
+  const section = document.createElement('div');
+  section.className = 'comment-section';
+  section.dataset.level = level;
+  const head = document.createElement('div');
+  head.className = 'comment-section-head';
+  const label = document.createElement('span');
+  label.className = 'comment-section-label';
+  label.textContent = labelFor(level);
+  const count = document.createElement('span');
+  count.className = 'comment-section-count';
+  count.textContent = String(cards.length);
+  head.append(label, count);
+  section.append(head);
+  for (const c of cards) section.append(buildCommentCard(c));
+  return section;
+}
+
+/** rev-680: stream-level keyboard handler. j/k + ↓/↑ move between cards;
+ *  Enter on a focused card reveals its anchor. Spec §15 gates these on
+ *  "right-drawer comment stream focused" — we get that for free because
+ *  the listener is scoped to #commentStream and only fires when a card
+ *  (or the stream itself) is the keydown target. While the user types in
+ *  the bottom textarea, keystrokes land there and never reach this
+ *  listener, so the spec's focus discipline is enforced structurally. */
+function bindCommentStreamKeyboard(): void {
+  const stream = document.getElementById('commentStream');
+  if (!stream) return;
+  stream.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return; // don't shadow Cmd+J etc.
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveCardFocus(stream, +1);
+    } else if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveCardFocus(stream, -1);
+    } else if (e.key === 'Enter') {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement)) return;
+      if (!focused.classList.contains('comment-card')) return;
+      const id = focused.dataset.id;
+      const c = id ? docState.comments.find((x) => x.id === id) : null;
+      if (!c || !viewerRef) return;
+      e.preventDefault();
+      void viewerRef.revealAnchor(c.anchor.page, c.anchor.region);
+    }
+  });
+}
+
+function moveCardFocus(stream: HTMLElement, dir: 1 | -1): void {
+  const cards = Array.from(stream.querySelectorAll<HTMLElement>('.comment-card'));
+  if (cards.length === 0) return;
+  const current = document.activeElement instanceof HTMLElement
+    ? cards.indexOf(document.activeElement)
+    : -1;
+  // First j/k with nothing focused: enter the list from the natural end —
+  // j → first card, k → last card. After that, clamp at the edges (no
+  // wrap; wrap is surprising in lists this small).
+  const next = current === -1
+    ? (dir === 1 ? 0 : cards.length - 1)
+    : Math.max(0, Math.min(cards.length - 1, current + dir));
+  cards[next].focus();
 }
 
 function buildEmptyPlaceholder(): HTMLElement {
@@ -591,6 +761,14 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   card.className = 'comment-card';
   card.dataset.level = c.engagement_level;
   card.dataset.id = c.id;
+  // rev-680: cards are individually focusable so Tab walks them and the
+  // spec's `j`/`k`/`Enter` bindings have a clear "currently focused card"
+  // to operate on. role=button so AT users hear "button" semantics — click
+  // and Enter both reveal the anchor.
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', `${labelFor(c.engagement_level)} on page ${c.anchor.page}`);
+  card.addEventListener('focus', () => { focusedCommentId = c.id; });
   // Click to reveal: jumps to the anchor's page and repaints the persistent
   // highlight at the captured PDF-space region. Stable across zoom because
   // the region was stored in PDF points.
@@ -608,7 +786,7 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   anchor.className = 'comment-card-anchor';
   const r = c.anchor.region;
   anchor.textContent = `· p.${c.anchor.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)}`;
-  head.append(level, anchor);
+  head.append(level, anchor, buildCardActions(c));
 
   const quote = document.createElement('div');
   quote.className = 'comment-card-quote';
@@ -630,6 +808,81 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   }
 
   return card;
+}
+
+/** rev-b8t: per-card edit + delete controls. Both stop propagation so
+ *  they don't trigger the card-level click (revealAnchor) underneath. */
+function buildCardActions(c: CommentPayload): HTMLElement {
+  const actions = document.createElement('div');
+  actions.className = 'comment-card-actions';
+
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'comment-card-action';
+  edit.dataset.action = 'edit';
+  edit.title = 'Edit this comment';
+  edit.setAttribute('aria-label', 'Edit comment');
+  edit.textContent = '✎';
+  edit.addEventListener('click', (e) => {
+    e.stopPropagation();
+    beginEditComment(c.id);
+  });
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'comment-card-action';
+  del.dataset.action = 'delete';
+  del.title = 'Delete this comment';
+  del.setAttribute('aria-label', 'Delete comment');
+  del.textContent = '×';
+  del.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void deleteComment(c.id);
+  });
+
+  actions.append(edit, del);
+  return actions;
+}
+
+function beginEditComment(id: string): void {
+  const c = docState.comments.find((x) => x.id === id);
+  if (!c) return;
+  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  if (!input) return;
+  editingCommentId = id;
+  // Body lives in `redraft` for Redraft cards, `comment` otherwise. Load
+  // whichever field the original engagement_level wrote into so the user
+  // edits exactly what's in the card.
+  input.value = c.engagement_level === 'redraft' ? (c.redraft ?? '') : c.comment;
+  // Match the active tool to the comment's level so a follow-on Submit
+  // routes the buffer to the same field (and Cmd+1/2/3 reads consistent).
+  setActiveTool(c.engagement_level);
+  updateAnchorMeta();
+  input.focus();
+  input.select();
+}
+
+function cancelEdit(): void {
+  if (!editingCommentId) return;
+  editingCommentId = null;
+  clearInput();
+  updateAnchorMeta();
+}
+
+async function deleteComment(id: string): Promise<void> {
+  const c = docState.comments.find((x) => x.id === id);
+  if (!c) return;
+  // No undo yet, so confirm to prevent accidental loss of work. Inline
+  // body preview helps the user recognize which card they're about to nuke.
+  const preview = (c.engagement_level === 'redraft' ? (c.redraft ?? '') : c.comment).trim();
+  const snippet = preview ? `\n\n"${truncate(preview, 80)}"` : '';
+  const ok = window.confirm(`Delete this ${labelFor(c.engagement_level)}?${snippet}`);
+  if (!ok) return;
+  docState.comments = docState.comments.filter((x) => x.id !== id);
+  if (focusedCommentId === id) focusedCommentId = null;
+  if (editingCommentId === id) cancelEdit();
+  renderAllCards();
+  scheduleDraftsWrite();
 }
 
 function labelFor(level: Tool): string {
