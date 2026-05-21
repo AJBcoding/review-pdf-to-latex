@@ -423,12 +423,29 @@ let viewerHandlesRef: ViewerHandles | null = null;
 let appStateSaveTimer: number | null = null;
 const APP_STATE_DEBOUNCE_MS = 250;
 
+/** In-memory mirror of AppStateFile.left_drawer_collapsed. Toggled by the
+ *  chevron button + Cmd+\; persisted via the existing app-state debounce. */
+let leftDrawerCollapsed = false;
+
+function setLeftDrawerCollapsed(next: boolean): void {
+  leftDrawerCollapsed = next;
+  const layout = document.querySelector<HTMLElement>('.layout');
+  if (layout) layout.classList.toggle('left-collapsed', next);
+  const btn = document.getElementById('treeToggleCollapse');
+  if (btn) {
+    btn.textContent = next ? '▶' : '◀';
+    btn.setAttribute('aria-pressed', String(next));
+    btn.setAttribute('title', next ? 'Expand file tree (⌘\\)' : 'Collapse file tree (⌘\\)');
+  }
+}
+
 async function bootLeftDrawerAndPalette(): Promise<void> {
   const body = document.getElementById('treeBody');
   const title = document.getElementById('treeTitle');
   const empty = document.getElementById('treeEmpty');
   const openBtn = document.getElementById('treeOpenFolder') as HTMLButtonElement | null;
   const hiddenBtn = document.getElementById('treeToggleHidden') as HTMLButtonElement | null;
+  const collapseBtn = document.getElementById('treeToggleCollapse') as HTMLButtonElement | null;
   const emptyOpenLink = document.getElementById('treeEmptyOpen');
   const paletteRoot = document.getElementById('palette');
   const paletteInput = document.getElementById('paletteInput') as HTMLInputElement | null;
@@ -470,8 +487,21 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       palette?.open();
+    } else if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
+      e.preventDefault();
+      setLeftDrawerCollapsed(!leftDrawerCollapsed);
+      scheduleAppStateSave();
     }
   });
+
+  // Left-drawer collapse toggle: click the chevron OR ⌘\ (§15-style accelerator).
+  // Persists via AppStateFile.left_drawer_collapsed; restored in restoreFromAppState.
+  if (collapseBtn) {
+    collapseBtn.addEventListener('click', () => {
+      setLeftDrawerCollapsed(!leftDrawerCollapsed);
+      scheduleAppStateSave();
+    });
+  }
 
   // §3.3 — restore last session.
   await restoreFromAppState();
@@ -529,6 +559,7 @@ async function flushAppStateSave(): Promise<void> {
     last_opened_doc: docState.path || null,
     expanded_dirs: snap.expanded,
     show_hidden: snap.showHidden,
+    left_drawer_collapsed: leftDrawerCollapsed,
     origin_rig_per_doc: Object.fromEntries(originRigPerDoc.entries()),
     recent_rigs: [...recentRigsList],
     last_destination_per_doc: Object.fromEntries(lastDestinationPerDoc.entries()),
@@ -563,6 +594,10 @@ async function restoreFromAppState(): Promise<void> {
   if (Array.isArray(state.recent_rigs)) {
     recentRigsList.length = 0;
     recentRigsList.push(...state.recent_rigs.slice(0, MAX_RECENT_RIGS));
+  }
+  // Left-drawer collapsed state (optional field; defaults to expanded).
+  if (state.left_drawer_collapsed) {
+    setLeftDrawerCollapsed(true);
   }
   // Verify the remembered root still exists. If it was moved or deleted, we
   // silently fall back to the empty tree rather than throwing a modal — the

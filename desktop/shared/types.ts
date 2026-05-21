@@ -329,6 +329,9 @@ export interface AppStateFile {
    *  semantics; main writes deduped + sorted. */
   expanded_dirs: string[];
   show_hidden: boolean;
+  /** Whether the left drawer (file tree) is collapsed to a thin strip.
+   *  Persisted so the user's preference survives restart. */
+  left_drawer_collapsed?: boolean;
   /** §10.5.1 — originating rig per source-doc path. Populated when the app
    *  is launched via `review-pdf-app open <path> --from <rig-id>`; survives
    *  app restart so re-opening the same doc still routes Submit to the same

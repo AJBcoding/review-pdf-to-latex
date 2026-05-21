@@ -914,6 +914,44 @@ html, body, #app {
   background: #143352;
 }
 
+.tree-collapse-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 12px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.tree-collapse-btn:hover {
+  color: var(--text);
+  background: #2a2a2a;
+  border-color: var(--pane-border);
+}
+
+/*
+ * Left-drawer collapse: thin 28px strip that just shows the expand chevron.
+ * Tree body, title, and the open-folder/show-hidden controls are hidden;
+ * the collapse button itself stays visible and flips its glyph to ▶ to
+ * advertise re-expansion. Persisted via AppStateFile.left_drawer_collapsed.
+ */
+.layout.left-collapsed {
+  grid-template-columns: 28px minmax(0, 1fr) 440px;
+}
+.left-collapsed .left-drawer .tree-header-title,
+.left-collapsed .left-drawer .tree-header-controls,
+.left-collapsed .left-drawer .tree-body {
+  display: none;
+}
+.left-collapsed .left-drawer .tree-header {
+  justify-content: center;
+  padding: 8px 0;
+}
+.left-collapsed .left-drawer .tree-collapse-btn::after {
+  content: "";
+}
+
 .tree-body {
   padding: 4px 0;
 }
