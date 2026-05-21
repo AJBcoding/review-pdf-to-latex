@@ -305,15 +305,15 @@ The conversational pty is never used for Submit; Submit always slings to a rig (
 
 #### 9.2.3 Skill priming
 
-On spawn (and on every restart), the app injects a one-line priming message into stdin so the session knows to use the `review-pdf-to-latex` skill:
+On spawn (and on every restart), the app injects a slash-command into stdin to activate the skill:
 
 ```
-Use the review-pdf-to-latex skill for any /review-pdf commands.
+/review-pdf-to-latex
 ```
 
-Visible in scrollback so the user can audit. Wired into the spawn routine itself so crash-recovery re-primes automatically.
+This is the primary path. **Claude Code 2.1.146 has no `--skill` CLI flag** (verified by the rev-a1u spike, docs/research/2026-05-21-m7-92-spike/); skills activate via slash command. The injection is visible in scrollback so the user can audit. Wired into the spawn routine itself so crash-recovery re-primes automatically.
 
-Pre-flight check during impl: if `claude --skill review-pdf-to-latex` (or equivalent) is supported by the current Claude Code CLI, swap to that — strictly cleaner (no token cost, no scrollback noise). The priming-message path is the fallback that works regardless.
+Fallback (if a future CLI version drops slash-command activation): inject a one-line priming message `Use the review-pdf-to-latex skill for any /review-pdf commands.` — same code path, swap the string.
 
 #### 9.2.4 Doc-switch notification
 
@@ -330,7 +330,9 @@ Rules:
 
 #### 9.2.5 Reviewer rig (gas-town integration)
 
-When gas-town integration is enabled (auto-detected on `gt` binary presence; user-toggleable in Settings), the embedded session runs as a **global Reviewer rig** — its own gas-town identity, not a sub-rig of the user's existing crew. Identity: `reviewer/<you>`. Single global rig per user; one inbox aggregates work from every project where gas-town is enabled.
+When gas-town integration is enabled (auto-detected by running `gt --version` and checking for exit 0; user-toggleable in Settings), the embedded session runs as a **global Reviewer rig** — its own gas-town identity, not a sub-rig of the user's existing crew. Identity: `reviewer/<you>`. Single global rig per user; one inbox aggregates work from every project where gas-town is enabled.
+
+`gt whoami` is reserved for identity *display* (e.g., the Settings UI showing the current rig identity); the Sling-button gate uses `gt --version` because it's a cheaper, more reliable presence probe (no auth/state requirements).
 
 When gas-town is disabled or undetected, the embedded session is a plain Claude pty without rig identity. The Sling toolbar button (§9.2.6) is greyed out in this case, with a click-to-explain popover ("Enable gas-town integration in Settings to sling to other rigs").
 
