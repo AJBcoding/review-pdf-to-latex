@@ -57,6 +57,9 @@ export class FileTree {
   /** Per-folder in-flight load promise so a double-click can't issue two
    *  reads of the same dir. */
   private loading = new Map<string, Promise<void>>();
+  /** Current case-insensitive substring filter applied after render.
+   *  Empty string = no filter. */
+  private filterQuery = '';
 
   constructor(opts: FileTreeOptions) {
     this.opts = opts;
@@ -223,6 +226,75 @@ export class FileTree {
     this.renderDirChildren(this.root, ul, 0);
     this.opts.body.append(ul);
     this.refreshActiveRow();
+    if (this.filterQuery) this.applyFilterToDom();
+  }
+
+  /** Case-insensitive substring filter applied to currently-rendered rows.
+   *  Hides non-matching leaves; keeps ancestor directories of matches visible
+   *  so context is preserved. Empty string clears the filter. */
+  setFilter(query: string): void {
+    this.filterQuery = query.trim();
+    this.applyFilterToDom();
+  }
+
+  /** Measure the rendered tree's natural width and return a clamped pixel
+   *  value the host can apply to --col-left. Reads scrollWidth of each
+   *  row's label + chrome (chevron+icon+padding). Returns a value in
+   *  [minPx, maxPx]. */
+  measureFitWidth(minPx = 180, maxPx = 480, chrome = 28): number {
+    const rows = this.opts.body.querySelectorAll<HTMLElement>('.tree-row:not([hidden])');
+    let max = minPx;
+    rows.forEach((row) => {
+      const padLeft = parseFloat(row.style.paddingLeft || '0') || 0;
+      const label = row.querySelector<HTMLElement>('.tree-label');
+      const labelW = label ? label.scrollWidth : row.scrollWidth;
+      const total = padLeft + chrome + labelW + 12; // +12 for right padding/scrollbar
+      if (total > max) max = total;
+    });
+    return Math.max(minPx, Math.min(maxPx, Math.round(max)));
+  }
+
+  /** Walk all rendered rows; show/hide based on filterQuery. A directory
+   *  row stays visible if it contains a matching descendant (even nested);
+   *  this preserves context so the user can see where a hit lives. */
+  private applyFilterToDom(): void {
+    const rows = Array.from(this.opts.body.querySelectorAll<HTMLElement>('.tree-row'));
+    rows.forEach((r) => { r.hidden = false; r.classList.remove('is-search-hit'); });
+    if (!this.filterQuery) return;
+
+    const q = this.filterQuery.toLowerCase();
+    // Pass 1: mark direct hits (leaves AND dirs whose own name matches).
+    const directHit = new Set<HTMLElement>();
+    rows.forEach((r) => {
+      const label = r.querySelector<HTMLElement>('.tree-label');
+      const name = (label?.textContent ?? '').toLowerCase();
+      if (name.includes(q)) {
+        directHit.add(r);
+        r.classList.add('is-search-hit');
+      }
+    });
+
+    // Pass 2: for each direct-hit row, walk back through previous siblings
+    // to find every ancestor directory and mark it visible. Tree is rendered
+    // as a flat <ul> where descendant depth = paddingLeft (depth*14 + 6),
+    // so an ancestor is any earlier row with strictly smaller paddingLeft.
+    const visible = new Set<HTMLElement>(directHit);
+    for (const hit of directHit) {
+      const hitDepth = parseFloat(hit.style.paddingLeft || '0') || 0;
+      let prev = hit.previousElementSibling as HTMLElement | null;
+      let needDepth = hitDepth;
+      while (prev) {
+        const d = parseFloat(prev.style.paddingLeft || '0') || 0;
+        if (d < needDepth) {
+          visible.add(prev);
+          needDepth = d;
+          if (d <= 6) break; // reached root level
+        }
+        prev = prev.previousElementSibling as HTMLElement | null;
+      }
+    }
+
+    rows.forEach((r) => { if (!visible.has(r)) r.hidden = true; });
   }
 
   private renderDirChildren(dirPath: string, ul: HTMLElement, depth: number): void {

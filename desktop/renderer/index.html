@@ -31,8 +31,17 @@
           <button id="treeOpenFolder" type="button" title="Open Folder…">📁</button>
           <button id="treeToggleHidden" type="button" aria-pressed="false"
                   title="Show hidden files (.git, node_modules, dotfiles, …)">👁</button>
+          <button id="treeSearchToggle" type="button" aria-pressed="false"
+                  title="Search in file tree (⌘F)">🔎</button>
+          <button id="treeFitWidth" type="button"
+                  title="Fit tree width to contents">↔</button>
         </span>
       </header>
+      <div class="tree-search" id="treeSearchBar" hidden>
+        <input id="treeSearchInput" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Filter by name…" aria-label="Filter file tree" />
+        <button id="treeSearchClear" type="button" title="Clear (Esc)">✗</button>
+      </div>
       <div class="pane-body tree-body" id="treeBody">
         <div class="placeholder" id="treeEmpty">
           <div>No folder open.</div>

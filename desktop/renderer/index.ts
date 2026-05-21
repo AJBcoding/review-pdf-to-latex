@@ -508,6 +508,59 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
     });
   }
 
+  // In-tree search: 🔎 toggle reveals an inline filter input.
+  const searchToggle = document.getElementById('treeSearchToggle') as HTMLButtonElement | null;
+  const searchBar = document.getElementById('treeSearchBar') as HTMLElement | null;
+  const searchInput = document.getElementById('treeSearchInput') as HTMLInputElement | null;
+  const searchClear = document.getElementById('treeSearchClear') as HTMLButtonElement | null;
+  if (searchToggle && searchBar && searchInput && searchClear) {
+    const openSearch = () => {
+      searchBar.hidden = false;
+      searchToggle.setAttribute('aria-pressed', 'true');
+      searchInput.focus();
+      searchInput.select();
+    };
+    const closeSearch = () => {
+      searchBar.hidden = true;
+      searchToggle.setAttribute('aria-pressed', 'false');
+      searchInput.value = '';
+      fileTree?.setFilter('');
+    };
+    searchToggle.addEventListener('click', () => {
+      if (searchBar.hidden) openSearch(); else closeSearch();
+    });
+    searchInput.addEventListener('input', () => {
+      fileTree?.setFilter(searchInput.value);
+    });
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+    });
+    searchClear.addEventListener('click', () => { closeSearch(); searchToggle.focus(); });
+    // ⌘F as global accelerator (when nothing is focused inside the document
+    // pane, otherwise it can stay native browser-find inside contenteditables).
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f' &&
+          !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        if (searchBar.hidden) openSearch(); else searchInput.focus();
+      }
+    });
+  }
+
+  // Fit-width: measure the tree's natural width and bump --col-left to match.
+  const fitWidthBtn = document.getElementById('treeFitWidth') as HTMLButtonElement | null;
+  if (fitWidthBtn) {
+    fitWidthBtn.addEventListener('click', () => {
+      if (!fileTree) return;
+      const px = fileTree.measureFitWidth();
+      const layoutEl = document.querySelector<HTMLElement>('.layout');
+      if (!layoutEl) return;
+      layoutEl.style.setProperty('--col-left', `${px}px`);
+      layoutWidths = { ...layoutWidths, col_left: px };
+      scheduleAppStateSave();
+    });
+  }
+
   // Splitter gutters between the three columns + the right-drawer row split.
   // Widths persist via AppStateFile.layout_widths; defaults apply on first run.
   const layoutEl = document.querySelector<HTMLElement>('.layout');

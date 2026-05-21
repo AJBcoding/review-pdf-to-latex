@@ -969,6 +969,56 @@ html, body, #app {
 .tree-body {
   padding: 4px 0;
 }
+
+/*
+ * In-tree search bar. Reveals below the tree header via the 🔎 toggle.
+ * Filter is a case-insensitive substring match on filename; tree rows
+ * whose own name doesn't match AND whose descendants don't match are
+ * hidden with .tree-row[hidden]. Esc clears + collapses the bar.
+ */
+.tree-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--pane-border);
+  background: #1e1e1e;
+}
+.tree-search input {
+  flex: 1 1 auto;
+  background: #161616;
+  color: var(--text);
+  border: 1px solid var(--pane-border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
+}
+.tree-search input:focus {
+  border-color: var(--accent);
+}
+.tree-search button {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tree-search button:hover {
+  color: var(--text);
+  background: #2a2a2a;
+}
+.tree-row.is-search-hit > .tree-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+.left-collapsed .tree-search {
+  display: none;
+}
 .tree-root {
   list-style: none;
   margin: 0;
