@@ -118,15 +118,59 @@
     </main>
 
     <aside class="pane right-drawer" data-pane="comments-and-claude">
-      <header class="pane-header">Comments + Claude</header>
       <!--
-        Right drawer comment stream. Milestone #3 echoes submitted comments
-        here as raw JSON cards; the proper comment-card UI + persistence land
-        in milestone #4 (§9.1, §10.3).
+        §9 right drawer. Split into top ⅔ (comment stream) and bottom ⅓
+        (embedded Claude pane). The two sections are flex-grown so resizing
+        the window scales them proportionally; the drag-to-resize handle is
+        a v2 nicety.
       -->
-      <div class="pane-body comment-stream" id="commentStream">
-        <div class="placeholder" id="commentStreamEmpty">No comments yet — highlight text in the PDF, pick a tool, and press Enter.</div>
-      </div>
+      <section class="rd-section rd-comments" data-section="comments">
+        <header class="pane-header">Comments</header>
+        <!--
+          Right drawer comment stream. Milestone #3 echoes submitted comments
+          here as raw JSON cards; the proper comment-card UI + persistence land
+          in milestone #4 (§9.1, §10.3).
+        -->
+        <div class="pane-body comment-stream" id="commentStream">
+          <div class="placeholder" id="commentStreamEmpty">No comments yet — highlight text in the PDF, pick a tool, and press Enter.</div>
+        </div>
+      </section>
+      <!--
+        §9.2 embedded Claude pane. Hosts the conversational pty (Assistant tab,
+        pinned) and any worker pty tabs spawned via the toolbar (rev-1md.3).
+        Lazy-mounted: terminal init waits until the first PDF opens. Pre-open
+        we show a one-line placeholder so the user knows the pane exists.
+      -->
+      <section class="rd-section rd-claude" data-section="claude">
+        <header class="pane-header rd-claude-header">
+          <span class="rd-claude-title">Claude</span>
+          <span class="rd-claude-identity" id="claudeIdentity" hidden></span>
+        </header>
+        <!--
+          Tab strip. Assistant tab is pinned (the conversational pty). Worker
+          tabs (Create Context spawns) get added at runtime by rev-1md.3, up
+          to 3 worker tabs total.
+        -->
+        <div class="rd-claude-tabs" id="claudeTabs" role="tablist" aria-label="Claude sessions">
+          <button class="rd-claude-tab is-active" id="claudeTabAssistant"
+                  role="tab" aria-selected="true" data-pty-kind="assistant"
+                  title="Conversational Claude session (always on)">
+            <span class="rd-claude-tab-label">Assistant</span>
+          </button>
+        </div>
+        <!--
+          Mount point. claude-pane.ts attaches an xterm.js Terminal to this
+          div on first PDF open (lazy spawn, §9.2.2). Until then the empty
+          state below is shown.
+        -->
+        <div class="rd-claude-body" id="claudeBody">
+          <div class="rd-claude-empty" id="claudeEmpty">
+            <div>Open a PDF to start a Claude session.</div>
+          </div>
+          <div class="rd-claude-term" id="claudeTerm" hidden></div>
+          <div class="rd-claude-error" id="claudeError" hidden role="status" aria-live="polite"></div>
+        </div>
+      </section>
     </aside>
   </div>
 

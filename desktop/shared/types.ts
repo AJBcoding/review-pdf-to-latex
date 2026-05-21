@@ -489,12 +489,104 @@ export interface ElectronAPI {
   watchResultsStop(): Promise<void>;
   onResultsEvent(cb: (event: ResultsEvent) => void): () => void;
 
+<<<<<<< HEAD
   // §10.4 — write the dated bundle artifact (PDF + JSON sidecar) next to
   // the source PDF. Used by Cmd+S (Export Bundle) and as the first step of
   // Cmd+Return (Submit, rev-1md.4). Multiple writes on the same date
   // overwrite the same files; a new date produces a new dated bundle and
   // leaves yesterday's as audit trail.
   writeBundle(request: BundleWriteRequest): Promise<BundleWriteResult>;
+=======
+  // ─── §9.2 embedded Claude pane (rev-1md.2) ──────────────────────────────
+  // Probe gas-town presence + identity. Cached on the main side; safe to call
+  // freely. Drives the Sling button's enabled/disabled state (§9.2.5).
+  probeReviewer(): Promise<ReviewerProbe>;
+  // Spawn the conversational pty (lazy, on first PDF open). Idempotent — a
+  // second call with a pty already alive returns `already_running: true`.
+  // The renderer wires onPtyData / onPtyExit BEFORE calling start so no
+  // initial bytes are dropped.
+  startPty(params: PtyStartParams): Promise<PtyStartResult>;
+  // Write to the pty's stdin (user keystrokes from xterm.js + app-injected
+  // doc-switch lines). The newline character is the caller's responsibility.
+  sendPtyInput(data: string): void;
+  // Propagate xterm.js's geometry to the pty. Called on every fit().
+  resizePty(cols: number, rows: number): void;
+  // SIGTERM the pty (SIGKILL fallback after 1.5s). Used by Fresh Start
+  // (rev-1md.3) and on app quit.
+  killPty(): Promise<{ ok: true }>;
+  // Data stream from main → renderer. Subscribe before calling startPty.
+  // Returns an unsubscribe fn.
+  onPtyData(cb: (event: PtyDataEvent) => void): () => void;
+  // Exit notification — fires once per spawn generation. The renderer shows
+  // "Claude session ended. [Restart]" per §9.2.2.
+  onPtyExit(cb: (event: PtyExitEvent) => void): () => void;
+}
+
+// ─── §9.2 pty surface — types ─────────────────────────────────────────────
+
+/** Result of probing for gas-town integration. `enabled: true` means we
+ *  found `gt` on PATH and `gt --version` exited 0. The optional `identity`
+ *  is the output of `gt whoami` — best-effort; null when the call fails or
+ *  hasn't been run. */
+export type ReviewerProbe =
+  | {
+      enabled: true;
+      gtPath: string;
+      version: string;
+      identity: string | null;
+    }
+  | {
+      enabled: false;
+      reason: 'no_gt' | 'gt_failed';
+      gtPath?: string;
+      exitCode?: number | null;
+    };
+
+/** Args for `pty:start`. The renderer hands us the cwd to anchor the spawn
+ *  in (§9.2.9). Cols/rows come from the renderer's initial xterm.js fit so
+ *  the priming output renders without a reflow on first frame. */
+export interface PtyStartParams {
+  /** Absolute path of the directory the conversational pty should cwd into.
+   *  Per §9.2.9 = source dir of the currently-open PDF. */
+  docSourceDir: string;
+  cols?: number;
+  rows?: number;
+}
+
+export type PtyStartResult =
+  | {
+      ok: true;
+      already_running: boolean;
+      cwd: string;
+      reviewer: ReviewerProbe;
+    }
+  | {
+      ok: false;
+      reason: 'claude_not_found';
+    }
+  | {
+      ok: false;
+      reason: 'spawn_failed';
+      error: string;
+    }
+  | {
+      ok: false;
+      reason: 'no_window';
+    };
+
+/** A chunk of stdout/stderr from the pty. `generation` lets the renderer
+ *  ignore late data from a previously-killed pty (e.g., if a kill + restart
+ *  raced a final write from the doomed process). */
+export interface PtyDataEvent {
+  generation: number;
+  data: string;
+}
+
+export interface PtyExitEvent {
+  generation: number;
+  exitCode: number;
+  signal: number | null;
+>>>>>>> 1a388d9 (WIP: checkpoint (auto))
 }
 
 declare global {

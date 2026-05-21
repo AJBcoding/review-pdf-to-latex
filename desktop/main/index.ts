@@ -6,6 +6,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
+import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
 import type {
   AppStateFile,
   AppStateReadResult,
@@ -637,6 +638,9 @@ void app.whenReady().then(() => {
     }
   );
 
+  // §9.2 embedded Claude pane — pty manager (rev-1md.2).
+  registerClaudePtyIpc();
+
   createWindow();
 
   app.on('activate', () => {
@@ -647,7 +651,7 @@ void app.whenReady().then(() => {
 // Tear the watcher down on quit so the underlying fs.watch handle releases
 // cleanly. before-quit fires before window close on Cmd+Q; window-all-closed
 // covers the non-darwin path.
-app.on('before-quit', () => { stopResultsWatch(); });
+app.on('before-quit', () => { stopResultsWatch(); shutdownClaudePty(); });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
