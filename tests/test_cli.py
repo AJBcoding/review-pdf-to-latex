@@ -1056,3 +1056,4 @@ def test_exit_code_constants_match_spec():
     assert cli.EXIT_WAIT_TIMEOUT == 20
     assert cli.EXIT_SOURCE_PDF_CHANGED == 21
     assert cli.EXIT_LEGACY_STATE == 22
+    assert cli.EXIT_REVIEWER_RIG_REFUSED == 23

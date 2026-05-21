@@ -12,12 +12,38 @@ from __future__ import annotations
 
 import argparse
 import json as _json
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
 
 
 PROG = "review-pdf"
+
+
+def _reviewer_rig_guard(subcommand: str) -> int | None:
+    """Belt-and-braces refusal for source-mutating atomics under a Reviewer rig.
+
+    Per UX spec §10.5.2 / §10.5.3 (decision rev-1s5 option 3 + thin engine
+    slice), the Reviewer (local) destination has no source-mutation
+    capability. The skill-side gate is the primary enforcement; this
+    secondary gate covers the case where a user invokes the engine binary
+    directly from a Reviewer pty. Returns ``EXIT_REVIEWER_RIG_REFUSED``
+    (23) when ``$GT_RIG`` starts with ``reviewer/``; otherwise ``None``
+    and the caller proceeds normally. An unset or empty ``$GT_RIG`` is
+    not a Reviewer context.
+    """
+    gt_rig = os.environ.get("GT_RIG", "")
+    if gt_rig.startswith("reviewer/"):
+        print(
+            f"{subcommand} refused: invoked under Reviewer rig identity "
+            f"$GT_RIG={gt_rig!r}; this rig has no source-mutation "
+            "capability per spec §10.5.2 (capability matrix). Route the "
+            "submit through an originating rig to apply L1/L2 edits.",
+            file=sys.stderr,
+        )
+        return EXIT_REVIEWER_RIG_REFUSED
+    return None
 
 
 def _add_global_args(
@@ -281,6 +307,8 @@ def _handle_extract(args: argparse.Namespace) -> int:
 
 def _handle_build(args: argparse.Namespace) -> int:
     """Compile LaTeX; append a build record (spec §8 build row)."""
+    if (refused := _reviewer_rig_guard("build")) is not None:
+        return refused
     from review_pdf_to_latex.build import run_build_command
 
     return run_build_command(
@@ -420,7 +448,9 @@ def _handle_status(args: argparse.Namespace) -> int:
 
 
 def _handle_apply(args: argparse.Namespace) -> int:
-    """``apply`` subcommand handler (spec §8 exit codes 0, 7, 8, 9, 13, 16, 18, 21, 22)."""
+    """``apply`` subcommand handler (spec §8 exit codes 0, 7, 8, 9, 13, 16, 18, 21, 22, 23)."""
+    if (refused := _reviewer_rig_guard("apply")) is not None:
+        return refused
     from review_pdf_to_latex.apply import ApplyError, apply_edit
 
     state_dir = Path(args.project_dir) / ".review-state"
@@ -450,7 +480,9 @@ def _handle_apply(args: argparse.Namespace) -> int:
 
 
 def _handle_revert(args: argparse.Namespace) -> int:
-    """``revert`` subcommand handler (spec §8 exit codes 0, 7, 9, 10, 18, 21, 22)."""
+    """``revert`` subcommand handler (spec §8 exit codes 0, 7, 9, 10, 18, 21, 22, 23)."""
+    if (refused := _reviewer_rig_guard("revert")) is not None:
+        return refused
     from review_pdf_to_latex.apply import ApplyError, revert_edit
 
     state_dir = Path(args.project_dir) / ".review-state"
@@ -797,3 +829,4 @@ EXIT_COMMIT_FAILED = 19  # commit-phase: hook or staging error
 EXIT_WAIT_TIMEOUT = 20  # wait-event: --timeout elapsed before any event
 EXIT_SOURCE_PDF_CHANGED = 21  # any mutator: PDF md5 differs from annotations.json.source_pdf_md5
 EXIT_LEGACY_STATE = 22  # any mutator: annotations.json predates source_pdf_md5 guard
+EXIT_REVIEWER_RIG_REFUSED = 23  # apply/build/revert refused under $GT_RIG=reviewer/* per spec §10.5.2
