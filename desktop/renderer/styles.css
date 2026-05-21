@@ -34,7 +34,7 @@ html, body, #app {
  */
 .layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 360px;
+  grid-template-columns: 240px minmax(0, 1fr) 440px;
   grid-template-rows: 100vh;
   gap: 1px;
   background: var(--pane-border);
@@ -1056,18 +1056,20 @@ html, body, #app {
  */
 .diag {
   position: fixed;
-  top: 6px;
-  right: 12px;
+  bottom: 6px;
+  left: 248px;
   font-family: ui-monospace, monospace;
   font-size: 10px;
   color: var(--muted);
   pointer-events: none;
-  text-align: right;
+  text-align: left;
   line-height: 1.4;
-  max-width: 60vw;
-  opacity: 0.7;
+  max-width: 50vw;
+  opacity: 0.45;
   z-index: 10;
+  transition: opacity 0.3s ease;
 }
+.diag:hover { opacity: 0.85; pointer-events: auto; }
 
 /*
  * §9 right drawer split — top ⅔ comments, bottom ⅓ embedded Claude.
@@ -1082,8 +1084,8 @@ html, body, #app {
   flex-direction: column;
   min-height: 0;
 }
-.rd-comments { flex: 2 1 0; border-bottom: 1px solid var(--pane-border); }
-.rd-claude   { flex: 1 1 0; }
+.rd-comments { flex: 1 1 0; border-bottom: 1px solid var(--pane-border); }
+.rd-claude   { flex: 1 1 0; min-height: 320px; }
 
 /*
  * §9.2 embedded Claude pane shell.
