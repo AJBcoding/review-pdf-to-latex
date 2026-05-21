@@ -6,6 +6,11 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'main/index.ts'),
+        // node-pty ships a native binding (build/Release/pty.node) loaded via
+        // dynamic require paths relative to the package; bundling it breaks
+        // that lookup. Externalize so Electron's require resolves it from
+        // node_modules at runtime.
+        external: ['node-pty'],
       },
       outDir: 'out/main',
     },

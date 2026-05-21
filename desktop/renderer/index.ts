@@ -14,6 +14,11 @@ import type {
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
+import {
+  mount as mountClaudePane,
+  ensureSpawned as ensureClaudePaneSpawned,
+  notifyDocSwitch as notifyClaudeDocSwitch,
+} from './claude-pane';
 
 /** Cross-platform path basename — avoids dragging in a node path polyfill
  * just for the title-bar label. Handles both POSIX and Windows separators. */
@@ -188,10 +193,40 @@ async function init() {
   wireResultsEvents();
   await mountStartupDiagnostics();
   bootProjectOpenFlow();
+  bootClaudePane();
   await bootLeftDrawerAndPalette();
   // Verification scripts (and humans poking at devtools) can wait on this
   // to know all async boot work — including state restore — has settled.
   (window as unknown as { __APP_READY?: boolean }).__APP_READY = true;
+}
+
+/** §9.2 — wire the Claude pane DOM refs and IPC listeners. The terminal
+ *  itself isn't constructed until the first PDF open (lazy per §9.2.2). */
+function bootClaudePane(): void {
+  const empty = document.getElementById('claudeEmpty');
+  const term = document.getElementById('claudeTerm');
+  const error = document.getElementById('claudeError');
+  const identity = document.getElementById('claudeIdentity');
+  const body = document.getElementById('claudeBody');
+  if (!empty || !term || !error || !identity || !body) return;
+  mountClaudePane({
+    empty, term, error, identity, body,
+    // App theme is dark in v1 (§13.6 toggle is a spike-only affordance).
+    themeMode: 'dark',
+  });
+  // §9.2.2 — Restart button on a crashed pty fires this event. We re-spawn
+  // against the currently-open PDF's source dir.
+  window.addEventListener('claude-pane:restart-requested', () => {
+    if (!docState.path) return;
+    void ensureClaudePaneSpawned({ docSourceDir: dirnameOf(docState.path) });
+  });
+}
+
+/** Cross-platform dirname — see basename(). We avoid pulling in the node
+ *  path polyfill just for this. */
+function dirnameOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return i > 0 ? p.slice(0, i) : '/';
 }
 
 // ─── §3 left drawer + §3.5 palette ────────────────────────────────────────
@@ -670,15 +705,30 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     });
   }
 
+  let viewerLoaded = false;
   try {
     showViewer(h);
     await h.viewer.loadBytes(bytesResult.bytes);
     h.title.textContent = basename(path);
     setViewerControlsEnabled(h, true);
+    viewerLoaded = true;
   } catch (err) {
     h.title.textContent = basename(path);
     showLoadError(h, null, err);
     setViewerControlsEnabled(h, false);
+  }
+  // §9.2 — lazy spawn the Claude pane on first PDF open. Doc-switches after
+  // the first emit a debounced notification line (§9.2.4). Both are
+  // best-effort; failures show inline in the pane and don't block load.
+  if (viewerLoaded) {
+    const sourceDir = dirnameOf(path);
+    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
+      notifyClaudeDocSwitch({
+        path,
+        pages: h.viewer.totalPages,
+        comments: docState.comments.length,
+      });
+    });
   }
   // §3.3 — persist last-opened-doc and reflect the active row in the tree.
   // Safe to no-op when boot ordering hasn't wired them up yet.

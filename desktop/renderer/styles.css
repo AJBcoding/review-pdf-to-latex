@@ -862,3 +862,121 @@ html, body, #app {
   opacity: 0.7;
   z-index: 10;
 }
+
+/*
+ * §9 right drawer split — top ⅔ comments, bottom ⅓ embedded Claude.
+ * Flex grow factors approximate 2:1; min-height:0 lets each section's
+ * scroll containers shrink past their content (otherwise flex containers
+ * inherit content-size from their children and the lower one starves the
+ * upper one's scroll).
+ */
+.right-drawer { padding: 0; }
+.rd-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.rd-comments { flex: 2 1 0; border-bottom: 1px solid var(--pane-border); }
+.rd-claude   { flex: 1 1 0; }
+
+/*
+ * §9.2 embedded Claude pane shell.
+ * The body is a column flex so the tab strip pins to the top, the terminal
+ * stretches, and the error/empty states are full-bleed within.
+ */
+.rd-claude-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.rd-claude-title { font-weight: 600; }
+.rd-claude-identity {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.rd-claude-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--pane-border);
+  background: var(--pane-bg);
+}
+.rd-claude-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  cursor: pointer;
+}
+.rd-claude-tab:hover { color: var(--text); }
+.rd-claude-tab.is-active {
+  background: #0e0e0e;
+  border-color: var(--pane-border);
+  color: var(--text);
+  /* Pull down 1px so the active tab's bottom edge merges with the body. */
+  margin-bottom: -1px;
+}
+.rd-claude-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  background: #0e0e0e;
+}
+.rd-claude-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+  padding: 12px;
+  text-align: center;
+}
+/*
+ * xterm.js mounts a <div class="xterm"> inside this container. Letting it
+ * stretch with absolute positioning means resizes don't reshape the layout
+ * around it (the ResizeObserver in claude-pane.ts handles fit() instead).
+ */
+.rd-claude-term {
+  position: absolute;
+  inset: 0;
+  padding: 4px 0 0 4px;
+}
+.rd-claude-term .xterm { height: 100%; width: 100%; }
+.rd-claude-term .xterm-viewport { background-color: transparent !important; }
+.rd-claude-error {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px 12px;
+  background: rgba(60, 30, 30, 0.92);
+  color: #ffd5d5;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid #5a2a2a;
+}
+.rd-claude-restart {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.rd-claude-restart:hover { filter: brightness(1.1); }
