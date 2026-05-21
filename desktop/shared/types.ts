@@ -341,6 +341,81 @@ export type AppStateWriteResult =
   | { ok: true; filePath: string }
   | { ok: false; reason: 'write_failed' | 'mkdir_failed'; filePath: string; error: string };
 
+// ─── §10.4 bundle artifact ────────────────────────────────────────────────
+//
+// Bundle = PDF (annotations on a copy of source) + JSON sidecar, dated,
+// in the source directory. Renderer asks main to write both on Cmd+S and
+// Cmd+Return; rev-1md.4 layers the gt-mail sling on top of the same write.
+
+/** §10.4 JSON sidecar — frozen snapshot of the draft as written to disk
+ *  alongside the rendered PDF. The PDF is a one-way derivative; the JSON
+ *  is the source of truth for round-trip restore. */
+export interface BundleJsonFile {
+  schema_version: 1;
+  bundle_id: string;
+  created_at: string;     // ISO 8601 UTC
+  app_version: string;
+  author: string;
+  source: {
+    filename: string;
+    absolute_path: string;
+    sha256: string;
+    source_file_version: string | null;  // null when filename has no version
+    page_count: number;
+  };
+  rendered_pdf: {
+    filename: string;
+    sha256: string;
+  };
+  comments: CommentPayload[];
+}
+
+/** What the renderer hands main to write a bundle. Main computes the
+ *  filenames, mints bundle_id, lays down annotations, computes the
+ *  rendered PDF sha256, and writes both files atomically. */
+export interface BundleWriteRequest {
+  /** Absolute path to the source PDF. The bundle goes next to it. */
+  sourcePath: string;
+  /** sha256 of the source bytes — already on hand in the renderer. */
+  sourceSha256: string;
+  /** Page count of the source — already known by the renderer (PDF.js). */
+  pageCount: number;
+  /** Live comments to embed in the JSON sidecar + render as PDF annotations.
+   *  Cmd+S writes comments with their current status (typically `open`);
+   *  Submit (rev-1md.4) will pass the same comments after promoting them
+   *  to `submitted`. The writer doesn't mutate statuses — that's the
+   *  caller's contract. */
+  comments: CommentPayload[];
+  /** App version for the JSON sidecar's `app_version` field. */
+  appVersion: string;
+  /** Author for `(AJB edits)` is fixed in v1; we still pipe it through so
+   *  the schema is honest about who wrote the bundle. */
+  author: string;
+}
+
+export type BundleWriteResult =
+  | {
+      ok: true;
+      bundleId: string;
+      bundlePdfPath: string;
+      bundleJsonPath: string;
+      bundlePdfSha256: string;
+      /** Per-comment `pdf_annotation_id` assignments. Renderer applies these
+       *  back to the live drafts so the next bundle write keeps the same
+       *  annotation IDs for comments that haven't changed. */
+      annotationIds: { commentId: string; pdfAnnotationId: string }[];
+    }
+  | {
+      ok: false;
+      reason: 'source_not_found' | 'source_read_failed' | 'render_failed'
+            | 'mkdir_failed' | 'write_failed';
+      error: string;
+      // Surfaced even on failure so the renderer can show "tried to write
+      // <path>" in the error toast.
+      bundlePdfPath: string | null;
+      bundleJsonPath: string | null;
+    };
+
 /** Existence check used at launch: a remembered root that's been moved/deleted
  *  shouldn't crash the boot path — we just clear it and show the empty state. */
 export type PathExistsResult =
@@ -413,6 +488,13 @@ export interface ElectronAPI {
   watchResultsStart(pdfPath: string, sha256: string): Promise<ResultsWatchStartResult>;
   watchResultsStop(): Promise<void>;
   onResultsEvent(cb: (event: ResultsEvent) => void): () => void;
+
+  // §10.4 — write the dated bundle artifact (PDF + JSON sidecar) next to
+  // the source PDF. Used by Cmd+S (Export Bundle) and as the first step of
+  // Cmd+Return (Submit, rev-1md.4). Multiple writes on the same date
+  // overwrite the same files; a new date produces a new dated bundle and
+  // leaves yesterday's as audit trail.
+  writeBundle(request: BundleWriteRequest): Promise<BundleWriteResult>;
 }
 
 declare global {

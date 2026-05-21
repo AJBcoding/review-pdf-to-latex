@@ -5,10 +5,13 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:
 import { createHash, randomBytes } from 'node:crypto';
 import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
+import { writeBundle as writeBundleImpl } from './bundle.js';
 import type {
   AppStateFile,
   AppStateReadResult,
   AppStateWriteResult,
+  BundleWriteRequest,
+  BundleWriteResult,
   DirEntry,
   DraftsFile,
   DraftsReadResult,
@@ -621,6 +624,18 @@ void app.whenReady().then(() => {
   ipcMain.handle('results:watchStop', () => {
     stopResultsWatch();
   });
+
+  // §10.4 — bundle writer. Renderer calls this from Cmd+S (export) and
+  // Cmd+Return (submit, after which rev-1md.4 layers the gt-mail sling).
+  // Stateless: every write is a fresh render of the source PDF with the
+  // current draft comments as annotations. Filename collisions on the
+  // same date overwrite by design (audit trail is per-day).
+  ipcMain.handle(
+    'bundle:write',
+    async (_event, request: BundleWriteRequest): Promise<BundleWriteResult> => {
+      return writeBundleImpl(request);
+    }
+  );
 
   createWindow();
 

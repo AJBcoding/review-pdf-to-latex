@@ -97,6 +97,7 @@ const WRITE_DEBOUNCE_MS = 250;
 function scheduleDraftsWrite(): void {
   if (!docState.path || !docState.sha256) return;
   if (writeTimer !== null) window.clearTimeout(writeTimer);
+  setSavedIndicator({ kind: 'saving' });
   writeTimer = window.setTimeout(() => {
     writeTimer = null;
     void flushDraftsWrite();
@@ -116,6 +117,69 @@ async function flushDraftsWrite(): Promise<void> {
     // saved. Non-blocking — the in-memory state is still authoritative
     // until the next successful write.
     flashAnchorMeta(`Drafts save failed (${res.reason}): ${res.error}`);
+    setSavedIndicator({ kind: 'error', detail: `${res.reason}: ${res.error}` });
+    return;
+  }
+  // After a successful drafts flush, the indicator either confirms "Saved"
+  // (no bundle yet this session) or keeps showing the last-bundle stamp
+  // (Cmd+S sets that; the bundle stamp is the more useful signal — drafts
+  // are an implementation detail of "your edits won't disappear", but the
+  // bundle is the deliverable). Bundle state wins over saved.
+  if (savedIndicatorState.kind !== 'bundle') {
+    setSavedIndicator({ kind: 'saved' });
+  }
+}
+
+// ─── §10.4 title-bar Saved / Last bundle indicator ─────────────────────────
+//
+// The indicator persists per the spec's "mirrors Google Docs / Notion"
+// guidance. We track a small union so each rendering pass can pull the
+// freshest signal: bundle writes win over saved-drafts updates (a bundle
+// stamp is a more meaningful "you have an artifact" cue).
+
+type SavedIndicatorState =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'saved' }
+  | { kind: 'bundle'; at: Date; pdfPath: string }
+  | { kind: 'error'; detail: string };
+
+let savedIndicatorState: SavedIndicatorState = { kind: 'idle' };
+
+function setSavedIndicator(next: SavedIndicatorState): void {
+  savedIndicatorState = next;
+  renderSavedIndicator();
+}
+
+function renderSavedIndicator(): void {
+  const el = document.getElementById('pdfSaved');
+  if (!el) return;
+  const s = savedIndicatorState;
+  el.dataset.state = s.kind;
+  switch (s.kind) {
+    case 'idle':
+      el.textContent = '';
+      el.removeAttribute('title');
+      return;
+    case 'saving':
+      el.textContent = 'Saving…';
+      el.removeAttribute('title');
+      return;
+    case 'saved':
+      el.textContent = 'Saved';
+      el.removeAttribute('title');
+      return;
+    case 'bundle': {
+      const hh = String(s.at.getHours()).padStart(2, '0');
+      const mm = String(s.at.getMinutes()).padStart(2, '0');
+      el.textContent = `Bundle saved ${hh}:${mm}`;
+      el.setAttribute('title', s.pdfPath);
+      return;
+    }
+    case 'error':
+      el.textContent = 'Save failed';
+      el.setAttribute('title', s.detail);
+      return;
   }
 }
 
@@ -418,7 +482,110 @@ function bootProjectOpenFlow(): void {
       void handleOpenClick(handles, openBtn);
     }
   });
+
+  // §10.4 — Cmd+S (Export Bundle) and Cmd+Return (Submit). Both write
+  // the bundle to disk. Submit's gt-mail sling layer lives in rev-1md.4;
+  // .1 stops at the on-disk artifact and surfaces a clear "Submit pipeline
+  // not wired" diagnostic so the user understands the rest of the flow is
+  // pending — without losing the bundle they just wrote.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.shiftKey || e.altKey) return;
+    if (e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      void handleExportBundle();
+    } else if (e.key === 'Enter' || e.key === 'Return') {
+      e.preventDefault();
+      void handleSubmitBundle();
+    }
+  });
 }
+
+/** Cmd+S handler. Writes the bundle to the source dir using the current
+ *  draft comments verbatim — Cmd+S preserves `open` status (§10.4). */
+async function handleExportBundle(): Promise<void> {
+  if (!docState.path || !docState.sha256) {
+    flashAnchorMeta('Open a PDF before exporting a bundle.');
+    return;
+  }
+  if (docState.comments.length === 0) {
+    // Spec doesn't forbid empty-bundle writes; users may want a dated
+    // archive copy of an unannotated PDF. We allow it but the indicator
+    // tells the user clearly what just happened.
+  }
+  await writeBundle();
+}
+
+/** Cmd+Return handler. Writes the bundle (same primitive as Cmd+S) then
+ *  surfaces a "Submit pipeline not yet wired (rev-1md.4)" notice. When
+ *  rev-1md.4 lands, this is where the gt-mail sling + status-promotion
+ *  state machine fire. Until then, the bundle on disk is still the user's
+ *  deliverable — they can sling it manually if needed. */
+async function handleSubmitBundle(): Promise<void> {
+  if (!docState.path || !docState.sha256) {
+    flashAnchorMeta('Open a PDF before submitting.');
+    return;
+  }
+  const written = await writeBundle();
+  if (written) {
+    flashAnchorMeta('Bundle written. Submit sling (gt mail) lands with rev-1md.4.');
+  }
+}
+
+/** Shared writer for Cmd+S and Cmd+Return. Returns true on a successful
+ *  write so callers can chain follow-up flows. Flushes any pending drafts
+ *  debounce first so the JSON sidecar contains the freshest comments. */
+async function writeBundle(): Promise<boolean> {
+  if (!docState.path || !docState.sha256 || !viewerRef) return false;
+  // Drain the pending drafts debounce so what's on disk matches what
+  // goes into the bundle JSON. Otherwise a Cmd+S 100ms after editing
+  // would write a bundle with the edits but a drafts file without —
+  // confusing on next reload (drafts is checked first, per §10.4).
+  if (writeTimer !== null) {
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    await flushDraftsWrite();
+  }
+  const pageCount = viewerRef.totalPages;
+  if (pageCount === 0) {
+    flashAnchorMeta('Wait for the PDF to finish loading before exporting.');
+    return false;
+  }
+  const res = await window.electronAPI.writeBundle({
+    sourcePath: docState.path,
+    sourceSha256: docState.sha256,
+    pageCount,
+    comments: docState.comments,
+    appVersion: APP_VERSION,
+    author: 'AJB',
+  });
+  if (!res.ok) {
+    flashAnchorMeta(`Bundle write failed (${res.reason}): ${res.error}`);
+    setSavedIndicator({ kind: 'error', detail: `${res.reason}: ${res.error}` });
+    return false;
+  }
+  // Mirror the freshly-minted pdf_annotation_id values back onto the
+  // in-memory drafts so the next bundle write can preserve them (and
+  // so the JSON sidecar's IDs stay aligned with the live draft). Persist
+  // via the debounced writer rather than directly — same code path as a
+  // normal edit, keeps the "Saved" semantics consistent.
+  const idMap = new Map(res.annotationIds.map((x) => [x.commentId, x.pdfAnnotationId]));
+  let changed = false;
+  for (const c of docState.comments) {
+    const next = idMap.get(c.id) ?? null;
+    if ((c.pdf_annotation_id ?? null) !== next) {
+      c.pdf_annotation_id = next;
+      changed = true;
+    }
+  }
+  if (changed) scheduleDraftsWrite();
+  setSavedIndicator({ kind: 'bundle', at: new Date(), pdfPath: res.bundlePdfPath });
+  return true;
+}
+
+/** Bundle's `app_version` field. Hardcoded to match package.json for v1;
+ *  refactor to an injected build-time constant when packaging lands. */
+const APP_VERSION = '0.0.1';
 
 async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Promise<void> {
   openBtn.disabled = true;
@@ -454,6 +621,9 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   renderAllCards();
   updateAnchorMeta();
   hideRoundBanner();
+  // §10.4 — reset the Saved indicator on doc switch. The previous doc's
+  // bundle stamp doesn't belong to this one.
+  setSavedIndicator({ kind: 'idle' });
   // Stop watching the previous doc's `.review-state/` (no-op when nothing
   // was being watched). Stop is awaitable but we don't need the result.
   void window.electronAPI.watchResultsStop();

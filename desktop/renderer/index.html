@@ -42,6 +42,17 @@
     <main class="pane middle" data-pane="document">
       <header class="pane-header pdf-nav" id="pdfNav">
         <span class="pdf-nav-title" id="pdfTitle">Document viewer</span>
+        <!--
+          §10.4 — persistent "Saved" indicator. Mirrors Google Docs / Notion:
+          confirms the autosaving drafts are flushed, and reports the last
+          bundle write (Cmd+S / Submit). States via data-state:
+            idle    — no doc / nothing to save yet (empty)
+            saving  — drafts debounce in flight
+            saved   — drafts flushed
+            bundle  — Cmd+S / Submit completed (timestamp + bundle path tooltip)
+            error   — drafts or bundle write failed (hover for detail)
+        -->
+        <span class="pdf-nav-saved" id="pdfSaved" data-state="idle" aria-live="polite"></span>
         <span class="pdf-nav-controls">
           <button id="pdfOpen" type="button" title="Open a PDF (⌘O)">Open…</button>
           <span class="pdf-nav-sep" aria-hidden="true">│</span>

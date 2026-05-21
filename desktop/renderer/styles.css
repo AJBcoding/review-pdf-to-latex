@@ -6,6 +6,13 @@
   --text: #e6e6e6;
   --muted: #888;
   --accent: #4a9eff;
+
+  /* Engagement-level palette (bd rev-pya, §10.4 / §9.1).
+     One source of truth — the PDF bundle's annotation /C array is
+     derived from the same hex values in shared/bundle.ts. */
+  --level-comment: #F5C84B;
+  --level-redraft: #6FB1FF;
+  --level-surface: #E26FB1;
 }
 
 * { box-sizing: border-box; }
@@ -383,6 +390,25 @@ html, body, #app {
   min-width: 0;
 }
 
+/* §10.4 — title-bar Saved indicator. Quiet by default so it doesn't draw
+ * attention; the user reads it when they care about whether the autosave
+ * actually fired. Hidden via empty text when idle; reappears as soon as
+ * docState picks up edits to debounce. */
+.pdf-nav-saved {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.pdf-nav-saved[data-state="idle"] { color: transparent; }
+.pdf-nav-saved[data-state="saving"] { color: var(--muted); font-style: italic; }
+.pdf-nav-saved[data-state="saved"] { color: var(--muted); }
+.pdf-nav-saved[data-state="bundle"] { color: var(--level-comment); }
+.pdf-nav-saved[data-state="error"] { color: #ff8a8a; }
+
 .pdf-nav-sep {
   color: var(--pane-border);
   font-size: 11px;
@@ -519,9 +545,9 @@ html, body, #app {
   color: var(--muted);
   font-weight: 500;
 }
-.comment-section[data-level="comment"] .comment-section-label { color: #4a9eff; }
-.comment-section[data-level="redraft"] .comment-section-label { color: #c084fc; }
-.comment-section[data-level="surface"] .comment-section-label { color: #38bdf8; }
+.comment-section[data-level="comment"] .comment-section-label { color: var(--level-comment); }
+.comment-section[data-level="redraft"] .comment-section-label { color: var(--level-redraft); }
+.comment-section[data-level="surface"] .comment-section-label { color: var(--level-surface); }
 .comment-card {
   background: #181818;
   border: 1px solid var(--pane-border);
@@ -543,9 +569,9 @@ html, body, #app {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
 }
-.comment-card[data-level="comment"]  { border-left-color: #4a9eff; }
-.comment-card[data-level="redraft"]  { border-left-color: #c084fc; }
-.comment-card[data-level="surface"]  { border-left-color: #38bdf8; }
+.comment-card[data-level="comment"]  { border-left-color: var(--level-comment); }
+.comment-card[data-level="redraft"]  { border-left-color: var(--level-redraft); }
+.comment-card[data-level="surface"]  { border-left-color: var(--level-surface); }
 .comment-card-head {
   display: flex;
   align-items: center;
@@ -559,9 +585,9 @@ html, body, #app {
   letter-spacing: 0.04em;
   font-weight: 600;
 }
-.comment-card[data-level="comment"] .comment-card-level { color: #4a9eff; }
-.comment-card[data-level="redraft"] .comment-card-level { color: #c084fc; }
-.comment-card[data-level="surface"] .comment-card-level { color: #38bdf8; }
+.comment-card[data-level="comment"] .comment-card-level { color: var(--level-comment); }
+.comment-card[data-level="redraft"] .comment-card-level { color: var(--level-redraft); }
+.comment-card[data-level="surface"] .comment-card-level { color: var(--level-surface); }
 .comment-card-anchor {
   flex: 1 1 auto;
   font-family: ui-monospace, monospace;

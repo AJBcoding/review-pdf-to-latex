@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { AppStateFile, DraftsFile, ElectronAPI, ResultsEvent } from '@shared/types';
+import type {
+  AppStateFile,
+  BundleWriteRequest,
+  DraftsFile,
+  ElectronAPI,
+  ResultsEvent,
+} from '@shared/types';
 
 // Expose a minimal, typed IPC surface to the renderer.
 // Anything the renderer can call must be declared here — this is the security boundary.
@@ -42,6 +48,8 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('results:event', listener);
     return () => { ipcRenderer.off('results:event', listener); };
   },
+
+  writeBundle: (request: BundleWriteRequest) => ipcRenderer.invoke('bundle:write', request),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
