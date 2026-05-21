@@ -229,7 +229,7 @@ Each comment has:
 |-------|------|-------|
 | `id` | string | UUID |
 | `doc_id` | string | path-relative-to-root, or stable ID |
-| `doc_version` | string | "1.0", "1.1", … — keys the comment to a specific saved version |
+| `doc_version` | string | **sha256 of the source-file bytes** — keys the draft to a specific file. Not to be confused with the user-facing source-file version (`-1.0`/`-1.1` in filenames, §10.6) or with the bundle date prefix (§10.4). |
 | `anchor` | object | doc-type-specific: PDF region+text, MD char-range or position, etc. |
 | `highlighted_text` | string | always captured when a highlight exists |
 | `comment` | string | the user's note (instruction, observation, question) |
@@ -238,9 +238,10 @@ Each comment has:
 | `engagement_level` | enum | `comment` (L1) / `redraft` (L2) / `surface` (L3) — see §11 |
 | `author` | string | "AJB" v1; multi-user later |
 | `kind` | enum | `agent-note` / `user-note` (MD); `comment` / `strikethrough` (PDF) |
-| `status` | enum | `open` / `submitted` / `applied` / `deferred` / `needs-followup` / `rejected` — see §8.5 |
+| `status` | enum | `open` / `submitted` / `applied` / `deferred` / `needs-followup` / `rejected` / `build_failed` — see §8.5 |
 | `submitted_at` | timestamp\|null | set when comment is promoted into a submit file |
 | `derived_from` | comment_id\|null | links a re-raised v1.1 comment back to its v1.0 origin |
+| `pdf_annotation_id` | string\|null | for PDF docs only — links this comment to the corresponding annotation in the rendered bundle PDF (§10.4) |
 | `created_at` | timestamp | |
 
 Two workflows the model needs to support cleanly:
@@ -250,11 +251,12 @@ Two workflows the model needs to support cleanly:
 ### 8.5 Lifecycle
 
 ```
-        ┌──────┐    Submit    ┌───────────┐    agent processes    ┌─────────────────────┐
+        ┌──────┐    Submit    ┌───────────┐    rig processes      ┌─────────────────────┐
 created │ open │  ─────────→  │ submitted │  ──────────────────→  │ applied             │
    ───→ │      │              │           │                       │ deferred            │
         └──────┘              └───────────┘                       │ needs-followup      │
             ▲                                                     │ rejected            │
+            │                                                     │ build_failed        │
             │                                                     └─────────────────────┘
             │                  for deferred + needs-followup:             │
             └─── new comment in v1.1 draft, derived_from = original ←─────┘
@@ -263,8 +265,9 @@ created │ open │  ─────────→  │ submitted │  ──�
 Rules:
 - **`open`**: default state on creation. Mutable: edit text, change level (§11), change redraft, delete.
 - **`submitted`**: set when the comment is promoted into a submit file (§10.3). Immutable from this point — frozen for audit.
-- **`applied` / `deferred` / `needs-followup` / `rejected`**: terminal states written by the agent into the results file (§10.3). The app reflects these into the archived submit-file's copy of the comment.
-- **Round-trip re-raise**: when v1.1's draft is seeded (§10.1 step 5), deferred + needs-followup items are *copied* into the new draft as fresh `open` comments, with `derived_from: <original_id>` linking back. v1.0's archived comment retains its terminal status; v1.1's fresh comment starts the cycle over.
+- **`applied` / `deferred` / `needs-followup` / `rejected` / `build_failed`**: terminal states written by the rig into the results file (§10.3). The app reflects these into the live draft via the results-file watcher (§10.1 step 5 / §10.3).
+- **`build_failed`**: introduced in the round-based flow. Set when an edit applied cleanly but the post-apply LaTeX build failed; the rig reverts the edit and marks this status, preserving the build-error message in `agent_note`. Does not re-raise in v1 (user re-files manually if wanted; see §10.6 for round-end handling).
+- **Round-trip re-raise**: when v1.1's draft is seeded (§10.1 step 5), `deferred` + `needs-followup` items are *copied* into the new draft as fresh `open` comments, with `derived_from: <original_id>` linking back. `applied`, `rejected`, and `build_failed` are archived only. v1.0's archived comment retains its terminal status; the v1.1 fresh comment starts the cycle over.
 
 The `derived_from` chain lets the right drawer (§9.1) render "re-raised from v1.0" badges for L3 Surface items that span multiple rounds.
 
@@ -277,7 +280,7 @@ The `derived_from` chain lets the right drawer (§9.1) render "re-raised from v1
 - Color-coded by `kind`: agent-note vs user-note. Distinct color for `redraft` vs `comment`.
 - **Filter chips** at the top of this section:
   - by kind: "All / Agent notes / User notes"
-  - by status (§8.5): "All / Open / Submitted / Applied / Deferred / Needs-followup / Rejected"
+  - by status (§8.5): "All / Open / Submitted / Applied / Deferred / Needs-followup / Rejected / Build failed"
   - by level (§11): "All / L1 / L2 / L3"
 
   Defaults to "All" on each axis. Multi-select within an axis (e.g., "Open + Needs-followup" both shown).
@@ -285,9 +288,100 @@ The `derived_from` chain lets the right drawer (§9.1) render "re-raised from v1
 
 ### 9.2 Bottom ⅓ — embedded Claude
 
-- Always-present chat surface for ad-hoc questions, Surface escalations (§11), and the AI's responses during a redraft pass.
-- Styling reference: the cloud-desktop Claude experience (T3 / Windows-in-cloud-desktop). User messages visible; tool-call detail collapsed behind a toggle.
-- Spike how those two surfaces present input/output and steal the pattern that fits this layout.
+Always-present assistant surface for ad-hoc questions, ad-hoc research, and (in the standalone case) Submit processing. Implemented as `xterm.js` + `node-pty` hosting a `claude` CLI session. Submit handoff in the rig case (§10.1) does NOT go through this pane — it slings to the originating rig via gt mail; this pane is purely for ad-hoc use and the standalone-Submit fallback.
+
+#### 9.2.1 Pty model — two roles
+
+- **Conversational pty** (one global per app instance, persistent). Always-on; survives doc switches. Doc-aware via the doc-switch line (§9.2.4). Hosts the always-on Assistant tab and any ad-hoc chat.
+- **Worker ptys** (ephemeral, per-task). Spawned on demand for heavy tasks the user invokes from the toolbar (§9.2.6) — Create Context, Sling, Fresh Start. Each runs to completion (or until user closes) without blocking the conversational pty. Multiple in flight is fine.
+
+The conversational pty is never used for Submit; Submit always slings to a rig (rig case) or to the global Reviewer rig (standalone case, §10.5).
+
+#### 9.2.2 Lifecycle
+
+- **Spawn:** lazy. Conversational pty starts on first PDF/MD open (not on app launch), so users who just browse files don't pay a Claude-process cost. The ~1–2s boot is hidden behind their doc-opening flow.
+- **Death:** killed on app quit (SIGTERM with SIGKILL fallback). On spontaneous crash, the pane shows `Claude session ended. [Restart]` and the restart re-applies the priming message.
+- **Scrollback persistence:** none across app restarts in v1 (deferred).
+- **Binary discovery:** `claude` resolved from `PATH` on spawn. If absent, the pane shows install instructions instead of a terminal.
+
+#### 9.2.3 Skill priming
+
+On spawn (and on every restart), the app injects a one-line priming message into stdin so the session knows to use the `review-pdf-to-latex` skill:
+
+```
+Use the review-pdf-to-latex skill for any /review-pdf commands.
+```
+
+Visible in scrollback so the user can audit. Wired into the spawn routine itself so crash-recovery re-primes automatically.
+
+Pre-flight check during impl: if `claude --skill review-pdf-to-latex` (or equivalent) is supported by the current Claude Code CLI, swap to that — strictly cleaner (no token cost, no scrollback noise). The priming-message path is the fallback that works regardless.
+
+#### 9.2.4 Doc-switch notification
+
+When the user switches docs (tree click, Cmd+P, external open, etc.), the app injects a single bracketed line into the conversational pty:
+
+```
+[Now viewing: report-b.pdf — /Users/anthonybyrnes/.../reports/cota/report-b.pdf (24 pages, 8 comments)]
+```
+
+Rules:
+- Format: bracketed system-message style with basename + absolute path + page count + comment count
+- **Debounced 500ms** — rapid tree navigation (clicking 5 files in a row) only fires the final notification
+- **Suppressed on initial pane spawn** — the priming message already establishes initial context
+
+#### 9.2.5 Reviewer rig (gas-town integration)
+
+When gas-town integration is enabled (auto-detected on `gt` binary presence; user-toggleable in Settings), the embedded session runs as a **global Reviewer rig** — its own gas-town identity, not a sub-rig of the user's existing crew. Identity: `reviewer/<you>`. Single global rig per user; one inbox aggregates work from every project where gas-town is enabled.
+
+When gas-town is disabled or undetected, the embedded session is a plain Claude pty without rig identity. The Sling toolbar button (§9.2.6) is greyed out in this case, with a click-to-explain popover ("Enable gas-town integration in Settings to sling to other rigs").
+
+The Reviewer rig is also the destination when standalone Submit picks "Reviewer (local)" (§10.5).
+
+Risk to record: the global Reviewer's audit trail mixes work across all projects. Cross-project memory is the upside; cross-project privacy bleed is the cost. Solo use makes this fine; reconsider if the app gains multi-user scope.
+
+#### 9.2.6 Toolbar — three icon buttons
+
+Above the conversational pty. All three open a small modal for the user to type a prompt + optional context tweaks before invoking. Icons are placeholders to be picked from candidate emoji sets — see bd `rev-ul7`.
+
+| Button | Action | Notes |
+|---|---|---|
+| **🆕 Create Context** | Bundle current context (doc path, current page, active selection, surrounding section heading, nearby comments) + user prompt; spawn a fresh worker pty pre-primed with the bundle. Two modes the user picks in the modal: **single-shot** (interactive conversation) or **Ralph loop** (agent iterates N times). | Worker pty appears as a tab in the right drawer bottom (up to 3 tabs); overflow goes to the tasks panel (§9.2.7) only. |
+| **🪃 Sling** | Bundle current context (same shape as Create Context) + destination; sling via `gt mail` to: mayor, a specific rig, a specific crew. | Requires gas-town enabled. Otherwise greyed with explanatory popover. |
+| **🔄 Fresh Start** | Bundle a handoff summary of what's been done in the conversational pane + what matters next; kill the conversational pty, respawn, inject the handoff as the priming message. | Works regardless of gas-town. Reuses the `/handoff` skill pattern. |
+
+#### 9.2.7 Worker visibility (β + γ combined)
+
+Two complementary surfaces show what worker ptys are doing:
+
+- **Inline progress strip (β)** — a thin band above the conversational pty. Empty when no workers are active; otherwise one row per active worker: `⟳ Submit — applying redraft 4 of 12 (§3.1) [log]`. The `[log]` link expands the worker's full stdout in a focused panel; collapse with another click. On completion, the row briefly shows `✓ … [log]` then fades.
+- **Tasks panel (γ)** — opened via an icon in the strip or a small badge in the right drawer header. Lists running + recently-completed + failed jobs with `[log]` and `[↻ retry]` per row. Persists job history beyond the strip's brief fade.
+
+Tabs and γ panel relationship for Create Context spawns:
+- First 3 spawns get tabs in the right-drawer bottom (alongside the pinned "Assistant" tab for the conversational pty)
+- 4th+ spawn appears as a row in γ only (no tab)
+- Closing a tab kills the worker (and removes from γ)
+- Closing a γ row kills the worker
+- No tab↔panel promotion/demotion gestures in v1
+
+Per-step progress text on the strip (e.g., "applied 4 of 12") requires the rig-side skill to emit structured progress markers. If absent, both the strip and γ degrade gracefully to `⟳ <task> running [log]` with raw stdout behind the log link.
+
+#### 9.2.8 Input model
+
+Standard terminal — typing + Enter sends. User can interrupt with Ctrl+C. App-injected slash commands (only used in standalone Submit, §10.5) and user-typed input interleave naturally; nothing is blocked during agent processing.
+
+#### 9.2.9 Theme + working directory
+
+- Theme matches app dark/light mode
+- Working directory at spawn = source dir of the currently-open PDF (so relative paths resolve)
+- Subsequent doc switches do *not* `cd` the pty — the Reviewer/standalone-Submit flow uses absolute paths from the submit-file / bundle, not the pty's cwd
+
+#### 9.2.10 v2 deferrals (explicitly out of scope for first ship)
+
+- **Tool-call collapsing** per the cloud-desktop / T3 pattern. v1 shows raw pty scrollback; structured-collapse UI requires parsing Claude's tool-call markers from the pty stream — its own feature
+- **Scrollback persistence across app restarts**
+- **Per-PDF session scoping** (one pty per doc) — global is v1 default
+- **Tab↔panel promotion/demotion gestures**
+- **Visual ping / "fake save" on Cmd+S** — Cmd+S writes the bundle (§10.4); the "Saved" indicator in the title bar provides reassurance for the autosaving drafts
 
 ### 9.3 Live-redraft display rules (interaction between §9.1 and §9.2)
 
@@ -305,37 +399,83 @@ This preserves the §1 framing — AI's deliverables attach to the work item; AI
 
 There are two distinct save semantics:
 
-### 10.1 Round-based "Save As + hand off to AI"
+### 10.1 Round-based Submit — sling the bundle back to the rig
 
-The user works through comments. When ready: clicks a Submit button (`Cmd+S`). The app:
+The Electron app is a review tool inside a longer workflow. The primary launch pattern is: user is working in a crew rig that generated a document, invokes a `/review` skill on the rig side which opens the Electron app preloaded with the doc + origin info (§10.5), reviews in the app, hits Submit, and **the actual work happens back in the originating rig** — not in the embedded Claude pane.
 
-1. **Promotes the draft to a submit file.** All comments in `status: open` on the current doc-version are moved into `.review-state/submit-<timestamp>.json` (frozen, immutable). Each is also marked `status: submitted, submitted_at: <now>` in its archived copy.
-2. **Writes the new versioned source file.** PDF: `report-1.0.pdf` → `report-1.1.pdf` (optionally `report-1.1 (AJB edits).pdf`) in the source dir. MD: `notes.md` → `notes-v1.1.md`, with HTML-comment anchors (§6.3) inlined. Original is sacred — never overwritten.
-3. **Injects a process command into the embedded Claude pty.** The Electron main process writes one line into the running Claude pty (§9.2): `/review-pdf process .review-state/submit-<timestamp>.json`. The embedded Claude session has the `review-pdf-to-latex` skill loaded at launch; the slash command tells it which submit file to consume.
-4. **Agent processes and writes a results file.** The agent applies redrafts, surfaces options for L2 items, opens chat for L3 (Surface) items, and writes `.review-state/results-<timestamp>.json` (§10.3) with per-comment `status` + optional `new_anchor`.
-5. **App reflects results.** Statuses update on the archived submit-file's comments. The new versioned source file (now the agent's redrafted output) opens in the middle pane. A fresh v1.1 draft is seeded from results: deferred + needs-followup items become fresh `open` comments with `derived_from: <v1.0_id>` (§8.5).
+Submit is a *handoff*, not an in-app processing pass. The Electron app's job ends at "package the bundle and sling it." The rig's `/review-pdf process` skill does the mechanical work, runs builds, escalates L3 items conversationally, and writes results back into `.review-state/`.
+
+The user works through comments. When ready: clicks Submit (`Cmd+Return`). The app:
+
+1. **Promotes the draft to a submit file.** All comments in `status: open` on the current doc-version are moved into `.review-state/submit-<timestamp>.json` (frozen, immutable). The matching entries in the live draft (`.review-state/drafts/<sha256>.json`) are updated to `status: submitted, submitted_at: <now>` and remain there as a local record of what was sent. The submit file is the authoritative audit copy; the draft entry is the "what the UI shows for already-sent items" copy.
+
+2. **Writes the review bundle** to the source dir if not already current. Bundle = PDF + JSON sidecar with matching basenames, dated; see §10.4 for full contract. Cmd+S writes this same bundle without firing Submit, so often the bundle is already on disk by the time Submit runs; Submit just confirms it's up to date.
+
+3. **Slings the bundle to the target rig** via `gt mail`. Sling payload includes:
+   - `submit_file`: absolute path to `.review-state/submit-<timestamp>.json`
+   - `bundle_pdf`: absolute path to `<date> <base>-<v> (AJB edits).pdf`
+   - `bundle_json`: absolute path to `<date> <base>-<v> (AJB edits).json`
+   - `source_doc`: absolute path to the original source file
+   - `origin_rig`: the originating rig identity recorded at app launch (§10.5)
+   - `bundle_id`: the timestamp used as the round identifier
+
+   Target rig selection:
+   - **Rig case** (most common): originating rig recorded via `--from <rig-id>` CLI flag at launch (§10.5). Submit goes there.
+   - **Standalone case** (no origin recorded): a destination picker opens (§10.5); user picks Reviewer (local) or another rig.
+
+4. **App goes idle.** The current doc shows a "submitted, awaiting rig" indicator. The user manually switches to the originating rig terminal to continue (or, if standalone-via-Reviewer, the embedded pane). The Electron app does *not* watch for completion in real time; results arrive via the file watcher (§10.3) and reflect into the UI whenever they land (live if the app is open) or on next doc open (if the app was closed).
+
+5. **Rig processes the bundle.** Rig session starts fresh-context, picks up the handoff, runs `/review-pdf process <submit-file>`. The skill:
+   - Reads the submit file and bundle JSON
+   - Prompts: easy work first (L1+L2), or surface first (L3)? — smart default of easy-first; user can override
+   - For each L1/L2 mechanical edit: apply → build → on build failure, revert and mark `build_failed` with the error in `agent_note`; continue with next comment (per-comment retry-then-skip)
+   - For L3 items: pause, ask the user conversationally (sequential in document order; user can skip ahead; mid-L3 interrupt is graceful — completed items keep their disposition, remaining marked `deferred`, partial `results-<ts>.json` written, `round_status: in_progress`)
+   - At round end: prompts user for version bump (§10.6) — minor (default) / major / custom
+   - Writes new versioned source file (e.g., `report-1.1.pdf` via LaTeX build, or `notes-1.1.md` for MD)
+   - Finalizes `results-<ts>.json` with `round_status: complete` and `new_source_path`
+   - Single git commit summarizing the round (per §10.6)
+
+6. **App reflects results.** The renderer's file watcher on `.review-state/` (§10.3) picks up the results file as it's written (incrementally per Gap 3 resume mechanism, finalized at round end). The renderer:
+   - Updates statuses on matching comments in the live draft → cards re-bucket in the right drawer (§9.1)
+   - On `round_status: in_progress` (live), shows a banner: "Round in progress — N of M comments processed"
+   - On `round_status: in_progress` (discovered at doc open), shows "Previous round was interrupted — resume?" with a button that re-invokes the rig (rig case) or the Reviewer pane (standalone)
+   - On `round_status: complete`, shows "Round complete — N applied, M failed [view results]" briefly; new versioned source file becomes available in the tree
+   - Seeds a fresh draft keyed on the new file's sha256: `deferred` + `needs-followup` items become fresh `open` comments with `derived_from: <original_id>` (§8.5); `applied` / `rejected` / `build_failed` are archived only
+
+#### 10.1.1 Why this shape (load-bearing reasoning)
+
+- **Originating rig has the natural project context.** It knows the LaTeX source, has the engine on PATH, is already in the project's working tree. The Electron app would have to recreate all of this to process Submit internally.
+- **Embedded Claude pane stays purely conversational.** Submit doesn't take it over; ad-hoc chat keeps working during Submit.
+- **L3 escalation is natural in the rig.** The user is already in a conversational session with the rig after Submit; pausing on L3 items is just talking with the rig, not a UI hand-off.
+- **Standalone case isn't second-class.** The same flow works with Reviewer as target — see §10.5.
 
 ### 10.2 Live redraft (single-comment)
 
 For a single comment, the user can request immediate AI action without waiting for the batch. Useful when a redraft suggestion is wanted *during* review, not after.
 
 Behavior:
-- A "Redraft now" affordance on the comment card injects a per-comment slash-command into the embedded Claude pty: `/review-pdf redraft <comment_id>`.
-- The agent reads the comment from the live draft file (`.review-state/drafts/<doc-version>.json`), proposes a redraft, and writes it back into the same comment as `redraft_suggestion: <text>`.
-- The Claude pane (§9.2) shows the agent's reasoning in pty scrollback; the comment card (§9.3) shows the `redraft_suggestion` inline with an "Accept as redraft" button.
-- The source document itself is not modified until the round-based save (§10.1).
+- A "Redraft now" affordance on the comment card slings a single-comment redraft request to the originating rig (rig case) or to the Reviewer rig (standalone case) — same transport as §10.1 Submit, scoped to one comment. Payload: a synthetic submit file containing just this comment plus `mode: "live-redraft"`.
+- The rig session runs `/review-pdf redraft <comment_id>` (a thin wrapper over `/review-pdf process` that processes a single-item bundle in non-mutating mode — no file edits, no build, no commit; the rig proposes a redraft and writes it back into the comment's `redraft_suggestion: <text>` field in the live draft).
+- The Electron app's results-file watcher (§10.3) picks up the redraft and renders it inline in the comment card; the user can click "Accept as redraft" to copy `redraft_suggestion → redraft`.
+- The source document itself is not modified until the round-based Submit (§10.1).
+- If gas-town is disabled and there is no originating rig, "Redraft now" is greyed out with the same explanatory popover as Sling (§9.2.5).
 
 ### 10.3 Filesystem contracts
 
-The app and the agent communicate through three file types under `.review-state/`:
+The app and the rig communicate through files under two locations: `.review-state/` (gitignored workspace) and the source directory itself (the bundle, gitable).
 
 | Path | Lifetime | Writer | Reader |
 |------|----------|--------|--------|
-| `.review-state/drafts/<doc-version>.json` | Live; mutates on every comment edit (debounced 250ms) | App | App, agent (live-redraft only) |
-| `.review-state/submit-<timestamp>.json` | Frozen at submit; permanent audit record | App | Agent (consumes); app (renders archived state) |
-| `.review-state/results-<timestamp>.json` | Frozen at agent completion; permanent audit record | Agent | App (reflects status; seeds next draft) |
+| `.review-state/drafts/<doc_version>.json` | Live; mutates on every comment edit (debounced 250ms). `doc_version` = sha256 of the source-file bytes (§8) | App | App |
+| `.review-state/submit-<timestamp>.json` | Frozen at submit; permanent audit record | App | Rig (consumes); app (renders archived state) |
+| `.review-state/results-<timestamp>.json` | Mutates as the rig processes (per-comment atomic append); `round_status` flips `in_progress` → `complete` / `failed` at end | Rig | App (file watcher; reflects status; seeds next draft) |
+| `<source-dir>/<date> <base>-<v> (AJB edits).pdf` | Frozen at Cmd+S or Submit; rewritten on next Cmd+S/Submit (same name → overwrites) | App | Anyone (human-portable, gitable) — see §10.4 |
+| `<source-dir>/<date> <base>-<v> (AJB edits).json` | Frozen at Cmd+S or Submit (same cadence as bundle PDF) | App | App (round-trip restore), rig, any other tool — see §10.4 |
+| `<source-dir>/<base>-<v_new>.{pdf,md,tex}` | Written by rig at round end (§10.6) | Rig | App, user, downstream tools |
 
-All three are JSON, human-readable, `cat`-debuggable. `.review-state/` is `.gitignore`d by default — these are local workspace files, not source-of-truth — but visible to the user in their filesystem for inspection/recovery.
+All `.review-state/` files are JSON, human-readable, `cat`-debuggable. `.review-state/` is `.gitignore`d by default — local workspace files, not source-of-truth. Bundle and new versioned source files live in the source dir and are *meant* to be committed.
+
+The renderer watches `.review-state/` via `fs.watch` (same watcher infrastructure as the file tree, bd `rev-s0b`). New / changed `results-*.json` files trigger UI status updates in real time. On doc open, the renderer also scans `.review-state/` for any pre-existing results files referencing the current doc and applies their statuses.
 
 Submit file schema (illustrative):
 
@@ -343,8 +483,12 @@ Submit file schema (illustrative):
 {
   "submit_id": "20260519-143200",
   "doc_id": "report-1.0.pdf",
-  "doc_version": "1.0",
+  "doc_version": "abc123def456...",
+  "source_file_version": "1.0",
   "submitted_at": "2026-05-19T14:32:00Z",
+  "origin_rig": "report-engine/anthony",
+  "bundle_pdf": "/abs/path/2026-05-19 report-1.0 (AJB edits).pdf",
+  "bundle_json": "/abs/path/2026-05-19 report-1.0 (AJB edits).json",
   "comments": [
     {
       "id": "abc123",
@@ -354,19 +498,24 @@ Submit file schema (illustrative):
       "redraft": null,
       "engagement_level": "L2",
       "kind": "comment",
-      "derived_from": null
+      "derived_from": null,
+      "pdf_annotation_id": "annot-7"
     }
   ]
 }
 ```
 
-Results file schema (mirrors submit; agent writes one entry per comment in the batch):
+Results file schema (rig writes incrementally per Gap 3 resume mechanism):
 
 ```json
 {
   "submit_id": "20260519-143200",
   "results_id": "20260519-145812",
-  "completed_at": "2026-05-19T14:58:12Z",
+  "round_status": "in_progress",
+  "started_at": "2026-05-19T14:35:00Z",
+  "completed_at": null,
+  "new_source_path": null,
+  "version_chosen": null,
   "results": [
     {
       "id": "abc123",
@@ -376,6 +525,12 @@ Results file schema (mirrors submit; agent writes one entry per comment in the b
     },
     {
       "id": "def456",
+      "status": "build_failed",
+      "new_anchor": null,
+      "agent_note": "Apply succeeded but pdflatex errored: Undefined control sequence \\cmd at line 142. Reverted."
+    },
+    {
+      "id": "ghi789",
       "status": "needs-followup",
       "new_anchor": null,
       "agent_note": "This isn't a typo — it's a thesis problem. Suggest re-filing at L3."
@@ -384,7 +539,187 @@ Results file schema (mirrors submit; agent writes one entry per comment in the b
 }
 ```
 
-A `status: rejected` entry includes a required `reason` field. A `new_anchor` is set when the redraft moved text and the comment's logical position has changed.
+When the round completes, the rig flips `round_status` to `complete`, fills `completed_at`, `new_source_path` (the path of the new versioned source file), and `version_chosen` (e.g., `"1.1"`).
+
+Status enum: `applied` / `deferred` / `needs-followup` / `rejected` / `build_failed`. A `status: rejected` entry requires a `reason` field. A `new_anchor` is set when the redraft moved text and the comment's logical position changed. `build_failed` entries include the build error excerpt in `agent_note`.
+
+Interrupted rounds (rig crash, terminal closed, etc.) leave `round_status: in_progress` with partial `results[]`. The app surfaces a "resume?" banner on next doc open (§10.1 step 6). The rig's `/review-pdf process` command, when re-invoked against the same submit file, reads the existing results file and skips comments already with a terminal status.
+
+### 10.4 The review bundle — a deliverable two-file artifact
+
+A review session of a PDF/MD produces a **bundle**: two files with matching basenames in the source directory.
+
+```
+2026-05-20 report-1.0 (AJB edits).pdf
+2026-05-20 report-1.0 (AJB edits).json
+```
+
+Filename grammar: `YYYY-MM-DD <base>-<source_version> (AJB edits).{pdf,json}` where:
+- `YYYY-MM-DD` is today's date at the moment of writing (Cmd+S or Submit). Multiple writes on the same date overwrite the same file. The first write on a new date produces a new dated bundle — yesterday's stays as audit trail (rule (a) from Gap 1)
+- `<base>` and `<source_version>` are parsed from the source filename per §10.6
+- The `(AJB edits)` suffix is literal in v1 (single-author). Multi-author handling deferred
+
+#### When the bundle is written
+
+- **Cmd+S** = Export Bundle. Writes the bundle to the source dir without firing Submit. No agent handoff. PDF is re-rendered from the current draft state; JSON is a frozen snapshot of the current draft (with status promoted to `submitted` only when written by Submit, not by Cmd+S — Cmd+S preserves `open` status)
+- **Cmd+Return** = Submit. Writes (or refreshes) the bundle, then slings it to the target rig per §10.1
+- **No "save" gesture beyond these.** Draft autosave continues silently to `.review-state/drafts/<sha256>.json` on every keystroke. A persistent "Saved" indicator in the title bar (mirrors Google Docs / Notion) provides reassurance for the autosaving drafts; "Saving…" briefly during the 250ms debounce window
+
+#### Why both files
+
+| File | Role | Read by | What it carries |
+|---|---|---|---|
+| **PDF** | Human-portable rendered view | Anyone with a PDF reader (Preview, Acrobat, iPad) | PDF-native annotations: highlights, strikethroughs, sticky-note comments. Color-coded by engagement level. Comment text in popups. No structured metadata (L1/L2/L3, redraft text, status, history) — that's the JSON's job |
+| **JSON** | Structured source of truth | App (round-trip restore), rig (`/review-pdf process`), any other tool | Full fidelity: all comment fields per §8, sha256 references to source + rendered PDF, session metadata, version, app version |
+
+The PDF is the rendered view of the JSON. With the source PDF + the bundle JSON, the app fully restores the session. The bundle PDF is a one-way derivative for portability.
+
+#### Bundle JSON schema (sketch)
+
+```jsonc
+{
+  "schema_version": 1,
+  "bundle_id": "20260520-192300",
+  "created_at": "2026-05-20T19:23:00Z",
+  "app_version": "0.x.y",
+  "author": "AJB",
+  "source": {
+    "filename": "report-1.0.pdf",
+    "absolute_path": "/abs/path/report-1.0.pdf",
+    "sha256": "abc123...",
+    "source_file_version": "1.0",
+    "page_count": 24
+  },
+  "rendered_pdf": {
+    "filename": "2026-05-20 report-1.0 (AJB edits).pdf",
+    "sha256": "def456..."
+  },
+  "comments": [ /* full §8 schema */ ]
+}
+```
+
+#### PDF rendering rules (rendered_pdf side)
+
+- Use a PDF-mutation library (e.g., `pdf-lib`) to layer annotations onto a copy of the source PDF — never modify source
+- **Highlight** annotations for selected regions; popup carries the user's `comment` text
+- **Strikethrough** annotations for `kind: strikethrough` PDF comments
+- **Sticky-note** annotations for standalone-anchor or whole-region comments
+- Annotation `author` field = bundle's `author`
+- Color-coded by engagement level (e.g., L1 yellow, L2 blue, L3 red — exact palette TBD; consistent with right-drawer card colors)
+- Redraft text included in the popup, prefixed `[redraft] <new text>`
+
+#### Bundle discovery on load
+
+When the user opens a PDF, the app checks the source dir for a matching `(AJB edits).{pdf,json}` pair:
+- Sidecar JSON present → fully restore session (statuses, history, derived_from chain)
+- Sidecar JSON missing, PDF-only bundle present → degraded restore: read PDF annotations only; engagement levels missing → user re-classifies, redraft text missing → only popup text is recoverable
+- Neither present → fresh review
+
+The draft (`.review-state/drafts/<sha256>.json`) is checked first regardless; if present, it's the authoritative working state. The bundle is a deliverable snapshot, not the source of truth for in-progress work.
+
+### 10.5 Standalone Submit and the destination picker
+
+When the Electron app is launched without an originating rig (no `--from <rig-id>` flag — see §10.5.1), Submit doesn't have a default target. The user picks via a dropdown that opens at Submit time:
+
+```
+Send to: [▾]
+  ⤷  📨 Reviewer (local) — talk only, no source edits
+      ⛏️  rig: report-engine/anthony — full processing
+      ⛏️  rig: cota-impact/anthony — full processing
+      ⚙️  Pick another rig…
+```
+
+Destinations are sorted: Reviewer (local) first, then most-recently-used rigs, then the "pick another" expander. The picker remembers its last choice per doc — same doc, same default destination on re-submit. Secondary text sets capability expectations explicitly.
+
+#### 10.5.1 Origin discovery
+
+The Electron app determines its originating rig at launch via the CLI flag:
+
+```bash
+review-pdf-app open <path> --from <rig-id>
+```
+
+The rig-side `/review` skill (TBD; filed as M7 implementation work) is what calls this CLI form. Skill knows its own rig identity (it's running in it) and passes it through cleanly.
+
+When `--from` is absent (user opens the app directly, or via Cmd+P from a doc with no rig context), origin is unset. Submit uses the picker.
+
+#### 10.5.2 Capability matrix per destination
+
+| Destination | Has source access | Has LaTeX engine | Can apply L1/L2 | Can discuss L3 | Produces |
+|---|---|---|---|---|---|
+| **Originating rig** | ✅ | ✅ | ✅ | ✅ | New versioned source + results JSON + git commit |
+| **Reviewer (local)** | ❌ | ❌ | ❌ | ✅ | Results JSON (L3 dispositions + agent notes); no source mutation |
+| **Other picked rig** | depends | depends | depends | ✅ | Whatever that rig can do |
+
+In standalone-via-Reviewer:
+- L1 / L2 items get `status: needs-followup` with `agent_note: "no source access in this rig; route through originating rig to apply"`
+- L3 items get full conversational treatment in the embedded pane (§9.2); results include `agent_note` capturing the discussion outcome
+- No new versioned source file written; bundle (§10.4) remains the only artifact
+- User can later open the same PDF from a rig with source access, see the unresolved L1/L2 statuses (via the results file watcher / status reflection), and route them through then
+
+#### 10.5.3 Gas-town gating
+
+If gas-town integration is disabled or `gt` is not on PATH, the picker shows only the "Reviewer (local)" option (which itself requires gas-town to actually function as a Reviewer rig — without gas-town, Reviewer falls back to a plain pty that can only L3-discuss; L1/L2 still go to `needs-followup`). The "pick another rig" option is greyed out with the popover from §9.2.5.
+
+LaTeX-specific clarification: LaTeX engine processing is only meaningful when the target rig has the engine on PATH AND has the source tree. In practice, that's the rig case. Standalone-via-Reviewer never touches LaTeX — by design.
+
+### 10.6 Source-file version bumping
+
+This applies only when a rig writes a new versioned source file (rig case). Standalone has no source mutation; this section is moot for standalone.
+
+#### Version parsing regex
+
+```
+^(.+?)-(\d+)\.(\d+)\.(pdf|md|tex)$
+```
+
+Matches: `report-1.0.pdf`, `notes-2.13.md`, `cota-impact-3.0.tex`. Captures: `<base>`, `<major>`, `<minor>`.
+
+Does **not** match unusual conventions (`report-v1.pdf`, `report-final.pdf`, `report_2026.pdf`) — these are treated as having no version.
+
+#### Bump behavior
+
+At round end, the rig prompts the user:
+
+```
+Bump to: [1.1 (minor, default)] / [2.0 (major)] / [custom: ___]
+```
+
+- **Default (Enter, empty, "minor")** — bump minor by 1: `1.0 → 1.1`, `1.13 → 1.14`
+- **major** — bump major, reset minor: `1.7 → 2.0`
+- **custom** — free entry validated against `\d+\.\d+` (allows `3.1`, `1.10`, `2.5`; rejects `v2-final`, `snapshot`)
+- **Input filename had no version match** — treated as implicit `v1.0`; default new version is `1.1`. Custom and major options still available
+
+#### Collision handling
+
+If the target new filename already exists in the source dir, the rig bumps again until free (`report-1.1.pdf` exists → try `-1.2`, then `-1.3`, etc.) and notifies the user in the round-end summary. Prevents accidental overwrites; preserves prior round outputs.
+
+#### Single commit at round end
+
+The rig produces one git commit per round (regardless of how many comments were applied). Commit message shape:
+
+```
+review-pdf: round <bundle-id> — N applied, M failed
+
+Doc: <source-pdf-path>
+Bundle: <bundle-pdf-path>
+Results: .review-state/results-<ts>.json
+Version: <previous> → <new>
+
+Applied (N):
+- <id1>: <short comment text>
+- <id2>: ...
+
+Failed (M):
+- <idX>: <short comment text> (build error: ...)
+- <idY>: ...
+
+🤖 Generated by review-pdf-to-latex (round <bundle-id>)
+```
+
+Commit fires only when `round_status: complete`. Interrupted rounds leave the working tree dirty with `round_status: in_progress`; resume re-enters the rig session against the same submit file, completes processing, then commits.
+
+Major version bumps deliberately stay out of the Submit-side UI in v1 (no Electron-side toggle next to Submit). The rig-prompt placement keeps the choice where the actual file is being written.
 
 ## 11. Three engagement levels
 
@@ -394,7 +729,7 @@ A single typology applied across PDF and MD:
 |-------|------|-------------|----------------|
 | L1 — Comment | 💬 Comment | "Just change/delete this." Deterministic. Could almost be a script. | Apply directly, no questions |
 | L2 — Redraft | ✏️ Redraft | "Fix this, or give me 3 options." Bounded research. | Generates options; user picks |
-| L3 — Surface | 🌊 Surface | "This needs a rethink." Open-ended brainstorm. | Opens a chat in the embedded Claude pane; partners with user |
+| L3 — Surface | 🌊 Surface | "This needs a rethink." Open-ended brainstorm. | Rig pauses on L3 items during round processing and discusses conversationally (sequential in document order; see §10.1 step 5). Rig case: in the originating rig session. Standalone case: in the embedded Reviewer pane (§9.2 / §10.5) |
 
 The data model carries `engagement_level` so the AI knows which mode to enter for each comment in the payload.
 
@@ -412,11 +747,11 @@ The `redraft: string | null` field is **independent** of level. An L2 redraft wi
 
 Engagement level is **mutable pre-submit**. The level chip on each comment card (right drawer, §9.1) is clickable — pick a new level any time before Submit. After Submit, the level is frozen for audit alongside the rest of the comment state.
 
-### 11.3 The agent does not reclassify
+### 11.3 The rig does not reclassify
 
-If the agent disagrees with a comment's level (e.g., a v1.0 L1 looks like a structural problem to the agent), it returns `status: needs-followup` with an `agent_note` explaining why. It does **not** rewrite the level in the results file. The user remains the sole authority on intent; the agent can advise but not override.
+If the rig disagrees with a comment's level (e.g., a v1.0 L1 looks like a structural problem to the rig), it returns `status: needs-followup` with an `agent_note` explaining why. It does **not** rewrite the level in the results file. The user remains the sole authority on intent; the rig can advise but not override.
 
-A common pattern this produces: a v1.0 L1 returns `needs-followup`; the seeded v1.1 draft contains a fresh `open` comment with `derived_from` pointing back. The user reads the agent's note in the right drawer (status filter "Needs-followup"), decides whether to re-file at L3, edits the level on the v1.1 comment, and Submits again.
+A common pattern this produces: a v1.0 L1 returns `needs-followup`; the seeded v1.1 draft contains a fresh `open` comment with `derived_from` pointing back. The user reads the rig's note in the right drawer (status filter "Needs-followup"), decides whether to re-file at L3, edits the level on the v1.1 comment, and Submits again.
 
 ## 12. Out of scope for v1
 
@@ -668,6 +1003,56 @@ The five documented failure modes — image-only / partially-corrupted / missing
 
 `Cmd+F` for text search inside the current document is not v1. `Cmd+Shift+F` for search across all comments (across docs) is also not v1. Add when AJB feels the absence on a real review.
 
+### 13.13 — Submit transport — RESOLVED (2026-05-20) → sling to originating rig via gt mail
+
+**Decision:** Submit slings the bundle to the originating rig via `gt mail`; the rig's `/review-pdf process` skill does the mechanical work. The Electron app stays idle after Submit; results reflect via the `.review-state/` file watcher. Standalone case (no originating rig) opens a destination picker (§10.5). The embedded Claude pane (§9.2) is purely conversational and is *not* used for Submit processing — except in the standalone-via-Reviewer fallback where the Reviewer pane discusses L3 items locally.
+
+Considered alternatives: (A) pty-injection into the embedded pane — requires §9.2 to be a hard dep of Submit; (B) one-shot subprocess + file watcher inside the Electron app — collapses rig case into Electron-internal processing, loses the rig's natural project context. Both rejected; sling-to-rig matches the broader workflow shape (Electron is a tool inside the rig's flow, not a replacement for it).
+
+Full contract in §10.1 + §10.5.
+
+### 13.14 — Review bundle artifact shape — RESOLVED (2026-05-20) → two-file PDF + JSON pair, dated
+
+**Decision:** The deliverable artifact of a review session is a **bundle**: a dated PDF + JSON sidecar with matching basenames in the source dir. PDF carries PDF-native annotations for portability; JSON carries the full structured fidelity (engagement levels, redrafts, statuses, history). Cmd+S writes the bundle; Cmd+Return writes the bundle and Submits.
+
+Considered alternatives: (single PDF with embedded annotations only) — loses redraft text, engagement levels, derived_from chain; (single JSON) — not portable to humans without the app; (single PDF + JSON in PDF metadata stream) — tooling complexity.
+
+Full contract in §10.4. Filename grammar uses date prefix per rule (a): today's date at write time, multiple per active day accumulate as audit trail.
+
+### 13.15 — Embedded Claude pane (§9.2) design — RESOLVED (2026-05-20)
+
+**Decision:** The §9.2 paragraph was insufficient ("spike how cloud-desktop and T3 present input/output and steal the pattern"). Full design pass landed: global conversational pty + ephemeral worker ptys; lazy spawn; skill priming via injected first-message (with pre-flight to switch to `--skill` CLI flag if supported); doc-switch line `[Now viewing: ...]`; three toolbar buttons (Create Context / Sling / Fresh Start); β + γ visibility for worker progress; Reviewer rig as gas-town identity (auto-detected on `gt` presence, global rig `reviewer/<you>`, sling allowed to other rigs/crews/mayor).
+
+Full contract in §9.2.
+
+### 13.16 — L3 escalation venue — RESOLVED (2026-05-20)
+
+**Decision:** L3 (Surface) items are escalated conversationally in the rig session, not in the Electron app's UI. Rig case → originating rig. Standalone case → Reviewer pane (§9.2). Sequential in document order; user can skip ahead; mid-L3 interrupt is graceful (completed items keep their disposition, remaining marked `deferred`, partial results file written).
+
+Earlier framing (Tasks-panel L3 work items in Electron) was rejected in favor of this — keeps L3 in the natural conversational mode of whatever rig is processing the round.
+
+Full contract in §10.1 step 5 + §11.
+
+### 13.17 — Source-file version bumping — RESOLVED (2026-05-20)
+
+**Decision:** Rig prompts at round end for minor (default) / major / custom bump. Regex `^(.+?)-(\d+)\.(\d+)\.(pdf|md|tex)$` parses input version; no match → treated as implicit v1.0. Collision = bump-until-free. Custom validated against `\d+\.\d+`. Standalone Submit has no source mutation; this is moot for standalone.
+
+Full contract in §10.6.
+
+### 13.18 — `/review` and `/review-pdf process` skill contracts (NEW, OPEN)
+
+The full skill text for both — `/review` (rig-side launcher that opens the Electron app with `--from <rig-id>`) and `/review-pdf process` (rig-side processor that orchestrates the round) — needs to be authored as part of M7 implementation work. This spec sketches the behavior in §10.1 and §10.5 but does not pin every prompt and error path.
+
+The existing `~/.claude/skills/review-pdf-to-latex/SKILL.md` is the 4-phase legacy that needs to be rewritten for the round-based flow. Tracked by bd `rev-y0r`.
+
+### 13.19 — PDF bundle annotation color palette (NEW, OPEN)
+
+§10.4 calls for color-coding the rendered bundle PDF's annotations by engagement level (L1 yellow / L2 blue / L3 red as a strawman). Exact palette TBD; should match the right-drawer card colors for visual consistency. Pick during implementation alongside the toolbar-icon picking (bd `rev-ul7`).
+
+### 13.20 — Reviewer rig audit-trail isolation (NEW, OPEN, deferred to multi-user scope)
+
+The global Reviewer rig (`reviewer/<you>`) mixes work across all projects. For solo use this is fine and cross-project memory is a feature. If the app gains multi-user scope, this becomes a privacy/audit concern — a "Reviewer-meta" rig pattern with per-project sub-rigs may be needed. Flagged here; not v1.
+
 ## 14. Next steps (proposed)
 
 In order:
@@ -689,7 +1074,8 @@ v1 keyboard bindings. Philosophy: cover the common navigation and submission mov
 | Key | Action | Context |
 |-----|--------|---------|
 | `Cmd+P` | Quick-open file palette (§3.5) | Any focus |
-| `Cmd+S` | Submit current draft → hand off to agent (§10.1) | Any focus |
+| `Cmd+S` | Export Bundle (§10.4) — write PDF + JSON sidecar; no agent handoff | Any focus |
+| `Cmd+Return` | Submit (§10.1) — write bundle + sling to target rig (or open destination picker, §10.5) | Any focus |
 | `Enter` | Submit current comment (§4.3) | Bottom input focused |
 | `Shift+Enter` | Soft return inside input (§4.3) | Bottom input focused |
 | `Esc` | Clear input / cancel active tool | Bottom input focused |
