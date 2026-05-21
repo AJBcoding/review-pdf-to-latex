@@ -489,14 +489,13 @@ export interface ElectronAPI {
   watchResultsStop(): Promise<void>;
   onResultsEvent(cb: (event: ResultsEvent) => void): () => void;
 
-<<<<<<< HEAD
   // §10.4 — write the dated bundle artifact (PDF + JSON sidecar) next to
   // the source PDF. Used by Cmd+S (Export Bundle) and as the first step of
   // Cmd+Return (Submit, rev-1md.4). Multiple writes on the same date
   // overwrite the same files; a new date produces a new dated bundle and
   // leaves yesterday's as audit trail.
   writeBundle(request: BundleWriteRequest): Promise<BundleWriteResult>;
-=======
+
   // ─── §9.2 embedded Claude pane (rev-1md.2) ──────────────────────────────
   // Probe gas-town presence + identity. Cached on the main side; safe to call
   // freely. Drives the Sling button's enabled/disabled state (§9.2.5).
@@ -586,7 +585,6 @@ export interface PtyExitEvent {
   generation: number;
   exitCode: number;
   signal: number | null;
->>>>>>> 1a388d9 (WIP: checkpoint (auto))
 }
 
 declare global {

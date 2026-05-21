@@ -52,9 +52,8 @@ const electronAPI: ElectronAPI = {
     return () => { ipcRenderer.off('results:event', listener); };
   },
 
-<<<<<<< HEAD
   writeBundle: (request: BundleWriteRequest) => ipcRenderer.invoke('bundle:write', request),
-=======
+
   // ─── §9.2 embedded Claude pane (rev-1md.2) ─────────────────────────────
   probeReviewer: () => ipcRenderer.invoke('pty:probeReviewer'),
   startPty: (params: PtyStartParams) => ipcRenderer.invoke('pty:start', params),
@@ -71,7 +70,6 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('pty:onExit', listener);
     return () => { ipcRenderer.off('pty:onExit', listener); };
   },
->>>>>>> 1a388d9 (WIP: checkpoint (auto))
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
