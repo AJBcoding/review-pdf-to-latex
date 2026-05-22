@@ -1156,8 +1156,21 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
   if (docState.path !== path || docState.sha256 !== sha256) return;
   if (!res.ok) {
     flashAnchorMeta(`Drafts load failed (${res.reason}): ${res.error}`);
+    console.warn('[drafts] load failed', { path, sha256: sha256.slice(0, 12), reason: res.reason, error: res.error });
     return;
   }
+  const commentCount = res.file?.comments.length ?? 0;
+  // rev-a2f diagnostic: surface whether drafts loaded and how many cards we
+  // got. If "highlights restore but cards don't" reproduces, this log will
+  // show whether (a) the file was found and empty, (b) not found (sha256
+  // miss — likely opened the bundle PDF instead of source), or (c) found
+  // with comments but renderAllCards didn't paint them.
+  console.log('[drafts] load', {
+    path,
+    sha256: sha256.slice(0, 12),
+    reason: res.file === null ? 'not_found' : 'ok',
+    commentCount,
+  });
   docState.comments = res.file?.comments ?? [];
   renderAllCards();
 }

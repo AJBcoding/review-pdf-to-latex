@@ -253,8 +253,17 @@ function spawnConversational(
 
   // Skill priming (§9.2.3). The slash-command is the activation path.
   // primingExtra carries the Fresh-Start handoff line when present.
+  //
+  // Delay bumped 500 → 1500ms (rev-gkl): claude-code 2.1.146 prints a banner +
+  // clears the screen before presenting its prompt; firing at 500ms races that
+  // clear and the slash-command line disappears from visible scrollback (the
+  // skill itself still activates, just no audit trail). 1500ms lands after
+  // claude's startup-render is done on a modern Mac. If verification still
+  // shows the line missing, the next fix is a visible-marker write from the
+  // renderer (display-only, not via the pty).
   setTimeout(() => {
     if (convHandle !== handle) return;
+    console.log('[claude-pty] firing slash-command priming /review-pdf-to-latex (rev-gkl diagnostic)');
     try { p.write('/review-pdf-to-latex\r'); } catch { /* pty closed */ }
     if (primingExtra && primingExtra.trim().length > 0) {
       // Give claude a beat to ack the slash-command before the next line —
@@ -272,7 +281,7 @@ function spawnConversational(
         } catch { /* pty closed */ }
       }, 350);
     }
-  }, 500);
+  }, 1500);
 
   return { ok: true, already_running: false, cwd, reviewer };
 }
