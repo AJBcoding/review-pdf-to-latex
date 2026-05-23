@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
+import { basename as pathBasename, dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { engineVersion, pdfHealth } from './engine.js';
@@ -8,6 +8,7 @@ import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from '
 import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
 import { registerAgentPaneIpc, shutdownAgentPane } from './agent-pane-ipc.js';
+import { runSidecarMigration, findSidecarByFingerprint } from './sidecar-migration.js';
 import {
   promoteDraft,
   slingViaGtMail,
@@ -37,11 +38,19 @@ import type {
   SubmitSlingRequest,
 } from '@shared/types';
 
-/** Drafts file location per the user's decision: next to the PDF in a
- *  hidden `.review-state/drafts/` dotfile dir. Hash-based filename means
- *  copying or renaming the PDF doesn't lose the drafts. */
-function draftsPathFor(pdfPath: string, sha256: string): string {
-  return join(dirname(resolve(pdfPath)), '.review-state', 'drafts', `${sha256}.json`);
+/** Drafts file location: path-based keying. The sidecar lives next to the
+ *  source doc in `.review-state/drafts/<basename>.json`. Path-based keying
+ *  means editing the file (changing its sha256) doesn't orphan the sidecar,
+ *  which is essential for .md files where every save changes the hash. */
+function draftsPathFor(docPath: string): string {
+  const base = pathBasename(resolve(docPath));
+  return join(dirname(resolve(docPath)), '.review-state', 'drafts', `${base}.json`);
+}
+
+/** Legacy sha256-based sidecar path — used only during migration to find
+ *  old sidecars keyed by content hash. */
+export function legacyDraftsPathFor(docPath: string, sha256: string): string {
+  return join(dirname(resolve(docPath)), '.review-state', 'drafts', `${sha256}.json`);
 }
 
 // ─── §3.2 hidden ignore list ───────────────────────────────────────────────
@@ -324,7 +333,10 @@ if (!app.requestSingleInstanceLock()) {
   if (initialOpen) queueExternalOpen(initialOpen);
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  // M-md-0: migrate sha256-keyed sidecars to path-based before any doc opens.
+  await runSidecarMigration(app.getPath('userData'));
+
   // Smoke-test IPC retained from the empty-shell milestone.
   ipcMain.handle('ping', (_event, message: string) => {
     return `pong: ${message}`;
@@ -402,14 +414,43 @@ void app.whenReady().then(() => {
   // first-open case — surfaced as ok:true with file:null so the renderer
   // can `?? []` cleanly. Parse errors are a different story (corrupted
   // file) and come through as ok:false.
-  ipcMain.handle('drafts:read', async (_event, pdfPath: string, sha256: string): Promise<DraftsReadResult> => {
-    const filePath = draftsPathFor(pdfPath, sha256);
+  ipcMain.handle('drafts:read', async (_event, pdfPath: string, _sha256: string): Promise<DraftsReadResult> => {
+    const filePath = draftsPathFor(pdfPath);
     let raw: string;
     try {
       raw = await readFile(filePath, 'utf8');
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e.code === 'ENOENT') {
+        // Rename-recovery: check if there's a sidecar matching this doc's
+        // content fingerprint under a different name (the doc was renamed).
+        const draftsDir = dirname(filePath);
+        try {
+          const docBuf = await readFile(resolve(pdfPath));
+          const text = docBuf.toString('utf8');
+          const first500Hash = createHash('sha256').update(text.slice(0, 500)).digest('hex');
+          const match = await findSidecarByFingerprint(draftsDir, {
+            title_from_frontmatter: null,
+            first_500_chars_sha256: first500Hash,
+            anchor_count: 0,
+            last_known_path: pdfPath,
+          });
+          if (match) {
+            // Relink: move the sidecar to the new path and update its fingerprint.
+            match.drafts.doc_fingerprint = {
+              ...(match.drafts.doc_fingerprint ?? {
+                title_from_frontmatter: null,
+                first_500_chars_sha256: first500Hash,
+                anchor_count: 0,
+              }),
+              last_known_path: resolve(pdfPath),
+            };
+            await mkdir(dirname(filePath), { recursive: true });
+            await writeFile(filePath, JSON.stringify(match.drafts, null, 2), 'utf8');
+            try { await rename(match.sidecarPath, `${match.sidecarPath}.relinked`); } catch { /* best-effort */ }
+            return { ok: true, file: match.drafts, filePath };
+          }
+        } catch { /* fingerprint scan failure is non-fatal */ }
         return { ok: true, file: null, filePath, reason: 'not_found' };
       }
       return { ok: false, reason: 'read_failed', filePath, error: e.message };
@@ -432,8 +473,8 @@ void app.whenReady().then(() => {
   // also debounce here.
   ipcMain.handle(
     'drafts:write',
-    async (_event, pdfPath: string, sha256: string, file: DraftsFile): Promise<DraftsWriteResult> => {
-      const filePath = draftsPathFor(pdfPath, sha256);
+    async (_event, pdfPath: string, _sha256: string, file: DraftsFile): Promise<DraftsWriteResult> => {
+      const filePath = draftsPathFor(pdfPath);
       try {
         await mkdir(dirname(filePath), { recursive: true });
       } catch (err) {

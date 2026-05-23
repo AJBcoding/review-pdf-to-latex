@@ -24,6 +24,8 @@
 // toggle, endOfContent sentinel placement, selectionchange repositioning of
 // the sentinel, pointerup/blur/keyup global resets, abort-signal teardown.
 
+import type { FileViewer } from '@shared/file-viewer';
+import type { AnchorKind } from '@shared/types';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import {
@@ -73,7 +75,7 @@ export interface PdfViewerOptions {
   onPageInfo?(info: { page: number; totalPages: number }): void;
 }
 
-export class PdfViewer {
+export class PdfViewer implements FileViewer {
   private opts: Required<Omit<PdfViewerOptions, 'onSelection' | 'onPageInfo'>>
               & Pick<PdfViewerOptions, 'onSelection' | 'onPageInfo'>;
 
@@ -317,6 +319,7 @@ export class PdfViewer {
   get totalPages(): number { return this.doc?.numPages ?? 0; }
   get currentPage(): number { return this.currentPageNum; }
   get currentZoom(): number { return this.zoom; }
+  get anchorKind(): AnchorKind { return 'pdf-glyph-rect'; }
 
   /** §13.6 spike: toggle dark-mode rendering (CSS filter on the canvas
    * element only; text layer is unaffected so selection stays accurate). */

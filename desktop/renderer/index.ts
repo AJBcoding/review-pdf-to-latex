@@ -185,8 +185,7 @@ async function flushDraftsWrite(): Promise<void> {
     doc_version: docState.sha256,
     comments: docState.comments,
   };
-  const cacheKey = `${docState.path}\0${docState.sha256}`;
-  draftsCache.set(cacheKey, file);
+  draftsCache.set(docState.path, file);
   const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
   if (!res.ok) {
     // Surface persistence failures so the user knows their work isn't
@@ -1239,8 +1238,7 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
   if (!docState.path || !docState.sha256) return;
   const path = docState.path;
   const sha256 = docState.sha256;
-  const cacheKey = `${path}\0${sha256}`;
-  const cached = draftsCache.get(cacheKey);
+  const cached = draftsCache.get(path);
   if (cached) {
     console.log('[drafts] load', { path, sha256: sha256.slice(0, 12), reason: 'cache_hit', commentCount: cached.comments.length });
     docState.comments = cached.comments;
@@ -1262,7 +1260,7 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
     commentCount,
   });
   docState.comments = res.file?.comments ?? [];
-  if (res.file) draftsCache.set(cacheKey, res.file);
+  if (res.file) draftsCache.set(path, res.file);
   renderAllCards();
 }
 

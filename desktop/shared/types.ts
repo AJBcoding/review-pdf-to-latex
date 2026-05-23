@@ -156,6 +156,20 @@ export interface CommentPayload {
   pdf_annotation_id?: string | null;
 }
 
+/** Anchor kind discriminator — determines which anchor strategy the sidecar's
+ *  comments use. Existing sidecars without `anchor_kind` default to `'pdf-glyph-rect'`. */
+export type AnchorKind = 'pdf-glyph-rect' | 'md-fuzzy-snippet';
+
+/** Content fingerprint stored in the sidecar for rename-recovery. When a file
+ *  is moved or renamed, the path-based sidecar lookup misses; the migration
+ *  code scans for a fingerprint match and offers to relink. */
+export interface DocFingerprint {
+  title_from_frontmatter: string | null;
+  first_500_chars_sha256: string;
+  anchor_count: number;
+  last_known_path: string;
+}
+
 /**
  * On-disk drafts schema. Snapshot (not append-only): main rewrites the full
  * file on every save. Renderer debounces writes 250ms per spec §10.3.
@@ -164,6 +178,8 @@ export interface DraftsFile {
   schema_version: 1;
   doc_version: string;
   comments: CommentPayload[];
+  anchor_kind?: AnchorKind;
+  doc_fingerprint?: DocFingerprint;
 }
 
 /** Read result. `not_found` is normal (no drafts yet) — caller treats it as
