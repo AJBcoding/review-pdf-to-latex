@@ -21,6 +21,23 @@ import {
   ensureSpawned as ensureClaudePaneSpawned,
   notifyDocSwitch as notifyClaudeDocSwitch,
 } from './claude-pane';
+import { mountAgentPane } from './agent-pane/main';
+
+/**
+ * Project 4 / M-int-1 feature flag: when localStorage.pdf-latex-new-agent-pane
+ * is "1", the lower-right pane mounts the React agent-viewer port instead of
+ * the xterm-based Claude pane. Flip via DevTools console:
+ *   localStorage.setItem('pdf-latex-new-agent-pane', '1'); location.reload()
+ * To revert:
+ *   localStorage.removeItem('pdf-latex-new-agent-pane'); location.reload()
+ */
+function useNewAgentPane(): boolean {
+  try {
+    return localStorage.getItem('pdf-latex-new-agent-pane') === '1';
+  } catch {
+    return false;
+  }
+}
 import { mountToolbar } from './toolbar';
 import { bootSplitters, applyLayoutWidths, type LayoutWidths } from './splitter';
 import {
@@ -318,7 +335,12 @@ function bootSubmitFlow(): void {
 }
 
 /** §9.2 — wire the Claude pane DOM refs and IPC listeners. The terminal
- *  itself isn't constructed until the first PDF open (lazy per §9.2.2). */
+ *  itself isn't constructed until the first PDF open (lazy per §9.2.2).
+ *
+ *  Project 4 / M-int-1: when the new-agent-pane flag is on, the lower-right
+ *  body mounts the React agent-viewer port instead. Toolbar still boots
+ *  alongside (the toolbar's Create Context / Sling / Fresh Start buttons
+ *  will get rewired to the new pane in M-int-4 / M-int-5). */
 function bootClaudePane(): void {
   const empty = document.getElementById('claudeEmpty');
   const term = document.getElementById('claudeTerm');
@@ -336,6 +358,22 @@ function bootClaudePane(): void {
   if (!empty || !term || !error || !identity || !body || !tabs ||
       !progressStrip || !tasksToggle || !tasksCount || !tasksPanel ||
       !tasksList || !tasksEmpty || !tasksClose) return;
+
+  if (useNewAgentPane()) {
+    // Hide the legacy xterm DOM scaffold and mount the React island in
+    // its place. The agent-viewer renderer uses its own internal layout.
+    empty.style.display = 'none';
+    term.style.display = 'none';
+    error.style.display = 'none';
+    identity.style.display = 'none';
+    tabs.style.display = 'none';
+    body.classList.add('agent-pane-react-host');
+    mountAgentPane(body);
+    // Toolbar still boots — its buttons will be rewired in M-int-4 / M-int-5.
+    bootToolbar();
+    return;
+  }
+
   mountClaudePane({
     empty, term, error, identity, body, tabs, progressStrip,
     tasksToggle, tasksCount, tasksPanel, tasksList, tasksEmpty, tasksClose,
@@ -1127,7 +1165,9 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   // §9.2 — lazy spawn the Claude pane on first PDF open. Doc-switches after
   // the first emit a debounced notification line (§9.2.4). Both are
   // best-effort; failures show inline in the pane and don't block load.
-  if (viewerLoaded) {
+  // Project 4 / M-int-1: skip when the new agent pane is active — wiring
+  // the equivalent context-update is M-int-3.
+  if (viewerLoaded && !useNewAgentPane()) {
     const sourceDir = dirnameOf(path);
     void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
       notifyClaudeDocSwitch({

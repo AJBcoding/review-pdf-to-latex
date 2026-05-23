@@ -16,6 +16,9 @@
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
     "@types/node": "^22.9.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
     "electron": "^42.2.0",
     "electron-vite": "^2.3.0",
     "typescript": "^5.6.3",
@@ -25,8 +28,15 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^1.16.0",
     "node-pty": "^1.1.0",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.7.284"
+    "pdfjs-dist": "^5.7.284",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "shiki": "^4.1.0",
+    "zustand": "^5.0.13"
   }
 }

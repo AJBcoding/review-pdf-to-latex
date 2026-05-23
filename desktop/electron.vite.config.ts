@@ -1,4 +1,5 @@
 import { defineConfig } from 'electron-vite';
+import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
 export default defineConfig({
@@ -42,6 +43,10 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, 'renderer'),
+    // @vitejs/plugin-react handles JSX transformation for the agent-pane
+    // React island (Project 4 / M-int-1). The plain-TS legacy renderer
+    // (index.ts, claude-pane.ts, etc.) is unaffected.
+    plugins: [react()],
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'renderer/index.html'),
