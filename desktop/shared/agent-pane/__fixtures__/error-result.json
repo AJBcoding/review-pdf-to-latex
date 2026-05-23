@@ -1,0 +1,26 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "sess-003",
+    "model": "claude-opus-4-7",
+    "cwd": "/tmp",
+    "tools": [],
+    "mcp_servers": [],
+    "permissionMode": "bypassPermissions",
+    "apiKeySource": "none",
+    "uuid": "uuid-sys-003"
+  },
+  {
+    "type": "result",
+    "subtype": "error_max_turns",
+    "is_error": true,
+    "duration_ms": 12000,
+    "num_turns": 10,
+    "session_id": "sess-003",
+    "total_cost_usd": 1.05,
+    "usage": {},
+    "permission_denials": [],
+    "terminal_reason": "max_turns"
+  }
+]
