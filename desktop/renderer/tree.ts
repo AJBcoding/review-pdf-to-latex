@@ -76,10 +76,13 @@ export class FileTree {
   async setRoot(root: string | null, opts: { silent?: boolean } = {}): Promise<void> {
     this.root = root;
     this.cache.clear();
-    // Keep `expanded` — the host may have restored a persisted set from app
-    // state and the new root might overlap. If it doesn't, expand entries
-    // referencing paths under the old root are inert (no folder row to
-    // attach to) and will be garbage-collected the next time we save.
+    if (root) {
+      for (const p of this.expanded) {
+        if (!p.startsWith(root)) this.expanded.delete(p);
+      }
+    } else {
+      this.expanded.clear();
+    }
     if (!root) {
       this.opts.title.textContent = 'File tree';
       this.opts.title.title = 'No folder open';

@@ -166,6 +166,7 @@ let viewerRef: PdfViewer | null = null;
 // ─── Drafts write debounce (§10.3 — 250ms) ─────────────────────────────────
 let writeTimer: number | null = null;
 const WRITE_DEBOUNCE_MS = 250;
+const draftsCache = new Map<string, DraftsFile>();
 
 function scheduleDraftsWrite(): void {
   if (!docState.path || !docState.sha256) return;
@@ -184,6 +185,8 @@ async function flushDraftsWrite(): Promise<void> {
     doc_version: docState.sha256,
     comments: docState.comments,
   };
+  const cacheKey = `${docState.path}\0${docState.sha256}`;
+  draftsCache.set(cacheKey, file);
   const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
   if (!res.ok) {
     // Surface persistence failures so the user knows their work isn't
@@ -807,10 +810,14 @@ async function mountStartupDiagnostics(): Promise<void> {
   const engineLine = document.createElement('div');
   diag.append(ipcLine, engineLine);
 
+  let ipcOk = false;
+  let engineOk = false;
+
   // 1. IPC bridge smoke-test
   try {
     const reply = await window.electronAPI.ping('hello from renderer');
     ipcLine.textContent = `electronAPI ✓  ${reply}`;
+    ipcOk = true;
   } catch (err) {
     ipcLine.textContent = `electronAPI ✗  ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -820,8 +827,17 @@ async function mountStartupDiagnostics(): Promise<void> {
   try {
     const result = await window.electronAPI.engineVersion();
     engineLine.textContent = formatEngineResult(result);
+    engineOk = true;
   } catch (err) {
     engineLine.textContent = `engine ✗  IPC error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  if (ipcOk && engineOk) {
+    setTimeout(() => {
+      diag.style.transition = 'opacity 0.5s ease-out';
+      diag.style.opacity = '0';
+      diag.addEventListener('transitionend', () => { diag.hidden = true; }, { once: true });
+    }, 5000);
   }
 }
 
@@ -1223,8 +1239,15 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
   if (!docState.path || !docState.sha256) return;
   const path = docState.path;
   const sha256 = docState.sha256;
+  const cacheKey = `${path}\0${sha256}`;
+  const cached = draftsCache.get(cacheKey);
+  if (cached) {
+    console.log('[drafts] load', { path, sha256: sha256.slice(0, 12), reason: 'cache_hit', commentCount: cached.comments.length });
+    docState.comments = cached.comments;
+    renderAllCards();
+    return;
+  }
   const res = await window.electronAPI.readDrafts(path, sha256);
-  // Bail if the user opened a different doc while we were waiting.
   if (docState.path !== path || docState.sha256 !== sha256) return;
   if (!res.ok) {
     flashAnchorMeta(`Drafts load failed (${res.reason}): ${res.error}`);
@@ -1232,11 +1255,6 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
     return;
   }
   const commentCount = res.file?.comments.length ?? 0;
-  // rev-a2f diagnostic: surface whether drafts loaded and how many cards we
-  // got. If "highlights restore but cards don't" reproduces, this log will
-  // show whether (a) the file was found and empty, (b) not found (sha256
-  // miss — likely opened the bundle PDF instead of source), or (c) found
-  // with comments but renderAllCards didn't paint them.
   console.log('[drafts] load', {
     path,
     sha256: sha256.slice(0, 12),
@@ -1244,6 +1262,7 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
     commentCount,
   });
   docState.comments = res.file?.comments ?? [];
+  if (res.file) draftsCache.set(cacheKey, res.file);
   renderAllCards();
 }
 

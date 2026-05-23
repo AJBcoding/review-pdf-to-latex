@@ -83,47 +83,44 @@ export function ChatComposer({ onSubmit }: Props) {
         rows={1}
         disabled={busy}
       />
-      <select
-        className="composer__model"
-        value={currentModel}
-        onChange={(e) => {
-          // Always store the pick locally so the UI is the source of truth.
-          // The setModel IPC is best-effort: it succeeds mid-session and
-          // no-ops pre-session — but agent:send below will thread the
-          // selected model through on the next send so a fresh session
-          // picks it up.
-          setSelectedModel(e.target.value);
-          void agentViewer.setModel(e.target.value);
-        }}
-        title="Model used for subsequent turns"
-        aria-label="model"
-      >
-        {MODEL_OPTIONS.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.label}
-          </option>
-        ))}
-      </select>
-      {busy ? (
-        <button
-          type="button"
-          className="composer__stop"
-          onClick={interrupt}
-          title="Interrupt the current turn"
-          aria-label="stop"
+      <div className="composer__controls">
+        <select
+          className="composer__model"
+          value={currentModel}
+          onChange={(e) => {
+            setSelectedModel(e.target.value);
+            void agentViewer.setModel(e.target.value);
+          }}
+          title="Model used for subsequent turns"
+          aria-label="model"
         >
-          stop
-        </button>
-      ) : (
-        <button
-          type="submit"
-          className="composer__send"
-          disabled={!canSend}
-          aria-label="send"
-        >
-          send
-        </button>
-      )}
+          {MODEL_OPTIONS.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        {busy ? (
+          <button
+            type="button"
+            className="composer__stop"
+            onClick={interrupt}
+            title="Interrupt the current turn"
+            aria-label="stop"
+          >
+            stop
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="composer__send"
+            disabled={!canSend}
+            aria-label="send"
+          >
+            send
+          </button>
+        )}
+      </div>
     </form>
   );
 }

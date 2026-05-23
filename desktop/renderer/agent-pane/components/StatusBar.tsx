@@ -40,7 +40,7 @@ export function StatusBar() {
         title="Toggle between phone (clean iOS-style) and t3 (with tool work groups) views"
         aria-label={`switch to ${displayMode === "phone" ? "t3" : "phone"} view`}
       >
-        {displayMode === "phone" ? "📱 phone" : "🔧 t3"}
+        {displayMode === "phone" ? "🔧 t3" : "📱 phone"}
       </button>
     </div>
   );

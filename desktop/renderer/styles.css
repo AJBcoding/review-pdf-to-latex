@@ -1036,6 +1036,7 @@ html, body, #app {
   overflow: hidden;
   user-select: none;
 }
+.tree-row[hidden] { display: none; }
 .tree-row:hover { background: #2a2a2a; }
 .tree-row.is-active {
   background: #143352;
@@ -1498,6 +1499,11 @@ html, body, #app {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.toolbar-modal-radio-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .toolbar-modal-radio {
   display: inline-flex;

@@ -458,13 +458,21 @@ class ReviewHandler(http.server.SimpleHTTPRequestHandler):
 
         unresolved_ids = [a["id"] for a in annotations_list if _is_unresolved(a["id"])]
 
+        def _pick_default_id(ids: list[str]) -> str | None:
+            """When no saved_id matches, pick the best default based on order."""
+            if current_state.get("order") == "surface-first":
+                for aid in ids:
+                    if ann_state.get(aid, {}).get("status") == "surfaced_pending":
+                        return aid
+            return ids[0] if ids else None
+
         saved_id = current_state.get("current_annotation_id")
         if view_filter == "unresolved":
             visible_ids = unresolved_ids
             if saved_id in visible_ids:
                 current_id = saved_id
             elif visible_ids:
-                current_id = visible_ids[0]
+                current_id = _pick_default_id(visible_ids)
             else:
                 # All annotations terminal — fall back to saved/first so the
                 # 3-pane still renders something rather than crashing on a

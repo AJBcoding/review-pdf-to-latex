@@ -81,10 +81,17 @@ const DOC_SWITCH_DEBOUNCE_MS = 500;
 let pendingDocSwitch: { path: string; pages: number; comments: number } | null =
   null;
 let docSwitchTimer: ReturnType<typeof setTimeout> | null = null;
+let lastDocSwitch: { path: string; pages: number; comments: number } | null =
+  null;
 
 function basenameOf(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return i >= 0 ? p.slice(i + 1) : p;
+}
+
+function buildDocPrimingLine(p: { path: string; pages: number; comments: number }): string {
+  const base = basenameOf(p.path);
+  return `[Now viewing: ${base} — ${p.path} (${p.pages} pages, ${p.comments} comments)]`;
 }
 
 function flushDocSwitch(): void {
@@ -92,10 +99,9 @@ function flushDocSwitch(): void {
   const p = pendingDocSwitch;
   pendingDocSwitch = null;
   if (!p) return;
-  const base = basenameOf(p.path);
-  const line = `[Now viewing: ${base} — ${p.path} (${p.pages} pages, ${p.comments} comments)]`;
+  lastDocSwitch = p;
   const s = ensureSession();
-  s.send(line);
+  s.send(buildDocPrimingLine(p));
 }
 
 // ─── IPC handlers ────────────────────────────────────────────────────────
@@ -164,7 +170,13 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
     async (_e, payload?: { sessionId?: string }) => {
       const sessionId = payload?.sessionId ?? CONV_SESSION_ID;
       await endSession(sessionId);
-      if (sessionId === CONV_SESSION_ID) clearSavedSessionId();
+      if (sessionId === CONV_SESSION_ID) {
+        clearSavedSessionId();
+        if (lastDocSwitch) {
+          const s = ensureSession({ resume: null });
+          s.send(buildDocPrimingLine(lastDocSwitch));
+        }
+      }
     },
   );
 

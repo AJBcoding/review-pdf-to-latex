@@ -324,12 +324,14 @@
             <input type="radio" name="ctxMode" value="single-shot" checked>
             <span>Single-shot — interactive conversation</span>
           </label>
-          <label class="toolbar-modal-radio">
-            <input type="radio" name="ctxMode" value="ralph-loop">
-            <span>Ralph loop — iterate N times:</span>
+          <div class="toolbar-modal-radio-row">
+            <label class="toolbar-modal-radio">
+              <input type="radio" name="ctxMode" value="ralph-loop">
+              <span>Ralph loop — iterate N times:</span>
+            </label>
             <input id="ctxIterations" class="toolbar-modal-num"
                    type="number" min="2" max="50" step="1" value="5" disabled>
-          </label>
+          </div>
         </fieldset>
       </div>
       <footer class="toolbar-modal-footer">
