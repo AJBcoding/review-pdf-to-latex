@@ -113,11 +113,21 @@ export interface PermissionRequest {
 /**
  * Discriminated union of everything the backend sends to the renderer.
  * Plain JSON, IPC-safe.
+ *
+ * Project 4 M-int-4a: events carry an optional sessionId so a single
+ * onEvent stream can route to multiple concurrent ClaudeSession instances
+ * (e.g. the conversational session vs Create Context / Sling workers).
+ * undefined → the legacy "conv" session for back-compat.
  */
-export type BackendEvent =
+type BackendEventInner =
   | { type: "session"; session: SessionInfo }
   | { type: "message"; message: ChatMessage }
   | { type: "activity"; activity: ThreadActivity }
   | { type: "turnDone"; turnDone: TurnDone }
   | { type: "permissionRequest"; request: PermissionRequest }
   | { type: "permissionResolved"; toolUseId: string };
+
+export type BackendEvent = BackendEventInner & { sessionId?: string };
+
+/** Canonical sessionId for the user's conversational session. */
+export const CONV_SESSION_ID = "conv";

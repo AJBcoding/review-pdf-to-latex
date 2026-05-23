@@ -7,6 +7,7 @@ import { ApprovalBanner } from "./components/ApprovalBanner";
 import { ContextMeter } from "./components/ContextMeter";
 import { agentViewer } from "./ipc-client";
 import { useStore } from "./store";
+import { CONV_SESSION_ID } from "@shared/agent-pane/types";
 
 export function App() {
   const apply = useStore((s) => s.apply);
@@ -14,8 +15,17 @@ export function App() {
 
   // Subscribe to backend events as soon as the app mounts so we don't miss
   // the system.init that arrives shortly after the first user send.
+  //
+  // Project 4 / M-int-4a: events now carry an optional sessionId. The conv
+  // pane shows only the conversational session; worker session events are
+  // ignored here (they'd surface through dedicated worker UI in a future
+  // milestone — γ panel routing today is via the legacy claude-pty path).
   useEffect(() => {
-    return agentViewer.onEvent(apply);
+    return agentViewer.onEvent((event) => {
+      const sessionId = event.sessionId ?? CONV_SESSION_ID;
+      if (sessionId !== CONV_SESSION_ID) return;
+      apply(event);
+    });
   }, [apply]);
 
   const onSubmit = (text: string): void => {

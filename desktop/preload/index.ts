@@ -123,41 +123,65 @@ contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 import type { BackendEvent } from '@shared/agent-pane/types';
 
 const agentViewerApi = {
-  send: (text: string, model?: string): Promise<void> =>
-    ipcRenderer.invoke('agent:send', { text, model }),
+  // All session-scoped methods accept an optional sessionId. Omit it (or
+  // pass undefined) to target the canonical conversational session.
+  send: (text: string, model?: string, sessionId?: string): Promise<void> =>
+    ipcRenderer.invoke('agent:send', { text, model, sessionId }),
 
-  interrupt: (): Promise<void> => ipcRenderer.invoke('agent:interrupt'),
+  interrupt: (sessionId?: string): Promise<void> =>
+    ipcRenderer.invoke('agent:interrupt', { sessionId }),
 
-  setModel: (modelId: string): Promise<void> =>
-    ipcRenderer.invoke('agent:setModel', { modelId }),
+  setModel: (modelId: string, sessionId?: string): Promise<void> =>
+    ipcRenderer.invoke('agent:setModel', { modelId, sessionId }),
 
   approveTool: (
     toolUseId: string,
     allow: boolean,
     denyReason?: string,
+    sessionId?: string,
   ): Promise<void> =>
-    ipcRenderer.invoke('agent:approveTool', { toolUseId, allow, denyReason }),
+    ipcRenderer.invoke('agent:approveTool', {
+      toolUseId,
+      allow,
+      denyReason,
+      sessionId,
+    }),
 
-  newSession: (): Promise<void> => ipcRenderer.invoke('agent:newSession'),
+  newSession: (sessionId?: string): Promise<void> =>
+    ipcRenderer.invoke('agent:newSession', { sessionId }),
 
-  close: (): Promise<void> => ipcRenderer.invoke('agent:close'),
+  close: (sessionId?: string): Promise<void> =>
+    ipcRenderer.invoke('agent:close', { sessionId }),
 
   getSavedSessionId: (): Promise<string | null> =>
     ipcRenderer.invoke('agent:getSavedSessionId'),
 
   /** Project 4 / M-int-3 — notify the agent that the user pivoted to a
-   *  new document. Debounced 500ms in main. */
+   *  new document. Debounced 500ms in main. Conv session only. */
   notifyDocSwitch: (payload: {
     path: string;
     pages: number;
     comments: number;
   }): Promise<void> => ipcRenderer.invoke('agent:notifyDocSwitch', payload),
 
-  /** Project 4 / M-int-5 — Fresh Start handoff. Closes current session,
-   *  clears saved resume id, starts new session seeded with handoffText
-   *  as the first user message. */
+  /** Project 4 / M-int-5 — Fresh Start handoff for the conv session.
+   *  Closes the current conv session, clears the saved resume id, starts
+   *  a new conv session seeded with handoffText. */
   freshStart: (payload: { handoffText: string; model?: string }): Promise<void> =>
     ipcRenderer.invoke('agent:freshStart', payload),
+
+  /** Project 4 / M-int-4a — spawn a worker session (Create Context /
+   *  Sling) keyed by an arbitrary sessionId. Send the first prompt at
+   *  spawn time. Events scope to the worker via the sessionId on
+   *  BackendEvent so the renderer can route them. */
+  spawnSession: (payload: {
+    sessionId: string;
+    prompt: string;
+    model?: string;
+  }): Promise<void> => ipcRenderer.invoke('agent:spawnSession', payload),
+
+  listSessions: (): Promise<string[]> =>
+    ipcRenderer.invoke('agent:listSessions'),
 
   onEvent: (handler: (event: BackendEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: BackendEvent): void =>
