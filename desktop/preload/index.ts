@@ -153,6 +153,12 @@ const agentViewerApi = {
     comments: number;
   }): Promise<void> => ipcRenderer.invoke('agent:notifyDocSwitch', payload),
 
+  /** Project 4 / M-int-5 — Fresh Start handoff. Closes current session,
+   *  clears saved resume id, starts new session seeded with handoffText
+   *  as the first user message. */
+  freshStart: (payload: { handoffText: string; model?: string }): Promise<void> =>
+    ipcRenderer.invoke('agent:freshStart', payload),
+
   onEvent: (handler: (event: BackendEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: BackendEvent): void =>
       handler(event);

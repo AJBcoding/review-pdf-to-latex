@@ -124,6 +124,25 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
     clearSavedSessionId();
   });
 
+  // Project 4 / M-int-5 — Fresh Start handoff. Tears down the current
+  // session, clears the saved resume id, and starts a new session seeded
+  // with the handoff text as the first user message. Equivalent of the
+  // legacy claude-pane.freshStart(handoff) which respawned the conv pty
+  // and wrote the priming line into stdin.
+  ipcMain.handle(
+    'agent:freshStart',
+    async (_e, payload: { handoffText: string; model?: string }) => {
+      if (!payload || typeof payload.handoffText !== 'string') return;
+      await endSession();
+      clearSavedSessionId();
+      const s = ensureSession({
+        resume: null,
+        model: typeof payload.model === 'string' ? payload.model : undefined,
+      });
+      s.send(payload.handoffText);
+    },
+  );
+
   ipcMain.handle('agent:close', async () => {
     await endSession();
   });

@@ -369,8 +369,13 @@ function bootClaudePane(): void {
     tabs.style.display = 'none';
     body.classList.add('agent-pane-react-host');
     mountAgentPane(body);
-    // Toolbar still boots — its buttons will be rewired in M-int-4 / M-int-5.
-    bootToolbar();
+    // Project 4 / M-int-4 stub: hide the Create Context / Sling /
+    // Fresh Start toolbar in new-pane mode. Workers spawn invisible ptys
+    // outside the React pane, and Fresh Start needs M-int-5 wiring. The
+    // toolbar comes back once the multi-session + fresh-start ports
+    // land (rev-4y3 polish + rev-8q7).
+    const toolbarEl = document.getElementById('claudeToolbar');
+    if (toolbarEl) toolbarEl.style.display = 'none';
     return;
   }
 
