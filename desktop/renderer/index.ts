@@ -369,13 +369,22 @@ function bootClaudePane(): void {
     tabs.style.display = 'none';
     body.classList.add('agent-pane-react-host');
     mountAgentPane(body);
-    // Project 4 / M-int-4 stub: hide the Create Context / Sling /
-    // Fresh Start toolbar in new-pane mode. Workers spawn invisible ptys
-    // outside the React pane, and Fresh Start needs M-int-5 wiring. The
-    // toolbar comes back once the multi-session + fresh-start ports
-    // land (rev-4y3 polish + rev-8q7).
-    const toolbarEl = document.getElementById('claudeToolbar');
-    if (toolbarEl) toolbarEl.style.display = 'none';
+    // Project 4 / M-int-4b Phase 1: toolbar comes back so Fresh Start is
+    // reachable. Create Context / Sling stay disabled until M-int-4c
+    // wires worker spawn to agent:spawnSession + γ-panel routing.
+    const pendingMsg =
+      'Worker support pending — coming in M-int-4c. Use legacy pane for now (DevTools: localStorage.removeItem(\'pdf-latex-new-agent-pane\'); location.reload()).';
+    const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
+    const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
+    if (createBtn) {
+      createBtn.disabled = true;
+      createBtn.title = pendingMsg;
+    }
+    if (slingBtn) {
+      slingBtn.disabled = true;
+      slingBtn.title = pendingMsg;
+    }
+    bootToolbar();
     return;
   }
 

@@ -26,6 +26,18 @@ import {
   freshStart,
 } from './claude-pane';
 
+/** Project 4 / M-int-4b — when the new React agent pane is active, the
+ *  toolbar's Fresh Start button routes through window.agentViewer.freshStart
+ *  instead of the legacy claude-pane.freshStart (which would respawn the
+ *  legacy conv pty that isn't in use). Returns true if rerouted. */
+function isNewAgentPaneActive(): boolean {
+  try {
+    return localStorage.getItem('pdf-latex-new-agent-pane') === '1';
+  } catch {
+    return false;
+  }
+}
+
 /** Callback provided by the host so the toolbar can pull the current doc
  *  context at button-click time (rather than at mount time, when the user
  *  hasn't picked anything yet). */
@@ -175,24 +187,27 @@ function refreshButtonStates(): void {
   const hasDoc = ctxRef.docPath().length > 0;
   const reviewer = getReviewerProbe();
   const slingAvailable = !!(reviewer && reviewer.enabled);
+  const newPane = isNewAgentPaneActive();
   const ptyAlive = isSpawned();
+  // Project 4 / M-int-4b: in new-pane mode the "agent is alive" condition
+  // is that the React pane is mounted (always true when the flag is on)
+  // rather than that the legacy pty has been spawned.
+  const agentAlive = newPane ? true : ptyAlive;
 
-  // Create Context needs an alive pty (so the bundle context is meaningful)
-  // and a doc.
-  refsRef.createBtn.disabled = !(hasDoc && ptyAlive);
-  // Sling needs gas-town + doc; pty alive isn't strictly required (the
-  // worker is independent of the conversational pty) but we still gate on
-  // doc so the bundle isn't empty.
-  refsRef.slingBtn.disabled = !(hasDoc && slingAvailable);
+  // Create Context / Sling stay disabled in new-pane mode until M-int-4c
+  // wires worker spawn to agent:spawnSession + γ-panel routing. The
+  // disabled tooltip is set elsewhere (renderer/index.ts).
+  refsRef.createBtn.disabled = !(hasDoc && agentAlive) || newPane;
+  refsRef.slingBtn.disabled = !(hasDoc && slingAvailable) || newPane;
   if (!slingAvailable) {
     refsRef.slingBtn.title =
       'Enable gas-town integration in Settings to sling to other rigs';
-  } else {
+  } else if (!newPane) {
     refsRef.slingBtn.title = 'Sling to another rig or crew';
   }
-  // Fresh Start needs the conv pty alive (otherwise it's just spawn — but we
-  // still want the modal flow to be intentional; require a doc).
-  refsRef.freshBtn.disabled = !(hasDoc && ptyAlive);
+  // Fresh Start gets a UI in new-pane mode via M-int-4b — it routes to
+  // window.agentViewer.freshStart in commitFresh().
+  refsRef.freshBtn.disabled = !(hasDoc && agentAlive);
 }
 
 // ─── Bundle assembly ──────────────────────────────────────────────────────
@@ -375,6 +390,25 @@ async function commitFresh(): Promise<void> {
   const docSourceDir = ctxRef.docSourceDir();
   refsRef.freshSubmit.disabled = true;
   try {
+    // Project 4 / M-int-4b: route to the new agent pane's freshStart when
+    // it's the active surface. Same handoff text becomes the first user
+    // message of a brand-new agent session.
+    if (isNewAgentPaneActive()) {
+      const w = window as unknown as {
+        agentViewer?: {
+          freshStart: (payload: { handoffText: string }) => Promise<void>;
+        };
+      };
+      if (!w.agentViewer) {
+        flashErr(refsRef.freshModal, 'Fresh start failed: agent bridge missing');
+        return;
+      }
+      await w.agentViewer.freshStart({
+        handoffText: handoffNotes || '(no handoff notes)',
+      });
+      closeModal(refsRef.freshModal);
+      return;
+    }
     const res = await freshStart({ handoffNotes, docSourceDir });
     if (!res.ok) {
       flashErr(refsRef.freshModal, `Fresh start failed: ${res.reason ?? 'unknown'}`);
