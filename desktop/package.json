@@ -13,7 +13,33 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "postinstall": "electron-rebuild --only=node-pty"
+    "postinstall": "electron-rebuild --only=node-pty",
+    "dist:mac": "electron-vite build && electron-builder --mac --arm64"
+  },
+  "build": {
+    "appId": "com.ajbcoding.review-pdf-to-latex",
+    "productName": "Review PDF",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "!node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme,test,tests,__tests__,*.map,*.ts}"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "arm64"
+        }
+      ],
+      "identity": "-",
+      "category": "public.app-category.productivity"
+    }
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
@@ -22,6 +48,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^42.2.0",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^2.3.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
