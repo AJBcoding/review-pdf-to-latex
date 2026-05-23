@@ -1165,17 +1165,35 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   // §9.2 — lazy spawn the Claude pane on first PDF open. Doc-switches after
   // the first emit a debounced notification line (§9.2.4). Both are
   // best-effort; failures show inline in the pane and don't block load.
-  // Project 4 / M-int-1: skip when the new agent pane is active — wiring
-  // the equivalent context-update is M-int-3.
-  if (viewerLoaded && !useNewAgentPane()) {
-    const sourceDir = dirnameOf(path);
-    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
-      notifyClaudeDocSwitch({
+  if (viewerLoaded) {
+    if (useNewAgentPane()) {
+      // Project 4 / M-int-3 — same payload, routed to the agent-viewer
+      // backend's debounced notifyDocSwitch (sends a context line on the
+      // active session, creating one if needed).
+      const w = window as unknown as {
+        agentViewer?: {
+          notifyDocSwitch: (payload: {
+            path: string;
+            pages: number;
+            comments: number;
+          }) => Promise<void>;
+        };
+      };
+      void w.agentViewer?.notifyDocSwitch({
         path,
         pages: h.viewer.totalPages,
         comments: docState.comments.length,
       });
-    });
+    } else {
+      const sourceDir = dirnameOf(path);
+      void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
+        notifyClaudeDocSwitch({
+          path,
+          pages: h.viewer.totalPages,
+          comments: docState.comments.length,
+        });
+      });
+    }
   }
   // §3.3 — persist last-opened-doc and reflect the active row in the tree.
   // Safe to no-op when boot ordering hasn't wired them up yet.

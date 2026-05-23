@@ -145,6 +145,14 @@ const agentViewerApi = {
   getSavedSessionId: (): Promise<string | null> =>
     ipcRenderer.invoke('agent:getSavedSessionId'),
 
+  /** Project 4 / M-int-3 — notify the agent that the user pivoted to a
+   *  new document. Debounced 500ms in main. */
+  notifyDocSwitch: (payload: {
+    path: string;
+    pages: number;
+    comments: number;
+  }): Promise<void> => ipcRenderer.invoke('agent:notifyDocSwitch', payload),
+
   onEvent: (handler: (event: BackendEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, event: BackendEvent): void =>
       handler(event);

@@ -19,6 +19,30 @@ import type { BackendEvent } from '@shared/agent-pane/types.js';
 let session: ClaudeSession | null = null;
 let mainWindowRef: BrowserWindow | null = null;
 
+// Project 4 / M-int-3 — doc-switch debounce. Format mirrors the legacy
+// claude-pane '[Now viewing: …]' line so users grepping scrollback have
+// the same affordance.
+const DOC_SWITCH_DEBOUNCE_MS = 500;
+let pendingDocSwitch: { path: string; pages: number; comments: number } | null =
+  null;
+let docSwitchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function basenameOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+function flushDocSwitch(): void {
+  docSwitchTimer = null;
+  const p = pendingDocSwitch;
+  pendingDocSwitch = null;
+  if (!p) return;
+  const base = basenameOf(p.path);
+  const line = `[Now viewing: ${base} — ${p.path} (${p.pages} pages, ${p.comments} comments)]`;
+  const s = ensureSession();
+  s.send(line);
+}
+
 function emitToRenderer(event: BackendEvent): void {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
     mainWindowRef.webContents.send('agent:event', event);
@@ -105,6 +129,29 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle('agent:getSavedSessionId', () => loadSavedSessionId());
+
+  // Project 4 / M-int-3 — doc-switch context priming. Debounced 500ms so
+  // rapid tree navigation only emits one line. Equivalent of the xterm
+  // pane's notifyDocSwitch (claude-pane.ts:439).
+  ipcMain.handle(
+    'agent:notifyDocSwitch',
+    (
+      _e,
+      payload: { path: string; pages: number; comments: number } | null,
+    ) => {
+      if (
+        !payload ||
+        typeof payload.path !== 'string' ||
+        typeof payload.pages !== 'number' ||
+        typeof payload.comments !== 'number'
+      ) {
+        return;
+      }
+      pendingDocSwitch = payload;
+      if (docSwitchTimer !== null) clearTimeout(docSwitchTimer);
+      docSwitchTimer = setTimeout(flushDocSwitch, DOC_SWITCH_DEBOUNCE_MS);
+    },
+  );
 }
 
 /** Tear down the live session on app quit. */
