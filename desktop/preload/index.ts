@@ -115,3 +115,44 @@ const electronAPI: ElectronAPI = {
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
+
+// Project 4 / M-int-2 — React agent-pane bridge. Mirrors agent-viewer's
+// preload surface (window.agentViewer). The renderer's ipc-client.ts under
+// renderer/agent-pane/ calls into this. Untouched by the legacy claude-pty
+// flow; only used when the localStorage feature flag is on.
+import type { BackendEvent } from '@shared/agent-pane/types';
+
+const agentViewerApi = {
+  send: (text: string, model?: string): Promise<void> =>
+    ipcRenderer.invoke('agent:send', { text, model }),
+
+  interrupt: (): Promise<void> => ipcRenderer.invoke('agent:interrupt'),
+
+  setModel: (modelId: string): Promise<void> =>
+    ipcRenderer.invoke('agent:setModel', { modelId }),
+
+  approveTool: (
+    toolUseId: string,
+    allow: boolean,
+    denyReason?: string,
+  ): Promise<void> =>
+    ipcRenderer.invoke('agent:approveTool', { toolUseId, allow, denyReason }),
+
+  newSession: (): Promise<void> => ipcRenderer.invoke('agent:newSession'),
+
+  close: (): Promise<void> => ipcRenderer.invoke('agent:close'),
+
+  getSavedSessionId: (): Promise<string | null> =>
+    ipcRenderer.invoke('agent:getSavedSessionId'),
+
+  onEvent: (handler: (event: BackendEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, event: BackendEvent): void =>
+      handler(event);
+    ipcRenderer.on('agent:event', listener);
+    return () => ipcRenderer.removeListener('agent:event', listener);
+  },
+};
+
+contextBridge.exposeInMainWorld('agentViewer', agentViewerApi);
+
+export type AgentViewerApi = typeof agentViewerApi;

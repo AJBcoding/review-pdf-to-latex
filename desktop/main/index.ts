@@ -7,6 +7,7 @@ import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
+import { registerAgentPaneIpc, shutdownAgentPane } from './agent-pane-ipc.js';
 import {
   promoteDraft,
   slingViaGtMail,
@@ -697,7 +698,11 @@ void app.whenReady().then(() => {
   // §9.2 embedded Claude pane — pty manager (rev-1md.2).
   registerClaudePtyIpc();
 
-  createWindow();
+  const mainWin = createWindow();
+  // Project 4 / M-int-2: React agent-pane IPC handlers. Coexists with the
+  // legacy claude-pty above; the renderer chooses which path via the
+  // localStorage feature flag (see desktop/renderer/index.ts).
+  registerAgentPaneIpc(mainWin);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -707,7 +712,11 @@ void app.whenReady().then(() => {
 // Tear the watcher down on quit so the underlying fs.watch handle releases
 // cleanly. before-quit fires before window close on Cmd+Q; window-all-closed
 // covers the non-darwin path.
-app.on('before-quit', () => { stopResultsWatch(); shutdownClaudePty(); });
+app.on('before-quit', async () => {
+  stopResultsWatch();
+  shutdownClaudePty();
+  await shutdownAgentPane();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
