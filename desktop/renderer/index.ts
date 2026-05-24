@@ -653,6 +653,18 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
     });
   }
 
+  // Refresh button: clear dir cache and re-read from disk.
+  const refreshBtn = document.getElementById('treeRefresh') as HTMLButtonElement | null;
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      if (!fileTree) return;
+      void fileTree.refresh().then(() => {
+        const root = fileTree!.snapshot().root;
+        if (root) void refreshPdfIndex(root);
+      });
+    });
+  }
+
   // Fit-width: measure the tree's natural width and bump --col-left to match.
   const fitWidthBtn = document.getElementById('treeFitWidth') as HTMLButtonElement | null;
   if (fitWidthBtn) {

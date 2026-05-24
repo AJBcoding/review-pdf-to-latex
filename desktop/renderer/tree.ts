@@ -150,6 +150,20 @@ export class FileTree {
     };
   }
 
+  /** Clear the dir cache and re-render. Files added or removed on disk
+   *  become visible after a refresh. */
+  async refresh(): Promise<void> {
+    if (!this.root) return;
+    this.cache.clear();
+    await this.ensureLoaded(this.root);
+    for (const path of this.expanded) {
+      if (this.dirAppearsInLoadedListing(path)) {
+        await this.ensureLoaded(path);
+      }
+    }
+    this.render();
+  }
+
   /** Visually mark a file as the current document. Re-applied on every
    *  render so the highlight survives expand/collapse. */
   setActiveFile(path: string | null): void {
@@ -246,12 +260,33 @@ export class FileTree {
     if (this.filterQuery) this.applyFilterToDom();
   }
 
-  /** Case-insensitive substring filter applied to currently-rendered rows.
-   *  Hides non-matching leaves; keeps ancestor directories of matches visible
-   *  so context is preserved. Empty string clears the filter. */
+  /** Case-insensitive substring filter. When active, recursively loads all
+   *  folders so matches inside collapsed dirs are surfaced. */
   setFilter(query: string): void {
     this.filterQuery = query.trim();
-    this.applyFilterToDom();
+    if (this.filterQuery && this.root) {
+      void this.loadAllForFilter().then(() => {
+        this.render();
+      });
+    } else {
+      this.applyFilterToDom();
+    }
+  }
+
+  private async loadAllForFilter(): Promise<void> {
+    if (!this.root) return;
+    const stack = [this.root];
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      await this.ensureLoaded(dir);
+      const cached = this.cache.get(dir);
+      if (!cached) continue;
+      for (const entry of cached.entries) {
+        if (entry.isDir && !entry.isHidden) {
+          stack.push(entry.path);
+        }
+      }
+    }
   }
 
   /** Measure the rendered tree's natural width and return a clamped pixel
@@ -330,7 +365,7 @@ export class FileTree {
       : dir.entries.filter((e) => !e.isHidden);
     for (const entry of visible) {
       ul.append(this.renderEntry(entry, depth));
-      if (entry.isDir && this.expanded.has(entry.path)) {
+      if (entry.isDir && (this.expanded.has(entry.path) || this.filterQuery)) {
         this.renderDirChildren(entry.path, ul, depth + 1);
       }
     }
