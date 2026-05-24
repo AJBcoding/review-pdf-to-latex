@@ -1047,6 +1047,13 @@ html, body, #app {
   color: var(--accent);
   font-weight: 700;
 }
+.tree-path-hint {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0.7;
+}
+.tree-row.is-flat-result .tree-chevron { display: none; }
 .tree-row:focus { outline: none; }
 .tree-row:focus-visible {
   outline: none;

@@ -424,18 +424,10 @@ function bootClaudePane(): void {
     // Project 4 / M-int-4b Phase 1: toolbar comes back so Fresh Start is
     // reachable. Create Context / Sling stay disabled until M-int-4c
     // wires worker spawn to agent:spawnSession + γ-panel routing.
-    const createPendingMsg = 'Create Context: pin the current page + selection as context for a focused agent session. Coming soon.';
-    const slingPendingMsg = 'Sling: send the current review to another rig for processing. Coming soon.';
     const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
     const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
-    if (createBtn) {
-      createBtn.disabled = true;
-      createBtn.title = createPendingMsg;
-    }
-    if (slingBtn) {
-      slingBtn.disabled = true;
-      slingBtn.title = slingPendingMsg;
-    }
+    if (createBtn) createBtn.title = 'Create Context: spawn a focused agent session with current page + selection';
+    if (slingBtn) slingBtn.title = 'Sling: send the current review to another rig for processing';
     bootToolbar();
     return;
   }

@@ -306,47 +306,42 @@ export class FileTree {
     return Math.max(minPx, Math.min(maxPx, Math.round(max)));
   }
 
-  /** Walk all rendered rows; show/hide based on filterQuery. A directory
-   *  row stays visible if it contains a matching descendant (even nested);
-   *  this preserves context so the user can see where a hit lives. */
+  /** Flat-list filter: show only matching file leaves with their relative
+   *  path inlined. Directories are hidden entirely. */
   private applyFilterToDom(): void {
     const rows = Array.from(this.opts.body.querySelectorAll<HTMLElement>('.tree-row'));
-    rows.forEach((r) => { r.hidden = false; r.classList.remove('is-search-hit'); });
+    rows.forEach((r) => {
+      r.hidden = false;
+      r.classList.remove('is-search-hit', 'is-flat-result');
+      const pathHint = r.querySelector('.tree-path-hint');
+      if (pathHint) pathHint.remove();
+    });
     if (!this.filterQuery) return;
 
     const q = this.filterQuery.toLowerCase();
-    // Pass 1: mark direct hits (leaves AND dirs whose own name matches).
-    const directHit = new Set<HTMLElement>();
     rows.forEach((r) => {
+      const isDir = r.dataset.dir === 'true';
       const label = r.querySelector<HTMLElement>('.tree-label');
       const name = (label?.textContent ?? '').toLowerCase();
-      if (name.includes(q)) {
-        directHit.add(r);
-        r.classList.add('is-search-hit');
+      const isMatch = !isDir && name.includes(q);
+
+      if (isMatch) {
+        r.classList.add('is-search-hit', 'is-flat-result');
+        r.style.paddingLeft = '6px';
+        const path = r.dataset.path ?? '';
+        const relPath = this.root ? path.slice(this.root.length + 1) : path;
+        const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
+        if (dir) {
+          const hint = document.createElement('span');
+          hint.className = 'tree-path-hint';
+          hint.textContent = dir;
+          label?.after(hint);
+        }
+        r.hidden = false;
+      } else {
+        r.hidden = true;
       }
     });
-
-    // Pass 2: for each direct-hit row, walk back through previous siblings
-    // to find every ancestor directory and mark it visible. Tree is rendered
-    // as a flat <ul> where descendant depth = paddingLeft (depth*14 + 6),
-    // so an ancestor is any earlier row with strictly smaller paddingLeft.
-    const visible = new Set<HTMLElement>(directHit);
-    for (const hit of directHit) {
-      const hitDepth = parseFloat(hit.style.paddingLeft || '0') || 0;
-      let prev = hit.previousElementSibling as HTMLElement | null;
-      let needDepth = hitDepth;
-      while (prev) {
-        const d = parseFloat(prev.style.paddingLeft || '0') || 0;
-        if (d < needDepth) {
-          visible.add(prev);
-          needDepth = d;
-          if (d <= 6) break; // reached root level
-        }
-        prev = prev.previousElementSibling as HTMLElement | null;
-      }
-    }
-
-    rows.forEach((r) => { if (!visible.has(r)) r.hidden = true; });
   }
 
   private renderDirChildren(dirPath: string, ul: HTMLElement, depth: number): void {

@@ -212,6 +212,28 @@ function refreshButtonStates(): void {
 
 // ─── Bundle assembly ──────────────────────────────────────────────────────
 
+function bundleToPrompt(
+  bundle: ToolbarContextBundle,
+  kind: 'create-context' | 'sling',
+  mode?: CreateContextMode,
+  destination?: string,
+): string {
+  const lines: string[] = [];
+  lines.push(`[${kind === 'sling' ? 'Sling' : 'Create Context'}]`);
+  lines.push(`Document: ${bundle.docPath}`);
+  if (bundle.currentPage !== null) lines.push(`Page: ${bundle.currentPage}/${bundle.pageCount ?? '?'}`);
+  if (bundle.selection) {
+    lines.push(`Selection (p.${bundle.selection.page}): "${bundle.selection.highlightedText}"`);
+  }
+  if (bundle.nearbyComments.length > 0) {
+    lines.push(`Nearby comments: ${bundle.nearbyComments.map((c) => `[${c.engagementLevel}] ${c.body.slice(0, 80)}`).join('; ')}`);
+  }
+  if (mode?.kind === 'ralph-loop') lines.push(`Mode: iterate ${mode.iterations} times`);
+  if (destination) lines.push(`Destination: ${destination}`);
+  if (bundle.userPrompt) lines.push('', bundle.userPrompt);
+  return lines.join('\n');
+}
+
 function buildBundle(userPrompt: string): ToolbarContextBundle {
   if (!ctxRef) throw new Error('toolbar: context provider missing');
   const docPath = ctxRef.docPath();
@@ -314,9 +336,16 @@ async function commitCtx(): Promise<void> {
     mode = { kind: 'ralph-loop', iterations: n };
   }
   const bundle = buildBundle(prompt);
-  const docSourceDir = ctxRef.docSourceDir();
   refsRef.ctxSubmit.disabled = true;
   try {
+    if (isNewAgentPaneActive()) {
+      const sessionId = `worker-ctx-${Date.now()}`;
+      const agentPrompt = bundleToPrompt(bundle, 'create-context', mode);
+      await (window as any).agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
+      closeModal(refsRef.ctxModal);
+      return;
+    }
+    const docSourceDir = ctxRef.docSourceDir();
     const res = await spawnWorker({
       kind: 'create-context',
       docSourceDir,
@@ -356,9 +385,16 @@ async function commitSling(): Promise<void> {
     return;
   }
   const bundle = buildBundle(prompt);
-  const docSourceDir = ctxRef.docSourceDir();
   refsRef.slingSubmit.disabled = true;
   try {
+    if (isNewAgentPaneActive()) {
+      const sessionId = `worker-sling-${Date.now()}`;
+      const agentPrompt = bundleToPrompt(bundle, 'sling', undefined, destination);
+      await (window as any).agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
+      closeModal(refsRef.slingModal);
+      return;
+    }
+    const docSourceDir = ctxRef.docSourceDir();
     const res = await spawnWorker({
       kind: 'sling',
       docSourceDir,
