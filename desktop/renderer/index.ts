@@ -14,7 +14,8 @@ import type {
 import { REVIEWER_LOCAL_ID } from '@shared/types';
 import { parseSourceName } from '@shared/bundle';
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
-import { MarkdownViewer } from './md-viewer';
+import { MarkdownViewer, type MdSelection } from './md-viewer';
+import { createMdAnchor, fuzzyMatchAnchor } from '@shared/md/anchors';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
 import {
@@ -164,6 +165,7 @@ function rememberDestination(path: string, destination: string): void {
 let activeTool: Tool = 'comment';
 let viewerRef: PdfViewer | null = null;
 let mdViewerRef: MarkdownViewer | null = null;
+let lastMdSelection: MdSelection | null = null;
 
 // ─── M-md-3: .md source save debounce (500ms) ────────────────────────────
 let mdSaveTimer: number | null = null;
@@ -221,10 +223,12 @@ function scheduleDraftsWrite(): void {
 
 async function flushDraftsWrite(): Promise<void> {
   if (!docState.path || !docState.sha256) return;
+  const isMd = classifyPath(docState.path) === 'md';
   const file: DraftsFile = {
     schema_version: 1,
     doc_version: docState.sha256,
     comments: docState.comments,
+    anchor_kind: isMd ? 'md-fuzzy-snippet' : 'pdf-glyph-rect',
   };
   draftsCache.set(docState.path, file);
   const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
@@ -1367,6 +1371,7 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
     mdViewerRef = null;
   }
 
+  lastMdSelection = null;
   const mdViewer = new MarkdownViewer({
     container: h.mount,
     onWikilinkClick: (target) => {
@@ -1374,6 +1379,19 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
     },
     onContentChange: () => {
       scheduleMdSave();
+      syncMdAnchorsToComments();
+    },
+    onSelection: (sel) => {
+      lastMdSelection = sel;
+      updateAnchorMeta();
+      if (sel) {
+        const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+        if (input && activeTool === 'redraft') {
+          input.value = sel.text;
+          input.focus();
+          input.select();
+        }
+      }
     },
   });
   mdViewerRef = mdViewer;
@@ -1393,6 +1411,7 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
     h.title.textContent = basename(path);
     h.prevBtn.disabled = true;
     h.nextBtn.disabled = true;
+    reanchorMdComments();
   } catch (err) {
     h.title.textContent = basename(path);
     showLoadError(h, null, err);
@@ -1451,6 +1470,48 @@ function showExternalModificationModal(h: ViewerHandles, path: string): void {
   document.getElementById('extModKeep')!.addEventListener('click', () => {
     overlay.remove();
   });
+}
+
+function reanchorMdComments(): void {
+  if (!mdViewerRef) return;
+  const doc = mdViewerRef.getContent();
+  const tracked: Array<{ commentId: string; from: number; to: number; orphaned: boolean }> = [];
+  for (const c of docState.comments) {
+    if (!c.md_anchor) continue;
+    const match = fuzzyMatchAnchor(doc, c.md_anchor);
+    tracked.push({
+      commentId: c.id,
+      from: match.from,
+      to: match.to,
+      orphaned: match.confidence === 'orphaned',
+    });
+    c.md_anchor.char_start = match.from;
+    c.md_anchor.char_end = match.to;
+  }
+  mdViewerRef.setTrackedAnchors(tracked);
+}
+
+function syncMdAnchorsToComments(): void {
+  if (!mdViewerRef) return;
+  const anchors = mdViewerRef.getTrackedAnchors();
+  const byId = new Map(docState.comments.map((c) => [c.id, c]));
+  for (const a of anchors) {
+    const c = byId.get(a.commentId);
+    if (!c || !c.md_anchor) continue;
+    if (a.orphaned) {
+      c.md_anchor.char_start = -1;
+      c.md_anchor.char_end = -1;
+    } else {
+      c.md_anchor.char_start = a.from;
+      c.md_anchor.char_end = a.to;
+      const doc = mdViewerRef.getContent();
+      if (a.from >= 0 && a.to <= doc.length) {
+        c.md_anchor.quoted_text = doc.slice(a.from, a.to);
+        c.md_anchor.prefix = doc.slice(Math.max(0, a.from - 40), a.from);
+        c.md_anchor.suffix = doc.slice(a.to, Math.min(doc.length, a.to + 40));
+      }
+    }
+  }
 }
 
 function resolveAndOpenWikilink(target: string): void {
@@ -1750,6 +1811,20 @@ function updateAnchorMeta(): void {
     }
     editingCommentId = null;
   }
+  const isMd = classifyPath(docState.path) === 'md';
+  if (isMd) {
+    if (!lastMdSelection) {
+      meta.textContent = docState.path
+        ? 'No selection — highlight text to anchor a comment.'
+        : 'No file loaded.';
+      meta.classList.remove('has-selection');
+      return;
+    }
+    const snippet = truncate(lastMdSelection.text, 60);
+    meta.textContent = `chars ${lastMdSelection.from}–${lastMdSelection.to} · “${snippet}”`;
+    meta.classList.add('has-selection');
+    return;
+  }
   const sel = docState.lastSelection;
   if (!sel) {
     meta.textContent = docState.path
@@ -1798,20 +1873,59 @@ async function handleSubmit(): Promise<void> {
     return;
   }
 
-  if (!docState.lastSelection) {
-    // milestone #3 requires an anchor; standalone point-comments (§5.1) land
-    // in a later milestone alongside the click-to-anchor affordance.
+  const isMd = classifyPath(docState.path) === 'md';
+
+  if (isMd && lastMdSelection && mdViewerRef) {
+    const doc = mdViewerRef.getContent();
+    const mdAnchor = createMdAnchor(doc, lastMdSelection.from, lastMdSelection.to);
+    const payload = buildMdCommentPayload(buf, lastMdSelection, mdAnchor);
+    docState.comments.unshift(payload);
+    renderAllCards();
+    scheduleDraftsWrite();
+    reanchorMdComments();
+    clearInput();
+    input.focus();
+    return;
+  }
+
+  if (!isMd && !docState.lastSelection) {
     flashAnchorMeta('Select text in the PDF first to anchor this comment.');
+    return;
+  }
+  if (!docState.lastSelection) {
+    flashAnchorMeta('Select text first to anchor this comment.');
     return;
   }
   const payload = buildCommentPayload(buf, docState.lastSelection);
   docState.comments.unshift(payload);
   renderAllCards();
   scheduleDraftsWrite();
-  // §4.3: keep the active tool, keep the cached selection (the user may want
-  // to stack Comment + Redraft on the same highlight). Just clear the buffer.
   clearInput();
   input.focus();
+}
+
+function buildMdCommentPayload(
+  buf: string,
+  sel: MdSelection,
+  mdAnchor: ReturnType<typeof createMdAnchor>,
+): CommentPayload {
+  const isRedraft = activeTool === 'redraft';
+  return {
+    id: crypto.randomUUID(),
+    doc_id: docState.path,
+    doc_version: docState.sha256,
+    anchor: { page: 1, region: { x: 0, y: 0, w: 0, h: 0 } },
+    highlighted_text: sel.text,
+    comment: isRedraft ? '' : buf,
+    redraft: isRedraft ? buf : null,
+    redraft_suggestion: null,
+    engagement_level: activeTool,
+    author: 'AJB',
+    kind: 'comment',
+    status: 'open',
+    created_at: new Date().toISOString(),
+    md_anchor: mdAnchor,
+  };
 }
 
 function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload {

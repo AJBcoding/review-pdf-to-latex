@@ -1,4 +1,4 @@
-import { EditorState, type Extension } from '@codemirror/state';
+import { EditorState, StateField, StateEffect, type Extension } from '@codemirror/state';
 import {
   EditorView,
   ViewPlugin,
@@ -12,12 +12,77 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { syntaxTree, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import type { FileViewer } from '@shared/file-viewer';
 import type { AnchorKind } from '@shared/types';
+import type { MdAnchor } from '@shared/md/anchors';
+
+export interface MdSelection {
+  from: number;
+  to: number;
+  text: string;
+}
 
 export interface MarkdownViewerOptions {
   container: HTMLElement;
   onWikilinkClick?: (target: string) => void;
   onContentChange?: (content: string) => void;
+  onSelection?: (sel: MdSelection | null) => void;
 }
+
+// ─── Tracked anchor state ─────────────────────────────────────────────────
+
+interface TrackedAnchor {
+  commentId: string;
+  from: number;
+  to: number;
+  orphaned: boolean;
+}
+
+const setAnchors = StateEffect.define<TrackedAnchor[]>();
+
+const anchorField = StateField.define<TrackedAnchor[]>({
+  create() { return []; },
+  update(anchors, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setAnchors)) return effect.value;
+    }
+    if (!tr.docChanged) return anchors;
+    return anchors.map((a) => {
+      if (a.orphaned) return a;
+      const from = tr.changes.mapPos(a.from, 1);
+      const to = tr.changes.mapPos(a.to, -1);
+      if (from >= to) return { ...a, from: -1, to: -1, orphaned: true };
+      return { ...a, from, to };
+    });
+  },
+});
+
+const anchorHighlight = Decoration.mark({ class: 'cm-md-anchor-highlight' });
+
+const anchorDecoPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = this.build(view);
+    }
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.transactions.some((t) =>
+        t.effects.some((e) => e.is(setAnchors))
+      )) {
+        this.decorations = this.build(update.view);
+      }
+    }
+    build(view: EditorView): DecorationSet {
+      const anchors = view.state.field(anchorField);
+      const ranges = anchors
+        .filter((a) => !a.orphaned && a.from >= 0 && a.to > a.from && a.to <= view.state.doc.length)
+        .map((a) => anchorHighlight.range(a.from, a.to));
+      ranges.sort((a, b) => a.from - b.from);
+      return Decoration.set(ranges);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
+// ─── MarkdownViewer ───────────────────────────────────────────────────────
 
 export class MarkdownViewer implements FileViewer {
   private opts: MarkdownViewerOptions;
@@ -26,6 +91,7 @@ export class MarkdownViewer implements FileViewer {
   private editorHost: HTMLElement;
   private editorView: EditorView | null = null;
   private dark = false;
+  private bodyOffset = 0;
 
   constructor(opts: MarkdownViewerOptions) {
     this.opts = opts;
@@ -50,7 +116,8 @@ export class MarkdownViewer implements FileViewer {
 
   async loadBytes(bytes: Uint8Array): Promise<void> {
     const text = new TextDecoder('utf-8').decode(bytes);
-    const { frontmatter, body } = parseFrontmatter(text);
+    const { frontmatter, body, bodyOffset } = parseFrontmatter(text);
+    this.bodyOffset = bodyOffset;
     this.renderFrontmatter(frontmatter);
     this.mountEditor(body);
   }
@@ -79,6 +146,27 @@ export class MarkdownViewer implements FileViewer {
     return this.editorView?.state.doc.toString() ?? '';
   }
 
+  getSelection(): MdSelection | null {
+    if (!this.editorView) return null;
+    const sel = this.editorView.state.selection.main;
+    if (sel.from === sel.to) return null;
+    return {
+      from: sel.from,
+      to: sel.to,
+      text: this.editorView.state.sliceDoc(sel.from, sel.to),
+    };
+  }
+
+  setTrackedAnchors(anchors: TrackedAnchor[]): void {
+    if (!this.editorView) return;
+    this.editorView.dispatch({ effects: setAnchors.of(anchors) });
+  }
+
+  getTrackedAnchors(): TrackedAnchor[] {
+    if (!this.editorView) return [];
+    return this.editorView.state.field(anchorField);
+  }
+
   private mountEditor(text: string): void {
     if (this.editorView) {
       this.editorView.destroy();
@@ -91,6 +179,8 @@ export class MarkdownViewer implements FileViewer {
       history(),
       keymap.of([...defaultKeymap, ...historyKeymap]),
       livePreviewPlugin(),
+      anchorField,
+      anchorDecoPlugin,
       livePreviewBaseTheme,
       EditorView.lineWrapping,
     ];
@@ -100,6 +190,26 @@ export class MarkdownViewer implements FileViewer {
       extensions.push(
         EditorView.updateListener.of((update: ViewUpdate) => {
           if (update.docChanged) onChange(update.state.doc.toString());
+        })
+      );
+    }
+
+    if (this.opts.onSelection) {
+      const onSel = this.opts.onSelection;
+      extensions.push(
+        EditorView.updateListener.of((update: ViewUpdate) => {
+          if (update.selectionSet) {
+            const sel = update.state.selection.main;
+            if (sel.from === sel.to) {
+              onSel(null);
+            } else {
+              onSel({
+                from: sel.from,
+                to: sel.to,
+                text: update.state.sliceDoc(sel.from, sel.to),
+              });
+            }
+          }
         })
       );
     }
@@ -225,7 +335,6 @@ function buildDecorations(view: EditorView): DecorationSet {
       const nodeEndLine = view.state.doc.lineAt(node.to).number;
       const cursorOnNode = cursorLine >= nodeStartLine && cursorLine <= nodeEndLine;
 
-      // Headings: style the line, hide # marks when cursor is elsewhere
       if (node.name in HEADING_NODES) {
         for (let l = nodeStartLine; l <= nodeEndLine; l++) {
           const line = view.state.doc.line(l);
@@ -233,32 +342,21 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
       }
 
-      // Emphasis (italic)
       if (node.name === 'Emphasis' && !cursorOnNode) {
         builder.push({ from: node.from, to: node.to, deco: emphDeco });
       }
-
-      // Strong emphasis (bold)
       if (node.name === 'StrongEmphasis' && !cursorOnNode) {
         builder.push({ from: node.from, to: node.to, deco: strongDeco });
       }
-
-      // Strikethrough
       if (node.name === 'Strikethrough' && !cursorOnNode) {
         builder.push({ from: node.from, to: node.to, deco: strikeDeco });
       }
-
-      // Links — style text part
       if (node.name === 'Link' && !cursorOnNode) {
         builder.push({ from: node.from, to: node.to, deco: linkDeco });
       }
-
-      // Inline code
       if (node.name === 'InlineCode' && !cursorOnNode) {
         builder.push({ from: node.from, to: node.to, deco: codeDeco });
       }
-
-      // Blockquote lines
       if (node.name === 'Blockquote') {
         for (let l = nodeStartLine; l <= nodeEndLine; l++) {
           const line = view.state.doc.line(l);
@@ -266,9 +364,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
       }
 
-      // Hide syntax marks on non-cursor lines (but NOT inside fenced code)
       if (MARK_NAMES.has(node.name) && !cursorOnNode) {
-        // Don't hide CodeMark inside FencedCode blocks
         if (node.name === 'CodeMark') {
           let parent = node.node.parent;
           while (parent) {
@@ -328,7 +424,6 @@ const livePreviewBaseTheme = EditorView.baseTheme({
   '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.03)' },
   '.cm-line': { padding: '0' },
 
-  // Live-preview decorations
   '.cm-md-hidden': { display: 'none' },
   '.cm-md-h1': { fontSize: '1.8em', fontWeight: '700', lineHeight: '1.3' },
   '.cm-md-h2': { fontSize: '1.4em', fontWeight: '600', lineHeight: '1.35' },
@@ -349,5 +444,9 @@ const livePreviewBaseTheme = EditorView.baseTheme({
     borderLeft: '3px solid #4a9eff',
     paddingLeft: '1em',
     color: '#888',
+  },
+  '.cm-md-anchor-highlight': {
+    background: 'rgba(245, 200, 75, 0.15)',
+    borderBottom: '2px solid rgba(245, 200, 75, 0.5)',
   },
 });

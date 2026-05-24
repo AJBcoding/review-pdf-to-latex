@@ -154,6 +154,15 @@ export interface CommentPayload {
   /** PDF-only: links this comment to the corresponding annotation in the
    *  rendered bundle PDF (§10.4). Written by Submit; not used by the watcher. */
   pdf_annotation_id?: string | null;
+  /** M-md-4: fuzzy-snippet anchor for .md comments. Present when
+   *  `anchor_kind === 'md-fuzzy-snippet'` on the parent DraftsFile. */
+  md_anchor?: {
+    char_start: number;
+    char_end: number;
+    prefix: string;
+    suffix: string;
+    quoted_text: string;
+  } | null;
 }
 
 /** Anchor kind discriminator — determines which anchor strategy the sidecar's
