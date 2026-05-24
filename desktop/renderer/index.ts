@@ -14,6 +14,7 @@ import type {
 import { REVIEWER_LOCAL_ID } from '@shared/types';
 import { parseSourceName } from '@shared/bundle';
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
+import { MarkdownViewer } from './md-viewer';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
 import {
@@ -162,6 +163,7 @@ function rememberDestination(path: string, destination: string): void {
 }
 let activeTool: Tool = 'comment';
 let viewerRef: PdfViewer | null = null;
+let mdViewerRef: MarkdownViewer | null = null;
 
 // ─── Drafts write debounce (§10.3 — 250ms) ─────────────────────────────────
 let writeTimer: number | null = null;
@@ -465,6 +467,13 @@ function dirnameOf(p: string): string {
   return i > 0 ? p.slice(0, i) : '/';
 }
 
+function classifyPath(p: string): 'pdf' | 'md' | 'other' {
+  const lower = p.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'pdf';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  return 'other';
+}
+
 // ─── §3 left drawer + §3.5 palette ────────────────────────────────────────
 //
 // Owns: a FileTree instance, a QuickOpenPalette instance, the AppState
@@ -661,12 +670,16 @@ async function refreshPdfIndex(root: string): Promise<void> {
   palette.setIndex(res.pdfs);
 }
 
-/** One canonical "open this PDF" entry point shared by the tree, the palette,
- *  and external handoff. loadPdf already handles the active-row + state-save
- *  side effects, so this is just a guarded passthrough. */
+/** One canonical "open this file" entry point shared by the tree, the palette,
+ *  and external handoff. Dispatches by file kind to the right viewer. */
 async function openFileFromTreeOrPalette(path: string): Promise<void> {
   if (!viewerHandlesRef) return;
-  await loadPdf(viewerHandlesRef, path);
+  const kind = classifyPath(path);
+  if (kind === 'md') {
+    await loadMarkdown(viewerHandlesRef, path);
+  } else {
+    await loadPdf(viewerHandlesRef, path);
+  }
 }
 
 function scheduleAppStateSave(): void {
@@ -761,7 +774,7 @@ async function restoreFromAppState(): Promise<void> {
   if (state.last_opened_doc && viewerHandlesRef) {
     const exists = await window.electronAPI.pathExists(state.last_opened_doc);
     if (exists.ok && exists.exists && exists.isFile) {
-      await loadPdf(viewerHandlesRef, state.last_opened_doc);
+      await openFileFromTreeOrPalette(state.last_opened_doc);
       fileTree.setActiveFile(state.last_opened_doc);
     }
   }
@@ -1101,6 +1114,10 @@ async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Pr
 }
 
 async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
+  if (mdViewerRef) {
+    mdViewerRef.dispose();
+    mdViewerRef = null;
+  }
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
   // Flush any pending write for the previous doc before its sha256 is gone.
@@ -1232,6 +1249,109 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   // doc is active. Pty-spawn-state is already broadcast separately by
   // claude-pane via 'claude-pane:spawn-state-changed'.
   window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
+}
+
+async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
+  h.title.textContent = `Loading ${basename(path)}…`;
+  hideBanner(h.banner);
+  if (writeTimer !== null) {
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    await flushDraftsWrite();
+  }
+  docState.path = path;
+  docState.sha256 = '';
+  docState.lastSelection = null;
+  docState.comments = [];
+  docState.rounds = new Map();
+  docState.originRig = originRigPerDoc.get(path) ?? null;
+  resetSubmit();
+  lastBundleSnapshot = null;
+  focusedCommentId = null;
+  editingCommentId = null;
+  clearInput();
+  renderAllCards();
+  updateAnchorMeta();
+  hideRoundBanner();
+  setSavedIndicator({ kind: 'idle' });
+  void window.electronAPI.watchResultsStop();
+
+  const bytesResult = await window.electronAPI.readPdfBytes(path);
+  if (!bytesResult.ok) {
+    h.title.textContent = basename(path);
+    showLoadError(h, bytesResult);
+    setViewerControlsEnabled(h, false);
+    return;
+  }
+
+  docState.sha256 = bytesResult.sha256;
+  await loadDraftsForCurrentDoc();
+
+  if (mdViewerRef) {
+    mdViewerRef.dispose();
+    mdViewerRef = null;
+  }
+
+  const mdViewer = new MarkdownViewer({
+    container: h.mount,
+    onWikilinkClick: (target) => {
+      resolveAndOpenWikilink(target);
+    },
+  });
+  mdViewerRef = mdViewer;
+
+  try {
+    showViewer(h);
+    await mdViewer.loadBytes(bytesResult.bytes);
+    h.title.textContent = basename(path);
+    h.prevBtn.disabled = true;
+    h.nextBtn.disabled = true;
+  } catch (err) {
+    h.title.textContent = basename(path);
+    showLoadError(h, null, err);
+    setViewerControlsEnabled(h, false);
+  }
+
+  if (useNewAgentPane()) {
+    const w = window as unknown as {
+      agentViewer?: {
+        notifyDocSwitch: (payload: {
+          path: string; pages: number; comments: number;
+        }) => Promise<void>;
+      };
+    };
+    void w.agentViewer?.notifyDocSwitch({
+      path, pages: 1, comments: docState.comments.length,
+    });
+  } else {
+    const sourceDir = dirnameOf(path);
+    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
+      notifyClaudeDocSwitch({
+        path, pages: 1, comments: docState.comments.length,
+      });
+    });
+  }
+  fileTree?.setActiveFile(path);
+  scheduleAppStateSave();
+  window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
+}
+
+function resolveAndOpenWikilink(target: string): void {
+  if (!fileTree) return;
+  const root = fileTree.snapshot().root;
+  if (!root) return;
+  const candidates = [
+    `${root}/${target}`,
+    `${root}/${target}.md`,
+    `${root}/${target}.markdown`,
+  ];
+  for (const candidate of candidates) {
+    void window.electronAPI.pathExists(candidate).then((res) => {
+      if (res.ok && res.exists && res.isFile) {
+        void openFileFromTreeOrPalette(candidate);
+      }
+    });
+  }
 }
 
 async function loadDraftsForCurrentDoc(): Promise<void> {
