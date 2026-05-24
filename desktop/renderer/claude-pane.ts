@@ -402,6 +402,15 @@ export async function ensureSpawned(opts: {
   // Broadcast a state change so the toolbar can flip its buttons enabled.
   window.dispatchEvent(new CustomEvent('claude-pane:spawn-state-changed'));
 
+  // rev-gkl: write a local-only marker so the user sees the priming even if
+  // claude's startup screen-clear races the slash-command echo. This goes
+  // directly to xterm (not through the pty), so it's purely visual.
+  if (!result.already_running && state.terminal) {
+    setTimeout(() => {
+      state.terminal?.write('\r\n\x1b[90m[skill: /review-pdf-to-latex activated]\x1b[0m\r\n');
+    }, 2000);
+  }
+
   return { spawned: result.already_running ? 'already' : 'new' };
 }
 
