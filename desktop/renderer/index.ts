@@ -446,6 +446,45 @@ function bootClaudePane(): void {
   });
 
   bootToolbar();
+  bootClaudeSettings();
+}
+
+function bootClaudeSettings(): void {
+  const btn = document.getElementById('claudeSettingsBtn') as HTMLButtonElement | null;
+  const panel = document.getElementById('claudeSettingsPanel');
+  const skipCheck = document.getElementById('settingSkipPermissions') as HTMLInputElement | null;
+  const costCheck = document.getElementById('settingShowCost') as HTMLInputElement | null;
+  if (!btn || !panel || !skipCheck || !costCheck) return;
+
+  btn.addEventListener('click', () => {
+    panel.hidden = !panel.hidden;
+    btn.setAttribute('aria-expanded', String(!panel.hidden));
+  });
+
+  // Load persisted state
+  void window.electronAPI.readAppState().then((res) => {
+    if (res.ok && res.state) {
+      skipCheck.checked = res.state.claude_dangerous_skip_permissions !== false;
+    }
+  });
+  try {
+    costCheck.checked = localStorage.getItem('pdf-latex-show-cost') !== '0';
+  } catch {}
+
+  skipCheck.addEventListener('change', () => {
+    scheduleAppStateSave();
+  });
+  costCheck.addEventListener('change', () => {
+    try {
+      localStorage.setItem('pdf-latex-show-cost', costCheck.checked ? '1' : '0');
+    } catch {}
+    window.dispatchEvent(new CustomEvent('settings:cost-display-changed', {
+      detail: { show: costCheck.checked },
+    }));
+  });
+
+  // Expose the skip-permissions value for flushAppStateSave
+  (window as any).__claudeSkipPermissions = () => skipCheck?.checked ?? true;
 }
 
 /** §9.2.6 right-drawer toolbar (rev-1md.3). Wires the three buttons + their
@@ -762,6 +801,7 @@ async function flushAppStateSave(): Promise<void> {
     origin_rig_per_doc: Object.fromEntries(originRigPerDoc.entries()),
     recent_rigs: [...recentRigsList],
     last_destination_per_doc: Object.fromEntries(lastDestinationPerDoc.entries()),
+    claude_dangerous_skip_permissions: (window as any).__claudeSkipPermissions?.() ?? true,
   };
   const res = await window.electronAPI.writeAppState(state);
   if (!res.ok) {

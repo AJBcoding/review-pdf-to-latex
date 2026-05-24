@@ -1047,6 +1047,38 @@ html, body, #app {
   color: var(--accent);
   font-weight: 700;
 }
+/* ─── Claude pane settings panel (rev-68j / rev-drs) ─────────────────────── */
+
+.rd-settings-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  margin-left: 4px;
+}
+.rd-settings-btn:hover { color: var(--text); }
+.rd-settings-panel {
+  padding: 8px 12px;
+  background: rgba(0,0,0,0.3);
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 12px;
+}
+.rd-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.rd-setting-row input[type="checkbox"] { margin: 0; }
+.rd-setting-hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .tree-path-hint {
   margin-left: 6px;
   color: var(--muted);

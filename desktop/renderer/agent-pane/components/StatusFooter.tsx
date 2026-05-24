@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useStore } from "../store";
 
 function fmtCost(usd: number | undefined): string {
@@ -5,16 +6,25 @@ function fmtCost(usd: number | undefined): string {
   return `$${usd.toFixed(4)}`;
 }
 
-/**
- * Status info pinned to the bottom of the window. State dot + label,
- * model, session id prefix, last-turn cost. Read-only; the `new` and
- * display-mode controls live at the top in StatusBar so this row
- * stays passive.
- */
+function readCostPref(): boolean {
+  try { return localStorage.getItem("pdf-latex-show-cost") !== "0"; }
+  catch { return true; }
+}
+
 export function StatusFooter() {
   const session = useStore((s) => s.session);
   const busy = useStore((s) => s.busy);
   const lastTurn = useStore((s) => s.lastTurn);
+  const [showCost, setShowCost] = useState(readCostPref);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { show: boolean } | undefined;
+      if (detail) setShowCost(detail.show);
+    };
+    window.addEventListener("settings:cost-display-changed", handler);
+    return () => window.removeEventListener("settings:cost-display-changed", handler);
+  }, []);
 
   const status = busy ? "thinking…" : session?.status ?? "idle";
   const model = session?.model ?? "—";
@@ -30,7 +40,7 @@ export function StatusFooter() {
       <span className="statusbar__field">{model}</span>
       <span className="statusbar__sep">·</span>
       <span className="statusbar__field">session {sessionLabel}</span>
-      {lastTurn && (
+      {showCost && lastTurn && (
         <>
           <span className="statusbar__sep">·</span>
           <span className="statusbar__field">last {fmtCost(lastTurn.totalCostUsd)}</span>

@@ -197,7 +197,22 @@
             <span class="rd-tasks-toggle-icon" aria-hidden="true">⚙</span>
             <span class="rd-tasks-toggle-count" id="tasksPanelCount">0</span>
           </button>
+          <button id="claudeSettingsBtn" class="rd-settings-btn" type="button"
+                  title="Claude pane settings">
+            <span aria-hidden="true">⚙</span>
+          </button>
         </header>
+        <div id="claudeSettingsPanel" class="rd-settings-panel" hidden>
+          <label class="rd-setting-row">
+            <input type="checkbox" id="settingSkipPermissions" checked>
+            <span>Skip permission prompts (--dangerously-skip-permissions)</span>
+          </label>
+          <label class="rd-setting-row">
+            <input type="checkbox" id="settingShowCost" checked>
+            <span>Show per-turn cost in status bar</span>
+          </label>
+          <p class="rd-setting-hint">Changes apply on next Claude restart (Fresh Start).</p>
+        </div>
         <!--
           §9.2.6 toolbar — three icon buttons above the conversational pty.
           Picks landed in bd rev-ul7: ✨ Create Context / 🪃 Sling / 🌅 Fresh
