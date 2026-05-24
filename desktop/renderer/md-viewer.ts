@@ -1,28 +1,47 @@
-import { StrictMode, createElement, useState, useCallback, useMemo } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { EditorState, type Extension } from '@codemirror/state';
+import {
+  EditorView,
+  ViewPlugin,
+  Decoration,
+  type DecorationSet,
+  type ViewUpdate,
+  keymap,
+} from '@codemirror/view';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { syntaxTree, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import type { FileViewer } from '@shared/file-viewer';
 import type { AnchorKind } from '@shared/types';
 
 export interface MarkdownViewerOptions {
   container: HTMLElement;
   onWikilinkClick?: (target: string) => void;
+  onContentChange?: (content: string) => void;
 }
 
 export class MarkdownViewer implements FileViewer {
   private opts: MarkdownViewerOptions;
-  private root: Root | null = null;
   private stage: HTMLElement;
-  private markdownText = '';
+  private fmCard: HTMLElement;
+  private editorHost: HTMLElement;
+  private editorView: EditorView | null = null;
   private dark = false;
 
   constructor(opts: MarkdownViewerOptions) {
     this.opts = opts;
+
     this.stage = document.createElement('div');
     this.stage.className = 'md-viewer-stage';
+
+    this.fmCard = document.createElement('div');
+    this.fmCard.className = 'md-frontmatter-host';
+    this.stage.appendChild(this.fmCard);
+
+    this.editorHost = document.createElement('div');
+    this.editorHost.className = 'md-editor-host';
+    this.stage.appendChild(this.editorHost);
+
     opts.container.appendChild(this.stage);
-    this.root = createRoot(this.stage);
   }
 
   get totalPages(): number { return 1; }
@@ -30,14 +49,16 @@ export class MarkdownViewer implements FileViewer {
   get anchorKind(): AnchorKind { return 'md-fuzzy-snippet'; }
 
   async loadBytes(bytes: Uint8Array): Promise<void> {
-    this.markdownText = new TextDecoder('utf-8').decode(bytes);
-    this.render();
+    const text = new TextDecoder('utf-8').decode(bytes);
+    const { frontmatter, body } = parseFrontmatter(text);
+    this.renderFrontmatter(frontmatter);
+    this.mountEditor(body);
   }
 
-  async nextPage(): Promise<void> { /* .md is a single scrollable page */ }
-  async prevPage(): Promise<void> { /* .md is a single scrollable page */ }
-  async fitPage(): Promise<void> { /* no-op for markdown */ }
-  async fitWidth(): Promise<void> { /* no-op for markdown */ }
+  async nextPage(): Promise<void> {}
+  async prevPage(): Promise<void> {}
+  async fitPage(): Promise<void> {}
+  async fitWidth(): Promise<void> {}
 
   setDarkMode(enabled: boolean): void {
     this.dark = enabled;
@@ -47,34 +68,102 @@ export class MarkdownViewer implements FileViewer {
   isDarkMode(): boolean { return this.dark; }
 
   dispose(): void {
-    if (this.root) {
-      this.root.unmount();
-      this.root = null;
+    if (this.editorView) {
+      this.editorView.destroy();
+      this.editorView = null;
     }
     this.stage.remove();
   }
 
-  private render(): void {
-    if (!this.root) return;
-    this.root.render(
-      createElement(StrictMode, null,
-        createElement(MarkdownPreview, {
-          text: this.markdownText,
-          onWikilinkClick: this.opts.onWikilinkClick ?? null,
+  getContent(): string {
+    return this.editorView?.state.doc.toString() ?? '';
+  }
+
+  private mountEditor(text: string): void {
+    if (this.editorView) {
+      this.editorView.destroy();
+      this.editorView = null;
+    }
+
+    const extensions: Extension[] = [
+      markdown({ base: markdownLanguage }),
+      syntaxHighlighting(defaultHighlightStyle),
+      history(),
+      keymap.of([...defaultKeymap, ...historyKeymap]),
+      livePreviewPlugin(),
+      livePreviewBaseTheme,
+      EditorView.lineWrapping,
+    ];
+
+    if (this.opts.onContentChange) {
+      const onChange = this.opts.onContentChange;
+      extensions.push(
+        EditorView.updateListener.of((update: ViewUpdate) => {
+          if (update.docChanged) onChange(update.state.doc.toString());
         })
-      )
-    );
+      );
+    }
+
+    const state = EditorState.create({ doc: text, extensions });
+    this.editorView = new EditorView({ state, parent: this.editorHost });
+  }
+
+  private renderFrontmatter(fm: FrontmatterBlock | null): void {
+    this.fmCard.innerHTML = '';
+    if (!fm) { this.fmCard.hidden = true; return; }
+    this.fmCard.hidden = false;
+
+    const card = document.createElement('div');
+    card.className = 'md-frontmatter';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'md-frontmatter-toggle';
+    toggle.textContent = '▾ Frontmatter';
+    toggle.setAttribute('aria-expanded', 'true');
+
+    const table = document.createElement('table');
+    table.className = 'md-frontmatter-table';
+    const tbody = document.createElement('tbody');
+    for (const f of fm.fields) {
+      const tr = document.createElement('tr');
+      const tdKey = document.createElement('td');
+      tdKey.className = 'md-fm-key';
+      tdKey.textContent = f.key;
+      const tdVal = document.createElement('td');
+      tdVal.className = 'md-fm-value';
+      tdVal.textContent = f.value;
+      tr.append(tdKey, tdVal);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+
+    toggle.addEventListener('click', () => {
+      const collapsed = table.hidden;
+      table.hidden = !collapsed;
+      toggle.textContent = collapsed ? '▾ Frontmatter' : '▸ Frontmatter';
+      toggle.setAttribute('aria-expanded', String(collapsed));
+      card.classList.toggle('is-collapsed', !collapsed);
+    });
+
+    card.append(toggle, table);
+    this.fmCard.appendChild(card);
   }
 }
+
+// ─── Frontmatter parsing ──────────────────────────────────────────────────
 
 interface FrontmatterBlock {
   raw: string;
   fields: Array<{ key: string; value: string }>;
 }
 
-function parseFrontmatter(text: string): { frontmatter: FrontmatterBlock | null; body: string } {
+function parseFrontmatter(text: string): {
+  frontmatter: FrontmatterBlock | null;
+  body: string;
+  bodyOffset: number;
+} {
   const match = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
-  if (!match) return { frontmatter: null, body: text };
+  if (!match) return { frontmatter: null, body: text, bodyOffset: 0 };
 
   const raw = match[1];
   const fields: Array<{ key: string; value: string }> = [];
@@ -86,76 +175,179 @@ function parseFrontmatter(text: string): { frontmatter: FrontmatterBlock | null;
   return {
     frontmatter: { raw, fields },
     body: text.slice(match[0].length),
+    bodyOffset: match[0].length,
   };
 }
 
-function resolveWikilinks(text: string): string {
-  return text.replace(
-    /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-    (_match, target: string, display?: string) => {
-      const label = display ?? target;
-      return `[${label}](wikilink:${encodeURIComponent(target)})`;
-    }
+// ─── CM6 live-preview decorations ─────────────────────────────────────────
+
+const MARK_NAMES = new Set([
+  'HeaderMark',
+  'EmphasisMark',
+  'StrikethroughMark',
+  'LinkMark',
+  'URL',
+  'CodeMark',
+  'QuoteMark',
+]);
+
+const HEADING_NODES: Record<string, string> = {
+  ATXHeading1: 'cm-md-h1',
+  ATXHeading2: 'cm-md-h2',
+  ATXHeading3: 'cm-md-h3',
+  ATXHeading4: 'cm-md-h4',
+  ATXHeading5: 'cm-md-h5',
+  ATXHeading6: 'cm-md-h6',
+};
+
+const hideMark = Decoration.mark({ class: 'cm-md-hidden' });
+
+const headingDecos: Record<string, Decoration> = {};
+for (const [node, cls] of Object.entries(HEADING_NODES)) {
+  headingDecos[node] = Decoration.line({ class: cls });
+}
+const emphDeco = Decoration.mark({ class: 'cm-md-em' });
+const strongDeco = Decoration.mark({ class: 'cm-md-strong' });
+const strikeDeco = Decoration.mark({ class: 'cm-md-strike' });
+const linkDeco = Decoration.mark({ class: 'cm-md-link' });
+const codeDeco = Decoration.mark({ class: 'cm-md-code' });
+const blockquoteDeco = Decoration.line({ class: 'cm-md-blockquote' });
+
+function buildDecorations(view: EditorView): DecorationSet {
+  const builder: Array<{ from: number; to: number; deco: Decoration }> = [];
+  const lineDecos: Array<{ pos: number; deco: Decoration }> = [];
+  const cursorLine = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const tree = syntaxTree(view.state);
+
+  tree.iterate({
+    enter(node) {
+      const nodeStartLine = view.state.doc.lineAt(node.from).number;
+      const nodeEndLine = view.state.doc.lineAt(node.to).number;
+      const cursorOnNode = cursorLine >= nodeStartLine && cursorLine <= nodeEndLine;
+
+      // Headings: style the line, hide # marks when cursor is elsewhere
+      if (node.name in HEADING_NODES) {
+        for (let l = nodeStartLine; l <= nodeEndLine; l++) {
+          const line = view.state.doc.line(l);
+          lineDecos.push({ pos: line.from, deco: headingDecos[node.name] });
+        }
+      }
+
+      // Emphasis (italic)
+      if (node.name === 'Emphasis' && !cursorOnNode) {
+        builder.push({ from: node.from, to: node.to, deco: emphDeco });
+      }
+
+      // Strong emphasis (bold)
+      if (node.name === 'StrongEmphasis' && !cursorOnNode) {
+        builder.push({ from: node.from, to: node.to, deco: strongDeco });
+      }
+
+      // Strikethrough
+      if (node.name === 'Strikethrough' && !cursorOnNode) {
+        builder.push({ from: node.from, to: node.to, deco: strikeDeco });
+      }
+
+      // Links — style text part
+      if (node.name === 'Link' && !cursorOnNode) {
+        builder.push({ from: node.from, to: node.to, deco: linkDeco });
+      }
+
+      // Inline code
+      if (node.name === 'InlineCode' && !cursorOnNode) {
+        builder.push({ from: node.from, to: node.to, deco: codeDeco });
+      }
+
+      // Blockquote lines
+      if (node.name === 'Blockquote') {
+        for (let l = nodeStartLine; l <= nodeEndLine; l++) {
+          const line = view.state.doc.line(l);
+          lineDecos.push({ pos: line.from, deco: blockquoteDeco });
+        }
+      }
+
+      // Hide syntax marks on non-cursor lines (but NOT inside fenced code)
+      if (MARK_NAMES.has(node.name) && !cursorOnNode) {
+        // Don't hide CodeMark inside FencedCode blocks
+        if (node.name === 'CodeMark') {
+          let parent = node.node.parent;
+          while (parent) {
+            if (parent.name === 'FencedCode') return;
+            parent = parent.parent;
+          }
+        }
+        builder.push({ from: node.from, to: node.to, deco: hideMark });
+      }
+    },
+  });
+
+  const allRanges = [
+    ...builder.map((b) => b.deco.range(b.from, b.to)),
+    ...lineDecos.map((l) => l.deco.range(l.pos)),
+  ];
+  allRanges.sort((a, b) => a.from - b.from);
+
+  return Decoration.set(allRanges);
+}
+
+function livePreviewPlugin(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = buildDecorations(view);
+      }
+      update(update: ViewUpdate) {
+        if (update.docChanged || update.selectionSet || update.viewportChanged) {
+          this.decorations = buildDecorations(update.view);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations },
   );
 }
 
-interface MarkdownPreviewProps {
-  text: string;
-  onWikilinkClick: ((target: string) => void) | null;
-}
+// ─── CM6 theme ────────────────────────────────────────────────────────────
 
-function MarkdownPreview({ text, onWikilinkClick }: MarkdownPreviewProps) {
-  const { frontmatter, body } = useMemo(() => parseFrontmatter(text), [text]);
-  const processedBody = useMemo(() => resolveWikilinks(body), [body]);
-  const [fmCollapsed, setFmCollapsed] = useState(false);
+const livePreviewBaseTheme = EditorView.baseTheme({
+  '&': {
+    fontSize: '15px',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+  },
+  '.cm-content': {
+    maxWidth: '720px',
+    margin: '0 auto',
+    padding: '0 8px',
+    lineHeight: '1.65',
+    caretColor: '#4a9eff',
+  },
+  '.cm-cursor': { borderLeftColor: '#4a9eff' },
+  '.cm-selectionBackground': { background: '#264f78 !important' },
+  '&.cm-focused .cm-selectionBackground': { background: '#264f78 !important' },
+  '.cm-gutters': { display: 'none' },
+  '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.03)' },
+  '.cm-line': { padding: '0' },
 
-  const handleClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
-    const anchor = (e.target as HTMLElement).closest('a');
-    if (!anchor) return;
-    const href = anchor.getAttribute('href');
-    if (!href) return;
-    if (href.startsWith('wikilink:')) {
-      e.preventDefault();
-      const target = decodeURIComponent(href.slice('wikilink:'.length));
-      onWikilinkClick?.(target);
-    }
-  }, [onWikilinkClick]);
-
-  return createElement('div', { className: 'md-preview', onClick: handleClick },
-    frontmatter && createElement(FrontmatterCard, {
-      frontmatter,
-      collapsed: fmCollapsed,
-      onToggle: () => setFmCollapsed((c) => !c),
-    }),
-    createElement(ReactMarkdown as any, {
-      remarkPlugins: [remarkGfm],
-      children: processedBody,
-    }),
-  );
-}
-
-interface FrontmatterCardProps {
-  frontmatter: FrontmatterBlock;
-  collapsed: boolean;
-  onToggle: () => void;
-}
-
-function FrontmatterCard({ frontmatter, collapsed, onToggle }: FrontmatterCardProps) {
-  return createElement('div', { className: `md-frontmatter ${collapsed ? 'is-collapsed' : ''}` },
-    createElement('button', {
-      className: 'md-frontmatter-toggle',
-      onClick: onToggle,
-      'aria-expanded': !collapsed,
-    }, collapsed ? '▸ Frontmatter' : '▾ Frontmatter'),
-    !collapsed && createElement('table', { className: 'md-frontmatter-table' },
-      createElement('tbody', null,
-        ...frontmatter.fields.map((f) =>
-          createElement('tr', { key: f.key },
-            createElement('td', { className: 'md-fm-key' }, f.key),
-            createElement('td', { className: 'md-fm-value' }, f.value),
-          )
-        ),
-      ),
-    ),
-  );
-}
+  // Live-preview decorations
+  '.cm-md-hidden': { display: 'none' },
+  '.cm-md-h1': { fontSize: '1.8em', fontWeight: '700', lineHeight: '1.3' },
+  '.cm-md-h2': { fontSize: '1.4em', fontWeight: '600', lineHeight: '1.35' },
+  '.cm-md-h3': { fontSize: '1.15em', fontWeight: '600' },
+  '.cm-md-h4, .cm-md-h5, .cm-md-h6': { fontWeight: '600' },
+  '.cm-md-em': { fontStyle: 'italic' },
+  '.cm-md-strong': { fontWeight: '700' },
+  '.cm-md-strike': { textDecoration: 'line-through', color: '#888' },
+  '.cm-md-link': { color: '#4a9eff', textDecoration: 'none' },
+  '.cm-md-code': {
+    fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", monospace',
+    fontSize: '0.88em',
+    background: 'rgba(255,255,255,0.07)',
+    padding: '0.15em 0.35em',
+    borderRadius: '3px',
+  },
+  '.cm-md-blockquote': {
+    borderLeft: '3px solid #4a9eff',
+    paddingLeft: '1em',
+    color: '#888',
+  },
+});
