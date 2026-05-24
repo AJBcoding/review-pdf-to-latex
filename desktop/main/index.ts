@@ -69,6 +69,7 @@ function classifyFile(name: string): FileKind {
   const ext = extname(name).toLowerCase();
   if (ext === '.pdf') return 'pdf';
   if (ext === '.md' || ext === '.markdown') return 'md';
+  if (ext === '.html' || ext === '.htm') return 'html';
   if (ext === '.docx') return 'docx';
   return 'other';
 }

@@ -378,7 +378,7 @@ export class FileTree {
     li.dataset.kind = entry.kind;
     if (entry.isDir) li.dataset.dir = 'true';
     if (entry.isHidden) li.classList.add('is-hidden-entry');
-    if (!entry.isDir && entry.kind !== 'pdf' && entry.kind !== 'md') li.classList.add('is-dimmed');
+    if (!entry.isDir && entry.kind !== 'pdf' && entry.kind !== 'md' && entry.kind !== 'html') li.classList.add('is-dimmed');
     // The chevron + icon + label sit in a single row; padding-left scales
     // with depth so nested folders read as a tree without an explicit
     // guide-line treatment (cheap; matches Obsidian/VS Code defaults).
@@ -410,7 +410,7 @@ export class FileTree {
 
     if (entry.isDir) {
       li.addEventListener('click', () => { void this.toggleExpand(entry.path); });
-    } else if (entry.kind === 'pdf' || entry.kind === 'md') {
+    } else if (entry.kind === 'pdf' || entry.kind === 'md' || entry.kind === 'html') {
       li.addEventListener('click', () => { this.opts.onOpenFile(entry.path); });
     }
     // Enter on a focused row matches click behavior — keyboard parity.
@@ -418,7 +418,7 @@ export class FileTree {
       if (e.key !== 'Enter' && e.key !== ' ') return;
       e.preventDefault();
       if (entry.isDir) void this.toggleExpand(entry.path);
-      else if (entry.kind === 'pdf' || entry.kind === 'md') this.opts.onOpenFile(entry.path);
+      else if (entry.kind === 'pdf' || entry.kind === 'md' || entry.kind === 'html') this.opts.onOpenFile(entry.path);
     });
     return li;
   }
@@ -439,6 +439,7 @@ function iconFor(kind: DirEntry['kind']): string {
   switch (kind) {
     case 'pdf': return '📄';
     case 'md':  return '📝';
+    case 'html': return '🌐';
     case 'docx':return '📃';
     default:    return '·';
   }

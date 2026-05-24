@@ -15,6 +15,7 @@ import { REVIEWER_LOCAL_ID } from '@shared/types';
 import { parseSourceName } from '@shared/bundle';
 import { PdfViewer, type SelectionPayload } from './pdf-viewer';
 import { MarkdownViewer, type MdSelection } from './md-viewer';
+import { HtmlViewer, type HtmlSelection, type HtmlAnchor } from './html-viewer';
 import { createMdAnchor, fuzzyMatchAnchor } from '@shared/md/anchors';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
@@ -165,7 +166,9 @@ function rememberDestination(path: string, destination: string): void {
 let activeTool: Tool = 'comment';
 let viewerRef: PdfViewer | null = null;
 let mdViewerRef: MarkdownViewer | null = null;
+let htmlViewerRef: HtmlViewer | null = null;
 let lastMdSelection: MdSelection | null = null;
+let lastHtmlSelection: HtmlSelection | null = null;
 
 // ─── M-md-3: .md source save debounce (500ms) ────────────────────────────
 let mdSaveTimer: number | null = null;
@@ -510,10 +513,11 @@ function dirnameOf(p: string): string {
   return i > 0 ? p.slice(0, i) : '/';
 }
 
-function classifyPath(p: string): 'pdf' | 'md' | 'other' {
+function classifyPath(p: string): 'pdf' | 'md' | 'html' | 'other' {
   const lower = p.toLowerCase();
   if (lower.endsWith('.pdf')) return 'pdf';
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
   return 'other';
 }
 
@@ -732,6 +736,8 @@ async function openFileFromTreeOrPalette(path: string): Promise<void> {
   const kind = classifyPath(path);
   if (kind === 'md') {
     await loadMarkdown(viewerHandlesRef, path);
+  } else if (kind === 'html') {
+    await loadHtml(viewerHandlesRef, path);
   } else {
     await loadPdf(viewerHandlesRef, path);
   }
@@ -1194,6 +1200,7 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
   void window.electronAPI.unwatchFile();
   mdSourceModified = false;
+  if (htmlViewerRef) { htmlViewerRef.dispose(); htmlViewerRef = null; }
   if (mdViewerRef) {
     mdViewerRef.dispose();
     mdViewerRef = null;
@@ -1459,6 +1466,116 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
   fileTree?.setActiveFile(path);
   scheduleAppStateSave();
   window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
+}
+
+async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
+  h.title.textContent = `Loading ${basename(path)}…`;
+  hideBanner(h.banner);
+  if (mdSaveTimer !== null) {
+    window.clearTimeout(mdSaveTimer);
+    mdSaveTimer = null;
+    await flushMdSave();
+  }
+  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
+  void window.electronAPI.unwatchFile();
+  if (mdViewerRef) { mdViewerRef.dispose(); mdViewerRef = null; }
+  if (htmlViewerRef) { htmlViewerRef.dispose(); htmlViewerRef = null; }
+  if (writeTimer !== null) {
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    await flushDraftsWrite();
+  }
+
+  docState.path = path;
+  docState.sha256 = '';
+  docState.lastSelection = null;
+  docState.comments = [];
+  docState.rounds = new Map();
+  docState.originRig = originRigPerDoc.get(path) ?? null;
+  resetSubmit();
+  lastBundleSnapshot = null;
+  focusedCommentId = null;
+  editingCommentId = null;
+  lastHtmlSelection = null;
+  clearInput();
+  renderAllCards();
+  updateAnchorMeta();
+  hideRoundBanner();
+  setSavedIndicator({ kind: 'idle' });
+  void window.electronAPI.watchResultsStop();
+
+  const bytesResult = await window.electronAPI.readPdfBytes(path);
+  if (!bytesResult.ok) {
+    h.title.textContent = basename(path);
+    showLoadError(h, bytesResult);
+    setViewerControlsEnabled(h, false);
+    return;
+  }
+
+  docState.sha256 = bytesResult.sha256;
+  await loadDraftsForCurrentDoc();
+
+  const htmlViewer = new HtmlViewer({
+    container: h.mount,
+    basePath: path,
+    onSelection: (sel) => {
+      lastHtmlSelection = sel;
+      updateAnchorMeta();
+    },
+  });
+  htmlViewerRef = htmlViewer;
+
+  try {
+    showViewer(h);
+    await htmlViewer.loadBytes(bytesResult.bytes);
+    h.title.textContent = basename(path);
+    h.prevBtn.disabled = true;
+    h.nextBtn.disabled = true;
+    applyHtmlCommentHighlights();
+  } catch (err) {
+    h.title.textContent = basename(path);
+    showLoadError(h, null, err);
+    setViewerControlsEnabled(h, false);
+  }
+
+  if (useNewAgentPane()) {
+    const w = window as unknown as {
+      agentViewer?: {
+        notifyDocSwitch: (payload: {
+          path: string; pages: number; comments: number;
+        }) => Promise<void>;
+      };
+    };
+    void w.agentViewer?.notifyDocSwitch({
+      path, pages: 1, comments: docState.comments.length,
+    });
+  } else {
+    const sourceDir = dirnameOf(path);
+    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
+      notifyClaudeDocSwitch({
+        path, pages: 1, comments: docState.comments.length,
+      });
+    });
+  }
+  fileTree?.setActiveFile(path);
+  scheduleAppStateSave();
+  window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
+}
+
+function applyHtmlCommentHighlights(): void {
+  if (!htmlViewerRef) return;
+  const anchors: HtmlAnchor[] = docState.comments
+    .filter((c) => c.md_anchor && (c.md_anchor as any).selector)
+    .map((c) => {
+      const a = c.md_anchor as any;
+      return {
+        selector: a.selector as string,
+        text_content: a.quoted_text as string,
+        char_offset: a.char_offset as number ?? 0,
+        char_length: a.char_length as number ?? a.quoted_text?.length ?? 0,
+      };
+    });
+  htmlViewerRef.setHighlightedAnchors(anchors);
 }
 
 function showExternalModificationModal(h: ViewerHandles, path: string): void {
@@ -1830,8 +1947,8 @@ function updateAnchorMeta(): void {
     }
     editingCommentId = null;
   }
-  const isMd = classifyPath(docState.path) === 'md';
-  if (isMd) {
+  const fileKind = classifyPath(docState.path);
+  if (fileKind === 'md') {
     if (!lastMdSelection) {
       meta.textContent = docState.path
         ? 'No selection — highlight text to anchor a comment.'
@@ -1841,6 +1958,19 @@ function updateAnchorMeta(): void {
     }
     const snippet = truncate(lastMdSelection.text, 60);
     meta.textContent = `chars ${lastMdSelection.from}–${lastMdSelection.to} · “${snippet}”`;
+    meta.classList.add('has-selection');
+    return;
+  }
+  if (fileKind === 'html') {
+    if (!lastHtmlSelection) {
+      meta.textContent = docState.path
+        ? 'No selection — highlight text to anchor a comment.'
+        : 'No file loaded.';
+      meta.classList.remove('has-selection');
+      return;
+    }
+    const snippet = truncate(lastHtmlSelection.text, 60);
+    meta.textContent = `${lastHtmlSelection.selector.slice(-30)} · “${snippet}”`;
     meta.classList.add('has-selection');
     return;
   }
@@ -1892,9 +2022,9 @@ async function handleSubmit(): Promise<void> {
     return;
   }
 
-  const isMd = classifyPath(docState.path) === 'md';
+  const fileKind = classifyPath(docState.path);
 
-  if (isMd && lastMdSelection && mdViewerRef) {
+  if (fileKind === 'md' && lastMdSelection && mdViewerRef) {
     const doc = mdViewerRef.getContent();
     const mdAnchor = createMdAnchor(doc, lastMdSelection.from, lastMdSelection.to);
     const payload = buildMdCommentPayload(buf, lastMdSelection, mdAnchor);
@@ -1907,10 +2037,17 @@ async function handleSubmit(): Promise<void> {
     return;
   }
 
-  if (!isMd && !docState.lastSelection) {
-    flashAnchorMeta('Select text in the PDF first to anchor this comment.');
+  if (fileKind === 'html' && lastHtmlSelection) {
+    const payload = buildHtmlCommentPayload(buf, lastHtmlSelection);
+    docState.comments.unshift(payload);
+    renderAllCards();
+    scheduleDraftsWrite();
+    applyHtmlCommentHighlights();
+    clearInput();
+    input.focus();
     return;
   }
+
   if (!docState.lastSelection) {
     flashAnchorMeta('Select text first to anchor this comment.');
     return;
@@ -1921,6 +2058,35 @@ async function handleSubmit(): Promise<void> {
   scheduleDraftsWrite();
   clearInput();
   input.focus();
+}
+
+function buildHtmlCommentPayload(buf: string, sel: HtmlSelection): CommentPayload {
+  const isRedraft = activeTool === 'redraft';
+  return {
+    id: crypto.randomUUID(),
+    doc_id: docState.path,
+    doc_version: docState.sha256,
+    anchor: { page: 1, region: { x: 0, y: 0, w: 0, h: 0 } },
+    highlighted_text: sel.text,
+    comment: isRedraft ? '' : buf,
+    redraft: isRedraft ? buf : null,
+    redraft_suggestion: null,
+    engagement_level: activeTool,
+    author: 'AJB',
+    kind: 'comment',
+    status: 'open',
+    created_at: new Date().toISOString(),
+    md_anchor: {
+      char_start: sel.charOffset,
+      char_end: sel.charOffset + sel.charLength,
+      prefix: '',
+      suffix: '',
+      quoted_text: sel.text,
+      selector: sel.selector,
+      char_offset: sel.charOffset,
+      char_length: sel.charLength,
+    } as any,
+  };
 }
 
 function buildMdCommentPayload(
