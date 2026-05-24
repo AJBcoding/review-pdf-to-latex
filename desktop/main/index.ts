@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { basename as pathBasename, dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
+import { watch, type FSWatcher } from 'node:fs';
 import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
@@ -36,6 +37,7 @@ import type {
   SubmitAbandonRequest,
   SubmitPromoteRequest,
   SubmitSlingRequest,
+  WriteFileTextResult,
 } from '@shared/types';
 
 /** Drafts file location: path-based keying. The sidecar lives next to the
@@ -579,6 +581,65 @@ void app.whenReady().then(async () => {
       }
       return { ok: false, reason: 'stat_failed', path: resolvedPath, error: e.message };
     }
+  });
+
+  // M-md-3 — write text to disk (for .md save). Atomic via tmp+rename.
+  ipcMain.handle(
+    'fs:writeFileText',
+    async (_event, filePath: string, content: string): Promise<WriteFileTextResult> => {
+      const resolvedPath = resolve(filePath);
+      try {
+        await mkdir(dirname(resolvedPath), { recursive: true });
+      } catch (err) {
+        return {
+          ok: false, reason: 'mkdir_failed', filePath: resolvedPath,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      const tmpPath = `${resolvedPath}.${randomBytes(6).toString('hex')}.tmp`;
+      try {
+        await writeFile(tmpPath, content, 'utf8');
+        await rename(tmpPath, resolvedPath);
+        return { ok: true, filePath: resolvedPath };
+      } catch (err) {
+        await unlink(tmpPath).catch(() => {});
+        return {
+          ok: false, reason: 'write_failed', filePath: resolvedPath,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+  );
+
+  // M-md-3 — file watcher for external modification detection.
+  let fileWatcher: FSWatcher | null = null;
+  let fileWatchPath: string | null = null;
+  let fileWatchSuppressUntil = 0;
+
+  ipcMain.handle('fs:watchFile', async (event, filePath: string) => {
+    if (fileWatcher) { fileWatcher.close(); fileWatcher = null; }
+    const resolvedPath = resolve(filePath);
+    fileWatchPath = resolvedPath;
+    try {
+      fileWatcher = watch(resolvedPath, (eventType) => {
+        if (Date.now() < fileWatchSuppressUntil) return;
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('file:change', { filePath: resolvedPath, kind: eventType });
+        }
+      });
+    } catch { /* file may not exist yet — non-fatal */ }
+  });
+
+  ipcMain.handle('fs:unwatchFile', async () => {
+    if (fileWatcher) { fileWatcher.close(); fileWatcher = null; }
+    fileWatchPath = null;
+  });
+
+  // Suppress file-change events for 1s after we write — avoids triggering
+  // the external-modification modal from our own save.
+  ipcMain.on('fs:suppressFileWatch', () => {
+    fileWatchSuppressUntil = Date.now() + 1000;
   });
 
   // §3.3 persisted state. Same atomic-write pattern as drafts (temp + rename)

@@ -16,6 +16,7 @@ import type {
   WorkerExitEvent,
   WorkerProgressEvent,
   WorkerStartParams,
+  FileChangeEvent,
 } from '@shared/types';
 
 // Expose a minimal, typed IPC surface to the renderer.
@@ -43,6 +44,18 @@ const electronAPI: ElectronAPI = {
   readAppState: () => ipcRenderer.invoke('appState:read'),
   writeAppState: (state: AppStateFile) => ipcRenderer.invoke('appState:write', state),
   indexPdfs: (root: string) => ipcRenderer.invoke('fs:indexPdfs', root),
+
+  writeFileText: (filePath: string, content: string) =>
+    ipcRenderer.invoke('fs:writeFileText', filePath, content),
+  watchFile: (filePath: string) => ipcRenderer.invoke('fs:watchFile', filePath),
+  unwatchFile: () => ipcRenderer.invoke('fs:unwatchFile'),
+  onFileChange: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: FileChangeEvent) => cb(event);
+    ipcRenderer.on('file:change', listener);
+    return () => { ipcRenderer.off('file:change', listener); };
+  },
+  suppressFileWatch: () => { ipcRenderer.send('fs:suppressFileWatch'); },
+
   onOpenExternalFile: (cb) => {
     const listener = (_e: IpcRendererEvent, event: { path: string; from: string | null }) => cb(event);
     ipcRenderer.on('app:openExternalFile', listener);

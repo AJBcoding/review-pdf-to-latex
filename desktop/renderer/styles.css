@@ -1042,6 +1042,11 @@ html, body, #app {
   background: #143352;
   color: var(--text);
 }
+.tree-row.is-source-modified .tree-label::after {
+  content: ' •';
+  color: var(--accent);
+  font-weight: 700;
+}
 .tree-row:focus { outline: none; }
 .tree-row:focus-visible {
   outline: none;
@@ -1738,6 +1743,40 @@ html, body, #app {
 .md-viewer-stage.md-dark {
   filter: invert(0.88) hue-rotate(180deg);
 }
+
+/* External modification modal (M-md-3) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+}
+.modal-dialog {
+  background: var(--pane-bg);
+  border: 1px solid var(--pane-border);
+  border-radius: 8px;
+  padding: 24px 28px;
+  max-width: 420px;
+  width: 90%;
+}
+.modal-dialog h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.modal-dialog p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-btn {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--pane-border);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.modal-btn:hover { background: rgba(255,255,255,0.06); }
+.modal-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.modal-btn-primary:hover { background: #3a8adf; }
 
 .md-frontmatter-host {
   flex: 0 0 auto;

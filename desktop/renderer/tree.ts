@@ -158,6 +158,20 @@ export class FileTree {
   }
 
   private activePath: string | null = null;
+  private modifiedPaths = new Set<string>();
+
+  setModifiedFile(path: string, modified: boolean): void {
+    if (modified) this.modifiedPaths.add(path);
+    else this.modifiedPaths.delete(path);
+    this.refreshModifiedRow(path);
+  }
+
+  private refreshModifiedRow(path: string): void {
+    const row = this.opts.body.querySelector<HTMLElement>(
+      `.tree-row[data-path="${CSS.escape(path)}"]`
+    );
+    if (row) row.classList.toggle('is-source-modified', this.modifiedPaths.has(path));
+  }
 
   private setShowHidden(value: boolean): void {
     if (value === this.showHidden) return;

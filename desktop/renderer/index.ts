@@ -165,6 +165,45 @@ let activeTool: Tool = 'comment';
 let viewerRef: PdfViewer | null = null;
 let mdViewerRef: MarkdownViewer | null = null;
 
+// ─── M-md-3: .md source save debounce (500ms) ────────────────────────────
+let mdSaveTimer: number | null = null;
+const MD_SAVE_DEBOUNCE_MS = 500;
+let mdSourceModified = false;
+let mdFileChangeUnsub: (() => void) | null = null;
+
+function scheduleMdSave(): void {
+  if (!docState.path || classifyPath(docState.path) !== 'md') return;
+  mdSourceModified = true;
+  fileTree?.setModifiedFile(docState.path, true);
+  if (mdSaveTimer !== null) window.clearTimeout(mdSaveTimer);
+  mdSaveTimer = window.setTimeout(() => {
+    mdSaveTimer = null;
+    void flushMdSave();
+  }, MD_SAVE_DEBOUNCE_MS);
+}
+
+async function flushMdSave(): Promise<void> {
+  if (!docState.path || !mdViewerRef) return;
+  const content = mdViewerRef.getContent();
+  if (!content && content !== '') return;
+  window.electronAPI.suppressFileWatch();
+  const res = await window.electronAPI.writeFileText(docState.path, content);
+  if (!res.ok) {
+    flashAnchorMeta(`Save failed (${res.reason}): ${res.error}`);
+    return;
+  }
+  mdSourceModified = false;
+  fileTree?.setModifiedFile(docState.path, false);
+  const newHash = await rehashCurrentDoc();
+  if (newHash) docState.sha256 = newHash;
+}
+
+async function rehashCurrentDoc(): Promise<string | null> {
+  if (!docState.path) return null;
+  const res = await window.electronAPI.readPdfBytes(docState.path);
+  return res.ok ? res.sha256 : null;
+}
+
 // ─── Drafts write debounce (§10.3 — 250ms) ─────────────────────────────────
 let writeTimer: number | null = null;
 const WRITE_DEBOUNCE_MS = 250;
@@ -797,20 +836,36 @@ function wireDraftsQuitFlush(): void {
     // ack is a no-op. Avoids writing an empty drafts file for documents the
     // user opens and closes without commenting (would litter the .review-state
     // dir next to every PDF the user even peeks at).
-    if (writeTimer === null) {
+    // Flush both drafts and md source saves
+    const flushes: Promise<void>[] = [];
+    if (writeTimer !== null) {
+      window.clearTimeout(writeTimer);
+      writeTimer = null;
+      flushes.push(flushDraftsWrite());
+    }
+    if (mdSaveTimer !== null) {
+      window.clearTimeout(mdSaveTimer);
+      mdSaveTimer = null;
+      flushes.push(flushMdSave());
+    }
+    if (flushes.length === 0) {
       window.electronAPI.sendDraftsFlushAck(id);
       return;
     }
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    try { await flushDraftsWrite(); }
+    try { await Promise.all(flushes); }
     finally { window.electronAPI.sendDraftsFlushAck(id); }
   });
   window.addEventListener('beforeunload', () => {
-    if (writeTimer === null) return;
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    void flushDraftsWrite();
+    if (writeTimer !== null) {
+      window.clearTimeout(writeTimer);
+      writeTimer = null;
+      void flushDraftsWrite();
+    }
+    if (mdSaveTimer !== null) {
+      window.clearTimeout(mdSaveTimer);
+      mdSaveTimer = null;
+      void flushMdSave();
+    }
   });
 }
 
@@ -1114,6 +1169,15 @@ async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Pr
 }
 
 async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
+  // Flush pending .md save before switching away
+  if (mdSaveTimer !== null) {
+    window.clearTimeout(mdSaveTimer);
+    mdSaveTimer = null;
+    await flushMdSave();
+  }
+  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
+  void window.electronAPI.unwatchFile();
+  mdSourceModified = false;
   if (mdViewerRef) {
     mdViewerRef.dispose();
     mdViewerRef = null;
@@ -1254,11 +1318,22 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
 async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
+  // Flush pending .md save for previous doc
+  if (mdSaveTimer !== null) {
+    window.clearTimeout(mdSaveTimer);
+    mdSaveTimer = null;
+    await flushMdSave();
+  }
   if (writeTimer !== null) {
     window.clearTimeout(writeTimer);
     writeTimer = null;
     await flushDraftsWrite();
   }
+  // Stop watching previous file
+  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
+  void window.electronAPI.unwatchFile();
+  mdSourceModified = false;
+
   docState.path = path;
   docState.sha256 = '';
   docState.lastSelection = null;
@@ -1297,8 +1372,20 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
     onWikilinkClick: (target) => {
       resolveAndOpenWikilink(target);
     },
+    onContentChange: () => {
+      scheduleMdSave();
+    },
   });
   mdViewerRef = mdViewer;
+
+  // Start watching for external changes
+  void window.electronAPI.watchFile(path);
+  mdFileChangeUnsub = window.electronAPI.onFileChange((event) => {
+    if (event.filePath !== path) return;
+    if (mdSourceModified) {
+      showExternalModificationModal(h, path);
+    }
+  });
 
   try {
     showViewer(h);
@@ -1334,6 +1421,36 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
   fileTree?.setActiveFile(path);
   scheduleAppStateSave();
   window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
+}
+
+function showExternalModificationModal(h: ViewerHandles, path: string): void {
+  const existing = document.getElementById('externalModModal');
+  if (existing) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'externalModModal';
+  overlay.className = 'modal-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'modal-dialog';
+  modal.innerHTML = `
+    <h3>File modified externally</h3>
+    <p>${basename(path)} was changed outside the editor while you have unsaved edits.</p>
+    <div class="modal-actions">
+      <button id="extModReload" class="modal-btn modal-btn-primary">Reload from disk</button>
+      <button id="extModKeep" class="modal-btn">Keep my edits</button>
+    </div>
+  `;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  document.getElementById('extModReload')!.addEventListener('click', () => {
+    overlay.remove();
+    mdSourceModified = false;
+    void openFileFromTreeOrPalette(path);
+  });
+  document.getElementById('extModKeep')!.addEventListener('click', () => {
+    overlay.remove();
+  });
 }
 
 function resolveAndOpenWikilink(target: string): void {

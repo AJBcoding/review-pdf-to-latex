@@ -595,6 +595,17 @@ export type PathExistsResult =
   | { ok: true; exists: boolean; isDir: boolean; isFile: boolean; path: string }
   | { ok: false; reason: 'stat_failed'; path: string; error: string };
 
+// ─── M-md-3 file write + watch ───────────────────────────────────────────
+
+export type WriteFileTextResult =
+  | { ok: true; filePath: string }
+  | { ok: false; reason: 'mkdir_failed' | 'write_failed'; filePath: string; error: string };
+
+export interface FileChangeEvent {
+  filePath: string;
+  kind: 'change' | 'rename';
+}
+
 export interface ElectronAPI {
   // Smoke-test echo, retained from the empty-shell milestone.
   ping(message: string): Promise<string>;
@@ -645,6 +656,17 @@ export interface ElectronAPI {
   // root, honoring the hidden-by-default ignore list. No live filesystem
   // watching in v1; renderer can call this again on demand.
   indexPdfs(root: string): Promise<IndexPdfsResult>;
+
+  // M-md-3 — write text content to disk (for .md save). Atomic via tmp+rename.
+  writeFileText(filePath: string, content: string): Promise<WriteFileTextResult>;
+  // M-md-3 — watch a file for external changes. Renderer calls this when
+  // opening an editable .md; main pushes `file:change` events. Call
+  // unwatchFile to stop (or it stops automatically on next watchFile call).
+  watchFile(filePath: string): Promise<void>;
+  unwatchFile(): Promise<void>;
+  onFileChange(cb: (event: FileChangeEvent) => void): () => void;
+  suppressFileWatch(): void;
+
   // §3.4 — main pushes the renderer a request to open a specific document
   // (from a CLI shim arg, second-instance argv, or reviewpdf:// URL).
   // Renderer pivots the middle pane to the doc; per §10.3 the prior doc's
