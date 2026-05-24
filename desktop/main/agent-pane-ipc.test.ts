@@ -355,7 +355,7 @@ describe('agent-pane-ipc', () => {
       expect(sentText).toContain('c.pdf');
       expect(sentText).toContain('3 pages');
       expect(sentText).toContain('2 comments');
-      expect(sentText.startsWith('[Now viewing:')).toBe(true);
+      expect(sentText.startsWith('[Now reviewing:')).toBe(true);
     });
 
     it('ignores malformed payloads', () => {

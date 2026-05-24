@@ -1393,6 +1393,13 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
         }
       }
     },
+    onBlur: () => {
+      if (mdSaveTimer !== null) {
+        window.clearTimeout(mdSaveTimer);
+        mdSaveTimer = null;
+        void flushMdSave();
+      }
+    },
   });
   mdViewerRef = mdViewer;
 

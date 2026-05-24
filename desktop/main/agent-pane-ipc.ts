@@ -91,7 +91,10 @@ function basenameOf(p: string): string {
 
 function buildDocPrimingLine(p: { path: string; pages: number; comments: number }): string {
   const base = basenameOf(p.path);
-  return `[Now viewing: ${base} — ${p.path} (${p.pages} pages, ${p.comments} comments)]`;
+  const ext = base.toLowerCase().split('.').pop() ?? '';
+  const verb = (ext === 'md' || ext === 'markdown') ? 'editing' : 'reviewing';
+  const unit = p.pages === 1 && (ext === 'md' || ext === 'markdown') ? 'file' : `${p.pages} pages`;
+  return `[Now ${verb}: ${base} — ${p.path} (${unit}, ${p.comments} comments)]`;
 }
 
 function flushDocSwitch(): void {

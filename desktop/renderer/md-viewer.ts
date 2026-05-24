@@ -25,6 +25,7 @@ export interface MarkdownViewerOptions {
   onWikilinkClick?: (target: string) => void;
   onContentChange?: (content: string) => void;
   onSelection?: (sel: MdSelection | null) => void;
+  onBlur?: () => void;
 }
 
 // ─── Tracked anchor state ─────────────────────────────────────────────────
@@ -211,6 +212,13 @@ export class MarkdownViewer implements FileViewer {
             }
           }
         })
+      );
+    }
+
+    if (this.opts.onBlur) {
+      const onBlur = this.opts.onBlur;
+      extensions.push(
+        EditorView.domEventHandlers({ blur: () => { onBlur(); } })
       );
     }
 

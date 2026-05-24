@@ -455,8 +455,10 @@ export function notifyDocSwitch(payload: {
     state.pendingDocSwitch = null;
     if (!p) return;
     const base = basenameOf(p.path);
-    // Format mirrors §9.2.4 exactly so the user can grep their scrollback.
-    const line = `[Now viewing: ${base} — ${p.path} (${p.pages} pages, ${p.comments} comments)]`;
+    const ext = base.toLowerCase().split('.').pop() ?? '';
+    const verb = (ext === 'md' || ext === 'markdown') ? 'editing' : 'reviewing';
+    const unit = p.pages === 1 && (ext === 'md' || ext === 'markdown') ? 'file' : `${p.pages} pages`;
+    const line = `[Now ${verb}: ${base} — ${p.path} (${unit}, ${p.comments} comments)]`;
     // Trailing \r so claude treats it as a complete input line. Newline is
     // sufficient — claude reads stdin as line-buffered.
     window.electronAPI.sendPtyInput(`${line}\r`);
