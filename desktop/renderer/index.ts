@@ -52,6 +52,9 @@ import {
   markRoundComplete as markSubmitRoundComplete,
   isInFlight as submitIsInFlight,
   canFire as submitCanFire,
+  canRetry as submitCanRetry,
+  resling as reslingSubmit,
+  canResume as submitCanResume,
   type SubmitContext,
 } from './submit';
 
@@ -370,11 +373,10 @@ function bootSubmitFlow(): void {
       // driven entirely from the disk artifacts.
     },
   });
-  // Retry handler — Submit module dispatches this when the user clicks
-  // Retry in the failure banner. Re-derives ctx from current docState.
-  window.addEventListener('submit:retry-requested', () => {
-    void handleSubmitBundle();
-  });
+  // rev-n6: the Retry / Re-sling / Resume buttons now re-sling the cached
+  // round directly inside the submit module (same submit_id, no re-promote),
+  // so there is no longer a `submit:retry-requested` round-trip through
+  // handleSubmitBundle (which used to mint a duplicate round).
   // Mirror Submit's per-comment status flips back onto the live draft.
   window.addEventListener('submit:comments-promoted', (evt) => {
     const detail = (evt as CustomEvent).detail as
@@ -1121,6 +1123,13 @@ async function handleSubmitBundle(): Promise<void> {
   // Pre-v2 C5 guard (§4.4 step 0): submit is PDF-only.
   if (classifyPath(docState.path) !== 'pdf') {
     flashAnchorMeta('Submit is only available for PDF documents.');
+    return;
+  }
+  // rev-n6: from a failed/timed-out send, Cmd+Return re-slings the SAME
+  // submit_id against the cached frozen submit file rather than minting a
+  // fresh round (which would duplicate the round and re-open the picker).
+  if (submitCanRetry()) {
+    await reslingSubmit();
     return;
   }
   // §10.1 step 6 concurrent-round lock — if a round for this doc is
@@ -2830,26 +2839,22 @@ function fillRoundBanner(banner: HTMLElement, round: ResultsRoundState): void {
       detail.className = 'round-banner-detail';
       detail.textContent = `Started ${formatRelativeTimestamp(r.started_at)} — ${processed} comments processed before the rig stopped.`;
       text.append(head, detail);
-      // §10.1 step 6 — Resume re-slings the existing submit file to the
-      // recorded origin (or opens the picker for standalone). Re-sling
-      // matches the spec's "re-invoke the rig" semantics: the rig sees
-      // the same submit_id and continues from the partial results file
-      // per the resume guard. Implementation: we mint a follow-up sling
-      // by reading the submit file via main, but the simpler path that
-      // matches the spec is to just re-Submit — the rig dedups on
-      // submit_id. Until that's wired through, we direct the user to
-      // hit Cmd+Return again, which is the same payload.
+      // §10.1 step 6 / rev-n6 — Resume re-slings the existing submit file
+      // (same submit_id) so the rig continues from the partial results file
+      // per its resume guard. This wires to the SAME entry as the Retry /
+      // Re-sling banner buttons (submit module's `resling()`), which re-sends
+      // the cached frozen submit file — no re-promote, no picker, no
+      // duplicate round. If the cached round was lost (e.g. an app restart
+      // since the sling), `resling()` returns false and falls back to a hint
+      // directing a fresh Cmd+Return — disk-rehydrated resume after restart
+      // is tracked separately (rev-n6 follow-up).
       const resume = document.createElement('button');
       resume.type = 'button';
       resume.className = 'is-primary';
       resume.textContent = 'Resume round';
-      resume.title = 'Re-sling the existing submit file to the rig.';
-      resume.addEventListener('click', () => {
-        // Easiest path: tell the user to hit Cmd+Return; the rig's resume
-        // guard handles dedup on submit_id. A first-class "resume from
-        // banner" path is tracked separately.
-        flashAnchorMeta('Press Cmd+Return to re-sling this round.');
-      });
+      resume.title = 'Re-sling the existing submit file to the rig (same submit_id).';
+      resume.disabled = !submitCanResume();
+      resume.addEventListener('click', () => { void reslingSubmit(); });
       // §10.1 step 6 — Abandon: rename results-<ts>.json →
       // results-<ts>.abandoned.json so the rig's resume guard ignores it
       // and the app's in-memory state flips back to idle (Submit re-enables).

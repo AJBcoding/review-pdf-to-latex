@@ -1,44 +1,36 @@
-// §10.1 Submit flow — renderer-side state machine + destination picker.
+// §10.1 Submit flow — renderer-side adapter + destination picker.
 //
 // Co-owns the Submit lifecycle with rev-1md.5 (results-watcher). Roles:
 //
 //  This module:
-//   - Tracks the local state (idle / pending_send / sent_unconfirmed /
-//     timeout / send_failed) and drives the pill + banner UI.
-//   - Owns the destination picker modal (§10.5).
-//   - Calls into main for promote + sling + abandon.
+//   - Owns the DOM: drives the pill + banner UI and the destination picker
+//     modal (§10.5), and the 10-minute sent_unconfirmed watchdog timer.
+//   - Translates UI events into SubmitMachine calls and re-renders on every
+//     state change. The lifecycle logic itself lives in submit-machine.ts
+//     (rev-n6 extraction) so the unhappy paths are unit-testable.
 //
 //  rev-1md.5 results-watcher (in index.ts):
 //   - Drives the acknowledged / processing / complete transitions via the
-//     results-file watcher. We expose `markAcknowledged()` so the watcher
-//     can pull our local pill out of `sent_unconfirmed` when the rig writes
-//     the first results file.
+//     results-file watcher. We expose `markAcknowledged()` / `markRoundComplete()`
+//     so the watcher can pull our local pill out of `sent_unconfirmed`.
 //
 //  The two halves talk through this module's exported handles; we don't
 //  reach back into index.ts. Same pattern as claude-pane.ts.
 //
-// Why two co-owners and not one: gt mail send (transport) is fundamentally
-// fire-and-forget once exit 0 lands; everything past that is observable only
-// via the results-file appearance, which is rev-1md.5's existing surface.
-// Folding both into one module would either duplicate the watcher or pull
-// the picker into watcher territory.
+// rev-n6: Retry / Re-sling / Resume all funnel through `resling()`, which
+// re-sends the SAME submit_id against the cached frozen submit file (no
+// re-promote, no picker, no duplicate round). The per-comment `submitted`
+// flip is deferred to a successful sling so a failed delivery never strands
+// comments in a permanently-submitted state.
 
 import { REVIEWER_LOCAL_ID } from '@shared/types';
-import type {
-  CommentPayload,
-  SubmitSlingResult,
-} from '@shared/types';
+import type { CommentPayload } from '@shared/types';
+import { SubmitMachine } from './submit-machine.js';
+import type { SubmitState, StatusUpdate } from './submit-machine.js';
 
 // ─── Public surface ────────────────────────────────────────────────────────
 
-export type SubmitState =
-  | 'idle'
-  | 'pending_send'
-  | 'sent_unconfirmed'
-  | 'timeout'
-  | 'send_failed'
-  | 'complete'
-  | 'complete-failed';
+export type { SubmitState };
 
 /** What the renderer hands us at Submit-fire time. The fields that matter
  *  to the picker (origin_rig, recent_rigs) come along so we don't reach
@@ -96,37 +88,46 @@ interface PickResult {
 }
 
 let opts: SubmitMountOptions | null = null;
-let currentState: SubmitState = 'idle';
-let currentDestinationLabel: string | null = null;
+let machine: SubmitMachine | null = null;
 let timeoutTimerId: number | null = null;
-let lastFailure:
-  | {
-      kind: 'send_failed';
-      reason: string;
-      stderr: string;
-      retryable: true;
-    }
-  | {
-      kind: 'timeout';
-    }
-  | null = null;
-let pendingSubmitId: string | null = null;
-let pendingDestination: string | null = null;
 
 /** §10.1 timing constants — values quoted verbatim from rev-2k7 / spec
  *  §10.1 step 4. Tuned to the spec; do not edit without re-checking. */
 const SENT_UNCONFIRMED_TIMEOUT_MS = 10 * 60 * 1000;  // 10 min
 const COMPLETE_AUTOCLEAR_MS = 5_000;
 
+function getMachine(): SubmitMachine {
+  if (!machine) {
+    machine = new SubmitMachine({
+      promote: (req) => window.electronAPI.submitPromote(req),
+      sling: (req) => window.electronAPI.submitSling(req),
+      onCommentsPromoted: (updates: StatusUpdate[]) => {
+        // Mirror the per-comment "submitted" status flips back onto the live
+        // drafts (right-drawer badges). rev-n6: this fires only after a sling
+        // lands, so a failed delivery leaves the drafts `open`.
+        window.dispatchEvent(new CustomEvent('submit:comments-promoted', {
+          detail: { updates },
+        }));
+      },
+      onStateChanged: () => { renderPill(); renderBanner(); },
+      onPendingRound: (p) => { opts?.onPendingRound?.(p); },
+      startTimeout: startTimeoutTimer,
+      cancelTimeout: cancelTimeoutTimer,
+    });
+  }
+  return machine;
+}
+
 export function mount(o: SubmitMountOptions): void {
   opts = o;
+  getMachine();
   wirePicker();
   renderPill();
   renderBanner();
 }
 
 export function getState(): SubmitState {
-  return currentState;
+  return getMachine().getState();
 }
 
 /** True when Submit should be disabled — the concurrent-round lock from
@@ -134,41 +135,27 @@ export function getState(): SubmitState {
  *  in_progress), but the in-flight states also disable Submit. Combine
  *  both into a single helper for callers. */
 export function isInFlight(): boolean {
-  return currentState === 'pending_send'
-      || currentState === 'sent_unconfirmed'
-      || currentState === 'timeout';
+  return getMachine().isInFlight();
 }
 
 /** Called by the results-watcher (rev-1md.5) when the first results-*.json
  *  for our pending submit_id appears. Transitions out of sent_unconfirmed,
- *  cancels the 10-minute timeout watcher. */
+ *  cancels the 10-minute timeout watcher. The cached round is kept so a
+ *  later stall can still be resumed. */
 export function markAcknowledged(submitId: string): void {
-  if (pendingSubmitId !== submitId) return;
-  if (currentState !== 'sent_unconfirmed' && currentState !== 'timeout') return;
-  cancelTimeoutTimer();
-  // We stay visually quiet from here until the round completes; the round
-  // banner (rev-1md.5) carries the in-progress / complete UI from this
-  // point forward. Clear the pill so the two surfaces don't fight.
-  transition('idle');
+  getMachine().markAcknowledged(submitId);
 }
 
 /** Called by the results-watcher when a results file flips to
  *  round_status:complete for our pending submit. Shows a brief toast-style
  *  pill then auto-clears. */
 export function markRoundComplete(submitId: string, succeeded: boolean): void {
-  if (pendingSubmitId !== submitId) {
-    // Late callback — the user may have already moved on. We still want
-    // the toast to show if we were the originating round, so accept it
-    // even when pendingSubmitId is null (only skip if a *different* round
-    // is currently in flight).
-    if (pendingSubmitId !== null) return;
-  }
-  cancelTimeoutTimer();
-  transition(succeeded ? 'complete' : 'complete-failed');
+  getMachine().markRoundComplete(submitId, succeeded);
   // Auto-clear after the spec's 5s window unless the user moves on.
   window.setTimeout(() => {
-    if (currentState === 'complete' || currentState === 'complete-failed') {
-      transition('idle');
+    const state = getMachine().getState();
+    if (state === 'complete' || state === 'complete-failed') {
+      getMachine().reset();
     }
   }, COMPLETE_AUTOCLEAR_MS);
 }
@@ -176,19 +163,15 @@ export function markRoundComplete(submitId: string, succeeded: boolean): void {
 /** Reset everything — used on doc switch so the prior doc's pill doesn't
  *  bleed into the new doc. */
 export function reset(): void {
-  cancelTimeoutTimer();
-  pendingSubmitId = null;
-  pendingDestination = null;
-  currentDestinationLabel = null;
-  lastFailure = null;
-  transition('idle');
+  getMachine().reset();
 }
 
-/** Main entry point. Promote → sling → drive the state machine. The
- *  caller (Cmd+Return handler) is responsible for writeBundle() first; we
- *  expect the bundle paths in the context. */
+/** Main entry point. Resolve destination → promote → sling → drive the
+ *  state machine. The caller (Cmd+Return handler) is responsible for
+ *  writeBundle() first; we expect the bundle paths in the context. */
 export async function executeSubmit(ctx: SubmitContext): Promise<void> {
-  if (isInFlight()) {
+  const m = getMachine();
+  if (m.isInFlight()) {
     flashHint('Submit already in flight — wait for the rig to pick it up.');
     return;
   }
@@ -205,133 +188,55 @@ export async function executeSubmit(ctx: SubmitContext): Promise<void> {
     opts?.onDestinationChosen?.(destination);
   }
 
-  // Promote the draft to a frozen submit file. This is the first irreversible
-  // step — once on disk, the audit copy exists even if the sling fails.
-  const promote = await window.electronAPI.submitPromote({
-    sourcePath: ctx.sourcePath,
-    sourceSha256: ctx.sourceSha256,
-    sourceFileVersion: ctx.sourceFileVersion,
-    bundlePdfPath: ctx.bundlePdfPath,
-    bundleJsonPath: ctx.bundleJsonPath,
-    originRig: ctx.originRig,
-    comments: ctx.submittedComments,
-    author: ctx.author,
-  });
-  if (!promote.ok) {
-    transitionToFailure({
-      kind: 'send_failed',
-      reason: `promote: ${promote.reason}`,
-      stderr: promote.error,
-      retryable: true,
-    });
-    return;
-  }
-
-  // Mirror the per-comment "submitted" status back to the live drafts so
-  // the right-drawer reflects the new state immediately. We dispatch a
-  // CustomEvent so this module doesn't need a direct hook back into index.ts.
-  window.dispatchEvent(new CustomEvent('submit:comments-promoted', {
-    detail: { updates: promote.statusUpdates },
-  }));
-
-  pendingSubmitId = promote.submitId;
-  pendingDestination = destination;
-  currentDestinationLabel = labelForDestination(destination);
-  transition('pending_send');
-
-  const slingResult = await window.electronAPI.submitSling({
-    destinationRig: destination,
-    originRig: ctx.originRig,
-    submitId: promote.submitId,
+  await m.start({
+    promoteRequest: {
+      sourcePath: ctx.sourcePath,
+      sourceSha256: ctx.sourceSha256,
+      sourceFileVersion: ctx.sourceFileVersion,
+      bundlePdfPath: ctx.bundlePdfPath,
+      bundleJsonPath: ctx.bundleJsonPath,
+      originRig: ctx.originRig,
+      comments: ctx.submittedComments,
+      author: ctx.author,
+    },
+    destination,
     bundleId: ctx.bundleId,
-    sourcePath: ctx.sourcePath,
-    submitFilePath: promote.submitFilePath,
     bundlePdfPath: ctx.bundlePdfPath,
     bundleJsonPath: ctx.bundleJsonPath,
     appVersion: ctx.appVersion,
+    originRig: ctx.originRig,
   });
-
-  if (slingResult.ok) {
-    transition('sent_unconfirmed');
-    opts?.onPendingRound?.({ submitId: promote.submitId, destination });
-    startTimeoutTimer();
-    return;
-  }
-
-  // Failure: hold onto the diagnostic so the banner can render verbatim
-  // stderr and offer a Retry. Keep pendingSubmitId set so a manual Retry
-  // can re-sling against the same submit file rather than minting a new
-  // round.
-  describeSlingFailure(slingResult);
 }
 
-function describeSlingFailure(r: Exclude<SubmitSlingResult, { ok: true }>): void {
-  switch (r.reason) {
-    case 'no_gt':
-      transitionToFailure({
-        kind: 'send_failed',
-        reason: 'gas-town disabled',
-        stderr: r.message,
-        retryable: true,
-      });
-      return;
-    case 'spawn_failed':
-      transitionToFailure({
-        kind: 'send_failed',
-        reason: 'spawn failed',
-        stderr: r.error,
-        retryable: true,
-      });
-      return;
-    case 'timeout':
-      transitionToFailure({
-        kind: 'send_failed',
-        reason: `gt mail timed out after ${r.timeoutMs}ms`,
-        stderr: 'gt mail send did not exit within the local deadline. The mailbox may or may not have received the payload — check `gt mail outbox` manually before re-slinging.',
-        retryable: true,
-      });
-      return;
-    case 'gt_failed': {
-      const lines: string[] = [];
-      if (r.stdout) lines.push(`[stdout]\n${r.stdout.trim()}`);
-      if (r.stderr) lines.push(`[stderr]\n${r.stderr.trim()}`);
-      if (lines.length === 0) lines.push('(no output from gt)');
-      transitionToFailure({
-        kind: 'send_failed',
-        reason: `gt mail exit ${r.exitCode ?? '?'}`,
-        stderr: lines.join('\n\n'),
-        retryable: true,
-      });
-      return;
-    }
+/** Re-sling the cached round (same submit_id, frozen submit file). Backs the
+ *  Retry banner button, the timeout Re-sling button, and the round-banner
+ *  Resume button — rev-n6's "wire Resume to the same entry". Returns false if
+ *  there is no cached round to re-sling (e.g., after an app restart). */
+export async function resling(): Promise<boolean> {
+  const did = await getMachine().resling();
+  if (!did) {
+    flashHint('No round to re-sling — press Cmd+Return to start a fresh one.');
   }
+  return did;
 }
 
-function transitionToFailure(f: NonNullable<typeof lastFailure>): void {
-  lastFailure = f;
-  transition(f.kind === 'timeout' ? 'timeout' : 'send_failed');
-}
-
-function transition(next: SubmitState): void {
-  if (next === currentState) return;
-  currentState = next;
-  if (next === 'idle') {
-    lastFailure = null;
-    pendingSubmitId = null;
-    pendingDestination = null;
-    currentDestinationLabel = null;
-  }
-  renderPill();
-  renderBanner();
+/** True iff a cached round can be resumed/re-slung right now. Lets the
+ *  round-banner Resume button decide whether to re-sling in-session or fall
+ *  back to guidance. */
+export function canResume(): boolean {
+  return getMachine().canResume();
 }
 
 // ─── Pill ──────────────────────────────────────────────────────────────────
 
 function renderPill(): void {
   if (!opts) return;
+  const m = getMachine();
+  const state = m.getState();
+  const destinationLabel = m.getDestination() ? labelForDestination(m.getDestination()!) : null;
   const el = opts.pill;
-  el.dataset.state = currentState;
-  switch (currentState) {
+  el.dataset.state = state;
+  switch (state) {
     case 'idle':
       el.hidden = true;
       el.textContent = '';
@@ -339,24 +244,26 @@ function renderPill(): void {
       return;
     case 'pending_send':
       el.hidden = false;
-      el.textContent = `Slinging to ${currentDestinationLabel ?? 'rig'}…`;
+      el.textContent = `Slinging to ${destinationLabel ?? 'rig'}…`;
       el.removeAttribute('title');
       return;
     case 'sent_unconfirmed':
       el.hidden = false;
-      el.textContent = `Submitted to ${currentDestinationLabel ?? 'rig'} — awaiting pickup`;
+      el.textContent = `Submitted to ${destinationLabel ?? 'rig'} — awaiting pickup`;
       el.removeAttribute('title');
       return;
     case 'timeout':
       el.hidden = false;
-      el.textContent = `Still waiting on ${currentDestinationLabel ?? 'rig'} (10 min)`;
+      el.textContent = `Still waiting on ${destinationLabel ?? 'rig'} (10 min)`;
       el.removeAttribute('title');
       return;
-    case 'send_failed':
+    case 'send_failed': {
+      const failure = m.getFailure();
       el.hidden = false;
       el.textContent = `Submit failed`;
-      el.setAttribute('title', lastFailure?.kind === 'send_failed' ? lastFailure.reason : 'unknown error');
+      el.setAttribute('title', failure?.kind === 'send_failed' ? failure.reason : 'unknown error');
       return;
+    }
     case 'complete':
       el.hidden = false;
       el.textContent = `Round complete`;
@@ -374,59 +281,65 @@ function renderPill(): void {
 
 function renderBanner(): void {
   if (!opts) return;
+  const m = getMachine();
+  const state = m.getState();
+  const failure = m.getFailure();
+  const destinationLabel = m.getDestination() ? labelForDestination(m.getDestination()!) : null;
   const banner = opts.banner;
   banner.replaceChildren();
 
-  if (currentState === 'send_failed' && lastFailure?.kind === 'send_failed') {
+  if (state === 'send_failed' && failure?.kind === 'send_failed') {
     banner.hidden = false;
     banner.setAttribute('data-severity', 'error');
     const head = document.createElement('div');
     head.className = 'submit-banner-head';
     const headText = document.createElement('strong');
-    headText.textContent = `Submit failed: ${lastFailure.reason}`;
+    headText.textContent = `Submit failed: ${failure.reason}`;
     head.append(headText);
     const detail = document.createElement('pre');
     detail.className = 'submit-banner-detail';
-    detail.textContent = lastFailure.stderr;
+    detail.textContent = failure.stderr;
     const actions = document.createElement('div');
     actions.className = 'submit-banner-actions';
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.className = 'is-primary';
     retry.textContent = 'Retry';
-    retry.addEventListener('click', () => { void retrySling(); });
+    retry.addEventListener('click', () => { void resling(); });
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.textContent = 'Dismiss';
-    dismiss.addEventListener('click', () => { transition('idle'); });
+    dismiss.addEventListener('click', () => { m.reset(); });
     actions.append(retry, dismiss);
     banner.append(head, detail, actions);
     return;
   }
 
-  if (currentState === 'timeout') {
+  if (state === 'timeout') {
     banner.hidden = false;
     banner.setAttribute('data-severity', 'warn');
     const head = document.createElement('div');
     head.className = 'submit-banner-head';
     const headText = document.createElement('strong');
-    headText.textContent = `Still waiting on ${currentDestinationLabel ?? 'the rig'} (10 min)`;
+    headText.textContent = `Still waiting on ${destinationLabel ?? 'the rig'} (10 min)`;
     head.append(headText);
     const detail = document.createElement('div');
     detail.className = 'submit-banner-detail';
     detail.textContent = `The rig hasn't written a results-*.json yet. The submission may have been received but not picked up — the rig session may need a nudge. Re-sling resends the same payload (same submit_id, no new round file).`;
     const actions = document.createElement('div');
     actions.className = 'submit-banner-actions';
-    const resling = document.createElement('button');
-    resling.type = 'button';
-    resling.className = 'is-primary';
-    resling.textContent = 'Re-sling';
-    resling.addEventListener('click', () => { void retrySling(); opts?.onResling?.(); });
+    const reslingBtn = document.createElement('button');
+    reslingBtn.type = 'button';
+    reslingBtn.className = 'is-primary';
+    reslingBtn.textContent = 'Re-sling';
+    reslingBtn.addEventListener('click', () => { void resling(); opts?.onResling?.(); });
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.textContent = 'Dismiss';
-    dismiss.addEventListener('click', () => { transition('idle'); });
-    actions.append(resling, dismiss);
+    // Dismiss keeps the cached round (the rig may still be processing it), so
+    // the round-banner Resume can re-sling later; it just hides the pill.
+    dismiss.addEventListener('click', () => { m.dismiss(); });
+    actions.append(reslingBtn, dismiss);
     banner.append(head, detail, actions);
     return;
   }
@@ -435,36 +348,13 @@ function renderBanner(): void {
   banner.removeAttribute('data-severity');
 }
 
-async function retrySling(): Promise<void> {
-  // Retry re-sends the same payload (same submit_id) so the rig sees a
-  // single round. The renderer caches enough context to do this; the
-  // simpler path is just to re-execute against the current pending state.
-  // If we've lost context (e.g., user switched docs), fall back to telling
-  // them to re-Submit.
-  if (!pendingSubmitId || !pendingDestination) {
-    flashHint('Lost submit context — press Cmd+Return to start a fresh round.');
-    transition('idle');
-    return;
-  }
-  // We don't have the original ctx after the function returned. The
-  // simplest retry surface is to re-execute by dispatching an event the
-  // caller listens for; index.ts re-derives ctx from current docState and
-  // calls executeSubmit() again. This avoids stale-snapshot bugs.
-  window.dispatchEvent(new CustomEvent('submit:retry-requested', {
-    detail: { submitId: pendingSubmitId, destination: pendingDestination },
-  }));
-}
-
 // ─── Timeout watcher ───────────────────────────────────────────────────────
 
 function startTimeoutTimer(): void {
   cancelTimeoutTimer();
   timeoutTimerId = window.setTimeout(() => {
     timeoutTimerId = null;
-    if (currentState === 'sent_unconfirmed') {
-      lastFailure = { kind: 'timeout' };
-      transition('timeout');
-    }
+    getMachine().notifyTimeout();
   }, SENT_UNCONFIRMED_TIMEOUT_MS);
 }
 
@@ -711,11 +601,15 @@ function labelForDestination(destination: string): string {
 
 // ─── Public capability check (concurrent-round lock helper) ────────────────
 
-/** True iff Submit can fire right now from the renderer's perspective. The
- *  caller also checks the docState.rounds concurrent-round lock. */
+/** True iff a fresh Submit can fire right now from the renderer's
+ *  perspective. The caller also checks the docState.rounds concurrent-round
+ *  lock. Excludes `timeout` — from there the user re-slings, not re-submits. */
 export function canFire(): boolean {
-  return currentState === 'idle'
-      || currentState === 'send_failed'
-      || currentState === 'complete'
-      || currentState === 'complete-failed';
+  return getMachine().canFire();
+}
+
+/** True iff Cmd+Return should route to a re-sling (same submit_id) rather
+ *  than a fresh submit: a delivery failed or the rig never acked. */
+export function canRetry(): boolean {
+  return getMachine().canRetry();
 }
