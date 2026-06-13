@@ -249,18 +249,6 @@ export async function slingViaGtMail(
   child.stdout.on('data', (b: Buffer) => { stdout += b.toString('utf8'); });
   child.stderr.on('data', (b: Buffer) => { stderr += b.toString('utf8'); });
 
-  // Pipe the payload to stdin, then close the stream so gt doesn't wait.
-  try {
-    child.stdin.write(payload);
-    child.stdin.end();
-  } catch (err) {
-    return {
-      ok: false,
-      reason: 'spawn_failed',
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-
   // Wrap the exit + timeout race in a promise. 30s matches §10.1 step 4's
   // gt-mail-exit deadline — local op; anything slower means gt is wedged.
   const result = await new Promise<SubmitSlingResult>((resolveResult) => {
@@ -275,6 +263,17 @@ export async function slingViaGtMail(
       try { child.kill('SIGTERM'); } catch { /* already dead */ }
       settle({ ok: false, reason: 'timeout', timeoutMs: GT_MAIL_TIMEOUT_MS });
     }, GT_MAIL_TIMEOUT_MS);
+
+    // Handle stdin errors (EPIPE, etc.) — these would crash the main process
+    // if left unhandled. Route to settle path to cleanly report the error.
+    child.stdin.on('error', (err) => {
+      settle({
+        ok: false,
+        reason: 'stdin_error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
     child.on('error', (err) => {
       settle({
         ok: false,
@@ -302,6 +301,19 @@ export async function slingViaGtMail(
         });
       }
     });
+
+    // Pipe the payload to stdin, then close the stream so gt doesn't wait.
+    // Error handlers above will catch any async errors from writing.
+    try {
+      child.stdin.write(payload);
+      child.stdin.end();
+    } catch (err) {
+      settle({
+        ok: false,
+        reason: 'stdin_write_failed',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   return result;
