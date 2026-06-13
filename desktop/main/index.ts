@@ -9,7 +9,7 @@ import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from '
 import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
 import { registerAgentPaneIpc, rebindMainWindow, shutdownAgentPane } from './agent-pane-ipc.js';
-import { runSidecarMigration, findSidecarByFingerprint } from './sidecar-migration.js';
+import { runSidecarMigration, findSidecarByFingerprint, buildFingerprint } from './sidecar-migration.js';
 import {
   promoteDraft,
   slingViaGtMail,
@@ -429,23 +429,12 @@ void app.whenReady().then(async () => {
         // content fingerprint under a different name (the doc was renamed).
         const draftsDir = dirname(filePath);
         try {
-          const docBuf = await readFile(resolve(pdfPath));
-          const text = docBuf.toString('utf8');
-          const first500Hash = createHash('sha256').update(text.slice(0, 500)).digest('hex');
-          const match = await findSidecarByFingerprint(draftsDir, {
-            title_from_frontmatter: null,
-            first_500_chars_sha256: first500Hash,
-            anchor_count: 0,
-            last_known_path: pdfPath,
-          });
+          const fp = await buildFingerprint(resolve(pdfPath));
+          const match = await findSidecarByFingerprint(draftsDir, fp);
           if (match) {
             // Relink: move the sidecar to the new path and update its fingerprint.
             match.drafts.doc_fingerprint = {
-              ...(match.drafts.doc_fingerprint ?? {
-                title_from_frontmatter: null,
-                first_500_chars_sha256: first500Hash,
-                anchor_count: 0,
-              }),
+              ...fp,
               last_known_path: resolve(pdfPath),
             };
             await mkdir(dirname(filePath), { recursive: true });

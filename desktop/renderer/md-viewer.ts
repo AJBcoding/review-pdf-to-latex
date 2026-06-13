@@ -93,6 +93,7 @@ export class MarkdownViewer implements FileViewer {
   private editorView: EditorView | null = null;
   private dark = false;
   private bodyOffset = 0;
+  private fmPrefix = '';
 
   constructor(opts: MarkdownViewerOptions) {
     this.opts = opts;
@@ -119,6 +120,7 @@ export class MarkdownViewer implements FileViewer {
     const text = new TextDecoder('utf-8').decode(bytes);
     const { frontmatter, body, bodyOffset } = parseFrontmatter(text);
     this.bodyOffset = bodyOffset;
+    this.fmPrefix = text.slice(0, bodyOffset);
     this.renderFrontmatter(frontmatter);
     this.mountEditor(body);
   }
@@ -144,7 +146,7 @@ export class MarkdownViewer implements FileViewer {
   }
 
   getContent(): string {
-    return this.editorView?.state.doc.toString() ?? '';
+    return this.fmPrefix + (this.editorView?.state.doc.toString() ?? '');
   }
 
   getSelection(): MdSelection | null {
@@ -190,7 +192,7 @@ export class MarkdownViewer implements FileViewer {
       const onChange = this.opts.onContentChange;
       extensions.push(
         EditorView.updateListener.of((update: ViewUpdate) => {
-          if (update.docChanged) onChange(update.state.doc.toString());
+          if (update.docChanged) onChange(this.fmPrefix + update.state.doc.toString());
         })
       );
     }
@@ -275,12 +277,14 @@ interface FrontmatterBlock {
   fields: Array<{ key: string; value: string }>;
 }
 
-function parseFrontmatter(text: string): {
+export function parseFrontmatter(text: string): {
   frontmatter: FrontmatterBlock | null;
   body: string;
   bodyOffset: number;
 } {
-  const match = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  // Use [ \t]* instead of \s* so a newline on the opening --- line never
+  // accidentally absorbs the first content line.
+  const match = text.match(/^---[ \t]*\n([\s\S]*?)\n---[ \t]*\n?/);
   if (!match) return { frontmatter: null, body: text, bodyOffset: 0 };
 
   const raw = match[1];
@@ -289,6 +293,10 @@ function parseFrontmatter(text: string): {
     const kv = line.match(/^(\w[\w\s-]*?):\s*(.*)$/);
     if (kv) fields.push({ key: kv[1].trim(), value: kv[2].trim() });
   }
+
+  // Reject blocks with no key-value pairs — these are horizontal-rule pairs
+  // (---...---) in plain Markdown, not YAML frontmatter.
+  if (fields.length === 0) return { frontmatter: null, body: text, bodyOffset: 0 };
 
   return {
     frontmatter: { raw, fields },

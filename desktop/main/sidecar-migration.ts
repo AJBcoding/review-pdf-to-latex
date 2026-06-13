@@ -145,7 +145,7 @@ async function findDocFiles(root: string): Promise<Map<string, string>> {
   return result;
 }
 
-async function buildFingerprint(docPath: string): Promise<DocFingerprint> {
+export async function buildFingerprint(docPath: string): Promise<DocFingerprint> {
   let content: Buffer;
   try {
     content = await readFile(docPath);
