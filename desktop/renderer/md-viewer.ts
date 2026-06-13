@@ -190,9 +190,10 @@ export class MarkdownViewer implements FileViewer {
 
     if (this.opts.onContentChange) {
       const onChange = this.opts.onContentChange;
+      const prefix = this.fmPrefix;
       extensions.push(
         EditorView.updateListener.of((update: ViewUpdate) => {
-          if (update.docChanged) onChange(this.fmPrefix + update.state.doc.toString());
+          if (update.docChanged) onChange(prefix + update.state.doc.toString());
         })
       );
     }

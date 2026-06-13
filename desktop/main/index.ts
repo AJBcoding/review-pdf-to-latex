@@ -429,6 +429,8 @@ void app.whenReady().then(async () => {
         // content fingerprint under a different name (the doc was renamed).
         const draftsDir = dirname(filePath);
         try {
+          // buildFingerprint reads the file; acceptable here — this is a cold
+          // path (no sidecar found at the expected path, i.e. doc was renamed).
           const fp = await buildFingerprint(resolve(pdfPath));
           const match = await findSidecarByFingerprint(draftsDir, fp);
           if (match) {
