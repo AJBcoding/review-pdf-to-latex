@@ -469,6 +469,38 @@ from review_pdf_to_latex.apply import (
 )
 
 
+# --- rev-n4 regression: status validation hoisted above .tex mutation -------
+
+def test_apply_edit_illegal_status_leaves_tex_unchanged(tmp_path: Path) -> None:
+    """apply_edit on an accepted annotation raises IllegalStatusTransitionError
+    with the .tex file byte-identical (no partial mutation). (rev-n4)"""
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="applied\n")
+    set_annotation_status(state_dir=proj.state_dir, annotation_id="ann-001", status="accepted")
+
+    tex_before = proj.tex_path.read_bytes()
+
+    with pytest.raises(IllegalStatusTransitionError):
+        apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="re-applied\n")
+
+    assert proj.tex_path.read_bytes() == tex_before
+
+
+def test_revert_edit_illegal_status_leaves_tex_unchanged(tmp_path: Path) -> None:
+    """revert_edit on an accepted annotation raises IllegalStatusTransitionError
+    with the .tex file byte-identical (no partial mutation). (rev-n4)"""
+    proj = _make_project(tmp_path)
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="applied\n")
+    set_annotation_status(state_dir=proj.state_dir, annotation_id="ann-001", status="accepted")
+
+    tex_before = proj.tex_path.read_bytes()
+
+    with pytest.raises(IllegalStatusTransitionError):
+        revert_edit(state_dir=proj.state_dir, annotation_id="ann-001", status="rejected")
+
+    assert proj.tex_path.read_bytes() == tex_before
+
+
 def test_set_status_legal_transition_applied_to_accepted(tmp_path: Path) -> None:
     proj = _make_project(tmp_path)
     apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="X\n")

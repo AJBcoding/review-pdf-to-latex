@@ -287,6 +287,16 @@ def apply_edit(
     new_lines = _split_text_to_lines(new_text)
     line_shift = len(new_lines) - len(old_lines)
 
+    # Validate status transition before any .tex mutation (spec §10.3).
+    # accepted and other terminal statuses are not in the apply action's
+    # legal-from set; raising here keeps the file byte-identical on error.
+    ann_entry = state["annotations"][annotation_id]
+    current_status = ann_entry.get("status", "pending")
+    try:
+        validate_status_transition(current_status, "applied", "apply")
+    except ValueError as exc:
+        raise IllegalStatusTransitionError(str(exc)) from exc
+
     if dry_run:
         return AppliedEdit(
             annotation_id=annotation_id,
@@ -319,23 +329,11 @@ def apply_edit(
     )
 
     # Update state entry.
-    ann_entry = state["annotations"][annotation_id]
     if ann_entry.get("before_text") is None:
         ann_entry["before_text"] = "".join(old_lines)
     ann_entry["proposed_text"] = new_text
     ann_entry["applied_text"] = new_text
     ann_entry["applied_at"] = _now_iso()
-
-    # Status transition: any non-terminal → applied is legal per spec §10.3
-    # (applied / rejected / redrafted / needs_review all may re-apply on
-    # redraft). validate_status_transition (chunk A) raises on illegal moves.
-    # The engine-internal "apply" action covers both the Phase-1 batch
-    # initial apply (pending → applied) and Phase-2a/2b re-apply paths.
-    current_status = ann_entry.get("status", "pending")
-    try:
-        validate_status_transition(current_status, "applied", "apply")
-    except ValueError as exc:
-        raise IllegalStatusTransitionError(str(exc)) from exc
     ann_entry["status"] = "applied"
 
     atomic_write_json(state_path, state)
@@ -486,6 +484,15 @@ def revert_edit(
     # causing an off-by-one that destroys the next unrelated line on revert.
     applied_lines = _split_text_to_lines(ann_entry.get("applied_text") or "")
     current_count = len(applied_lines)
+
+    # Validate status transition before any .tex mutation (spec §10.3).
+    # Raising here keeps the file byte-identical when the transition is illegal.
+    action = "reject" if status == "rejected" else "redraft"
+    try:
+        validate_status_transition(ann_entry.get("status", "pending"), status, action)
+    except ValueError as exc:
+        raise IllegalStatusTransitionError(str(exc)) from exc
+
     new_all = all_lines[: start - 1] + before_lines + all_lines[start - 1 + current_count:]
 
     try:
@@ -513,18 +520,7 @@ def revert_edit(
         line_shift=line_shift, skip_annotation_id=annotation_id,
     )
 
-    # Update state entry. Derive action from target status: a revert that
-    # lands at "rejected" is the Reject button (action="reject"); a revert
-    # that lands at "needs_review" is the Phase-1 failure recovery, which
-    # spec §10.3's table encodes under the "redraft" action (see chunk A's
-    # (applied, redraft) → {needs_review} row and the explanatory comment).
-    action = "reject" if status == "rejected" else "redraft"
-    try:
-        validate_status_transition(
-            ann_entry.get("status", "pending"), status, action,
-        )
-    except ValueError as exc:
-        raise IllegalStatusTransitionError(str(exc)) from exc
+    # Update state entry.
     ann_entry["status"] = status
     ann_entry["applied_text"] = None
 
