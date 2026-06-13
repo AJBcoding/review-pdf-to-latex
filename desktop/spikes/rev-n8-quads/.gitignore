@@ -1,0 +1,11 @@
+# Local pdf-lib install for running the spike (see README "Reproduce").
+node_modules/
+package-lock.json
+
+# Regenerate all PDFs with `node spike-n8.mjs`. They carry non-deterministic
+# bytes (pdf-lib emits a random trailer /ID; ghostscript stamps timestamps),
+# so they are NOT committed — they would churn the tree on every run.
+# Canonical evidence kept in git: report.json (deterministic machine verdict),
+# render-rt-clean-gs-1.png (visual snapshot of the worst-case re-save).
+*.pdf
+render-out-clean-1.png
