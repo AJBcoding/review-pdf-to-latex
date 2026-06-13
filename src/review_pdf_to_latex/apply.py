@@ -479,10 +479,14 @@ def revert_edit(
         )
 
     before_lines = _split_text_to_lines(before_text)
-    # current applied range covers (end - start + 1) lines; reverting replaces
-    # those with before_lines.
-    current_count = end - start + 1
-    new_all = all_lines[: start - 1] + before_lines + all_lines[end:]
+    # Derive how many lines the applied edit currently occupies from
+    # applied_text rather than from the stored line_range.  The degenerate
+    # range [start, start] that apply_edit records after an empty-text apply
+    # (full deletion) claims one line but zero lines are actually present,
+    # causing an off-by-one that destroys the next unrelated line on revert.
+    applied_lines = _split_text_to_lines(ann_entry.get("applied_text") or "")
+    current_count = len(applied_lines)
+    new_all = all_lines[: start - 1] + before_lines + all_lines[start - 1 + current_count:]
 
     try:
         with tex_path.open("w", encoding="utf-8") as f:
@@ -498,8 +502,14 @@ def revert_edit(
     else:
         map_entry["line_range"] = [start, start]
 
+    # edited_range_end is the last line of the range that was replaced in the
+    # current file.  For normal edits this equals `end` from the mapping.  For
+    # the degenerate empty-apply case (current_count == 0) it is start - 1,
+    # because the insertion point is before line `start` and every line at
+    # start or later needs to be shifted.
+    edited_range_end = start - 1 + current_count
     _recompute_subsequent_mappings(
-        mapping, latex_file, edited_range_end=end,
+        mapping, latex_file, edited_range_end=edited_range_end,
         line_shift=line_shift, skip_annotation_id=annotation_id,
     )
 

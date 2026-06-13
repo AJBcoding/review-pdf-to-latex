@@ -407,6 +407,62 @@ def test_revert_edit_raises_when_no_prior_apply(tmp_path: Path) -> None:
         )
 
 
+def test_revert_edit_after_empty_apply_restores_full_file(tmp_path: Path) -> None:
+    """Empty new_text deletes lines; reverting must restore them without
+    consuming any subsequent unrelated line (rev-ra1 degenerate-range bug)."""
+    proj = _make_project(tmp_path)
+    # ann-001 maps to [2, 3]; applying "" deletes those two lines.
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="")
+
+    # File is now 3 lines: line one, line four, line five.
+    assert proj.tex_path.read_text(encoding="utf-8") == (
+        "line one\nline four\nline five\n"
+    )
+
+    revert_edit(state_dir=proj.state_dir, annotation_id="ann-001", status="rejected")
+
+    # All five original lines must be present — "line four" must NOT be lost.
+    assert proj.tex_path.read_text(encoding="utf-8") == (
+        "line one\nline two\nline three\nline four\nline five\n"
+    )
+
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    entry = state["annotations"]["ann-001"]
+    assert entry["status"] == "rejected"
+    assert entry["applied_text"] is None
+    assert entry["before_text"] == "line two\nline three\n"
+
+
+def test_revert_edit_after_empty_apply_shifts_subsequent_mapping_back(
+    tmp_path: Path,
+) -> None:
+    """Empty-text apply shifts subsequent mappings; revert must shift them back."""
+    proj = _make_project(tmp_path)
+    # Add ann-002 at line 5.
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    state["annotations"]["ann-002"] = dict(state["annotations"]["ann-001"])
+    proj.state_path.write_text(json.dumps(state), encoding="utf-8")
+    mapping = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
+    mapping["mappings"]["ann-002"] = {
+        "latex_file": "templates/section.tex",
+        "line_range": [5, 5],
+        "confidence": 0.9,
+        "method": "fuzzy_text",
+        "needs_review": False,
+    }
+    proj.mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+
+    # Apply empty text to ann-001 [2, 3] — deletes 2 lines, shifts ann-002 from [5,5] to [3,3].
+    apply_edit(state_dir=proj.state_dir, annotation_id="ann-001", new_text="")
+    mapping_mid = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
+    assert mapping_mid["mappings"]["ann-002"]["line_range"] == [3, 3]
+
+    # Revert ann-001 — ann-002 must shift back to [5, 5].
+    revert_edit(state_dir=proj.state_dir, annotation_id="ann-001", status="rejected")
+    mapping_after = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
+    assert mapping_after["mappings"]["ann-002"]["line_range"] == [5, 5]
+
+
 from review_pdf_to_latex.apply import (
     IllegalStatusTransitionError,
     set_annotation_status,

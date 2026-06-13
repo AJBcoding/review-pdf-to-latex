@@ -53,3 +53,9 @@ addopts = "-ra --strict-markers"
 markers = [
     "slow: end-to-end / system tests; deselect with -m 'not slow'",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+]
