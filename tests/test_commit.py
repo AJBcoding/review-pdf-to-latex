@@ -249,3 +249,30 @@ def test_commit_phase_rejects_phase_mismatch(tmp_path: Path) -> None:
             message_suffix=None,
             granularity="phase",
         )
+
+
+def test_commit_phase_succeeds_when_review_state_gitignored(tmp_path: Path) -> None:
+    """commit_phase must succeed even when extract wrote .review-state/ to .gitignore.
+
+    Regression for rev-n5: git add without -f exits non-zero for gitignored paths,
+    raising CommitFailedError (exit-19) on every extract-bootstrapped project.
+    """
+    project, state_dir = _init_project_repo(tmp_path)
+    # Simulate what `extract` does: add .review-state/ to .gitignore.
+    gitignore = project / ".gitignore"
+    gitignore.write_text("# review-pdf-to-latex working state\n.review-state/\n", encoding="utf-8")
+    _git("add", ".gitignore", cwd=project)
+    _git("commit", "-q", "-m", "add gitignore", cwd=project)
+
+    # commit_phase must not raise CommitFailedError despite the gitignore entry.
+    sha = commit_phase(
+        state_dir=state_dir,
+        phase_arg="1-batch",
+        message_suffix=None,
+        granularity="phase",
+    )
+    assert isinstance(sha, str) and len(sha) >= 7
+
+    # The state files must appear in the commit even though they were gitignored.
+    files = _git("show", "--name-only", "--format=", sha, cwd=project).stdout
+    assert ".review-state/state.json" in files

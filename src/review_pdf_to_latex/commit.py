@@ -315,7 +315,7 @@ def commit_phase(
 
     if to_stage:
         add_result = subprocess.run(
-            ["git", "add", "--", *to_stage],
+            ["git", "add", "-f", "--", *to_stage],
             cwd=str(project_root),
             capture_output=True,
             text=True,
