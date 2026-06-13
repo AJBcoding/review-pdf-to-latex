@@ -42,6 +42,7 @@ function useNewAgentPane(): boolean {
     return false;
   }
 }
+import { seedNextVersionDraft as seedNextVersionDraftPure } from './seed-next-draft';
 import { mountToolbar } from './toolbar';
 import { bootSplitters, applyLayoutWidths, type LayoutWidths } from './splitter';
 import {
@@ -232,6 +233,16 @@ let writeTimer: number | null = null;
 const WRITE_DEBOUNCE_MS = 250;
 const draftsCache = new Map<string, DraftsFile>();
 
+/** Cache key for an in-memory drafts snapshot. Drafts are a function of
+ *  (path, content) — keying on path alone lets a stale entry from one
+ *  doc_version mask a different version's sidecar on disk (e.g. v1 → v1.1
+ *  share a logical path while a re-seed rewrites the file). Keying on both
+ *  makes every cache hit version-exact; a sha change just falls through to a
+ *  fresh disk read (which is itself path-keyed). */
+function draftsCacheKey(path: string, sha256: string): string {
+  return `${sha256} ${path}`;
+}
+
 function scheduleDraftsWrite(): void {
   if (!docState.path || !docState.sha256) return;
   if (writeTimer !== null) window.clearTimeout(writeTimer);
@@ -251,7 +262,7 @@ async function flushDraftsWrite(): Promise<void> {
     comments: docState.comments,
     anchor_kind: isMd ? 'md-fuzzy-snippet' : 'pdf-glyph-rect',
   };
-  draftsCache.set(docState.path, file);
+  draftsCache.set(draftsCacheKey(docState.path, docState.sha256), file);
   const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
   if (!res.ok) {
     // Surface persistence failures so the user knows their work isn't
@@ -1884,7 +1895,7 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
   if (!docState.path || !docState.sha256) return;
   const path = docState.path;
   const sha256 = docState.sha256;
-  const cached = draftsCache.get(path);
+  const cached = draftsCache.get(draftsCacheKey(path, sha256));
   if (cached) {
     console.log('[drafts] load', { path, sha256: sha256.slice(0, 12), reason: 'cache_hit', commentCount: cached.comments.length });
     docState.comments = cached.comments;
@@ -1906,7 +1917,7 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
     commentCount,
   });
   docState.comments = res.file?.comments ?? [];
-  if (res.file) draftsCache.set(path, res.file);
+  if (res.file) draftsCache.set(draftsCacheKey(path, sha256), res.file);
   renderAllCards();
 }
 
@@ -2973,73 +2984,34 @@ function formatRelativeTimestamp(iso: string): string {
 /** §10.1 step 6 — write the v1.1 draft for the just-completed round so the
  *  new versioned source file opens with re-raised comments already in place.
  *
- *  Re-raise policy (§8.5):
- *    - `applied` / `rejected` / `build_failed` → archived only (don't appear
- *      in the new draft).
- *    - `deferred` / `needs-followup` → fresh `open` comments with
- *      `derived_from` pointing at the original id, anchored at `new_anchor`
- *      if set (the redraft may have shifted text) else at the original
- *      `anchor`.
- *
- *  The new file's sha256 is computed by re-reading its bytes through main
- *  (`readPdfBytes` already returns the digest), so the seeded draft is keyed
- *  on `<new_sha256>.json` and loadPdf will pick it up on open. */
+ *  Thin renderer wrapper: the seeding logic (re-raise policy §8.5 + the N2
+ *  read-before-write idempotency guard) lives in `./seed-next-draft` as a
+ *  pure, injectable unit so it can be tested rig-free. Here we supply the
+ *  live I/O (`window.electronAPI` + crypto + clock) and apply the renderer
+ *  side effects the outcome calls for. */
 async function seedNextVersionDraft(event: ResultsEvent): Promise<void> {
-  const { results, submit } = event;
-  if (!submit) return;
-  if (!results.new_source_path) return;
-
-  // Read the new file's bytes to compute its sha256 = new doc_version.
-  const bytes = await window.electronAPI.readPdfBytes(results.new_source_path);
-  if (!bytes.ok) {
-    flashAnchorMeta(`Couldn’t seed next-version draft: ${bytes.reason} ${results.new_source_path}`);
-    return;
+  const outcome = await seedNextVersionDraftPure(event, {
+    readPdfBytes: (p) => window.electronAPI.readPdfBytes(p),
+    readDrafts: (p, sha) => window.electronAPI.readDrafts(p, sha),
+    writeDrafts: (p, sha, file) => window.electronAPI.writeDrafts(p, sha, file),
+    randomUUID: () => crypto.randomUUID(),
+    nowIso: () => new Date().toISOString(),
+  });
+  switch (outcome.kind) {
+    case 'error':
+      flashAnchorMeta(outcome.message);
+      return;
+    case 'seeded':
+    case 'skipped-existing': {
+      // Mark the round seeded so further re-emits in this session skip the
+      // redundant read/write. (Across sessions the on-disk guard handles it.)
+      const round = docState.rounds.get(event.results.submit_id);
+      if (round) round.seeded = true;
+      return;
+    }
+    case 'noop':
+      return;
   }
-  const newSha = bytes.sha256;
-  const newDocId = bytes.resolvedPath;
-
-  // Build the re-raise list: only deferred + needs-followup carry forward.
-  const submitById = new Map(submit.comments.map((c) => [c.id, c]));
-  const reraised: CommentPayload[] = [];
-  for (const r of results.results) {
-    if (r.status !== 'deferred' && r.status !== 'needs-followup') continue;
-    const original = submitById.get(r.id);
-    if (!original) continue; // results entry without a submit-side twin; skip.
-    const anchor = r.new_anchor ?? original.anchor;
-    reraised.push({
-      id: crypto.randomUUID(),
-      doc_id: newDocId,
-      doc_version: newSha,
-      anchor,
-      highlighted_text: original.highlighted_text,
-      comment: original.comment,
-      redraft: original.redraft,
-      redraft_suggestion: null,
-      engagement_level: original.engagement_level,
-      author: original.author,
-      kind: 'comment',
-      status: 'open',
-      created_at: new Date().toISOString(),
-      derived_from: original.id,
-      agent_note: r.agent_note ?? null,
-    });
-  }
-
-  const file: DraftsFile = {
-    schema_version: 1,
-    doc_version: newSha,
-    comments: reraised,
-  };
-  const res = await window.electronAPI.writeDrafts(newDocId, newSha, file);
-  if (!res.ok) {
-    flashAnchorMeta(`Couldn’t write next-version draft (${res.reason}): ${res.error}`);
-    return;
-  }
-  // Mark the round as seeded so re-emits don't duplicate the draft. The
-  // existing draft would be overwritten cleanly (same sha256 path) but
-  // the dup work is wasted I/O.
-  const round = docState.rounds.get(results.submit_id);
-  if (round) round.seeded = true;
 }
 
 void init();
