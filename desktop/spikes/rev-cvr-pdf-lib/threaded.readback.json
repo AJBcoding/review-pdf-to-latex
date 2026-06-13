@@ -1,0 +1,156 @@
+{
+  "spike": "rev-n7 / S-1 — PDF /IRT reply chains",
+  "date": "2026-06-13",
+  "written": {
+    "pdfLibWalk": [
+      {
+        "refKey": "8R",
+        "subtype": "Highlight",
+        "nm": null,
+        "replyType": null,
+        "inReplyToRef": null,
+        "inReplyToNm": null
+      },
+      {
+        "refKey": "9R",
+        "subtype": "Highlight",
+        "nm": null,
+        "replyType": null,
+        "inReplyToRef": null,
+        "inReplyToNm": null
+      },
+      {
+        "refKey": "10R",
+        "subtype": "Highlight",
+        "nm": "spike-irt-parent",
+        "replyType": null,
+        "inReplyToRef": null,
+        "inReplyToNm": null
+      },
+      {
+        "refKey": "11R",
+        "subtype": "Text",
+        "nm": "spike-irt-reply-1",
+        "replyType": "R",
+        "inReplyToRef": "10R",
+        "inReplyToNm": "spike-irt-parent"
+      },
+      {
+        "refKey": "12R",
+        "subtype": "Text",
+        "nm": "spike-irt-reply-2",
+        "replyType": "R",
+        "inReplyToRef": "11R",
+        "inReplyToNm": "spike-irt-reply-1"
+      }
+    ],
+    "pdfjsGetAnnotations": [
+      {
+        "id": "8R",
+        "subtype": "Highlight",
+        "inReplyTo": null,
+        "replyType": null
+      },
+      {
+        "id": "9R",
+        "subtype": "Highlight",
+        "inReplyTo": null,
+        "replyType": null
+      },
+      {
+        "id": "10R",
+        "subtype": "Highlight",
+        "inReplyTo": null,
+        "replyType": null
+      },
+      {
+        "id": "11R",
+        "subtype": "Text",
+        "inReplyTo": "10R",
+        "replyType": "R"
+      },
+      {
+        "id": "12R",
+        "subtype": "Text",
+        "inReplyTo": "11R",
+        "replyType": "R"
+      }
+    ]
+  },
+  "reSaved": {
+    "pdfLibWalk": [
+      {
+        "refKey": "8R",
+        "subtype": "Highlight",
+        "nm": null,
+        "replyType": null,
+        "inReplyToRef": null,
+        "inReplyToNm": null
+      },
+      {
+        "refKey": "9R",
+        "subtype": "Highlight",
+        "nm": null,
+        "replyType": null,
+        "inReplyToRef": null,
+        "inReplyToNm": null
+      },
+      {
+        "refKey": "10R",
+        "subtype": "Highlight",
+        "nm": "spike-irt-parent",
+        "replyType": null,
+        "inReplyToRef": null,
+        "inReplyToNm": null
+      },
+      {
+        "refKey": "11R",
+        "subtype": "Text",
+        "nm": "spike-irt-reply-1",
+        "replyType": "R",
+        "inReplyToRef": "10R",
+        "inReplyToNm": "spike-irt-parent"
+      },
+      {
+        "refKey": "12R",
+        "subtype": "Text",
+        "nm": "spike-irt-reply-2",
+        "replyType": "R",
+        "inReplyToRef": "11R",
+        "inReplyToNm": "spike-irt-reply-1"
+      }
+    ],
+    "pdfjsGetAnnotations": [
+      {
+        "id": "8R",
+        "subtype": "Highlight",
+        "inReplyTo": null,
+        "replyType": null
+      },
+      {
+        "id": "9R",
+        "subtype": "Highlight",
+        "inReplyTo": null,
+        "replyType": null
+      },
+      {
+        "id": "10R",
+        "subtype": "Highlight",
+        "inReplyTo": null,
+        "replyType": null
+      },
+      {
+        "id": "11R",
+        "subtype": "Text",
+        "inReplyTo": "10R",
+        "replyType": "R"
+      },
+      {
+        "id": "12R",
+        "subtype": "Text",
+        "inReplyTo": "11R",
+        "replyType": "R"
+      }
+    ]
+  }
+}
