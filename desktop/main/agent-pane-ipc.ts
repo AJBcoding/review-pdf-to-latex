@@ -19,6 +19,7 @@ import {
   CONV_SESSION_ID,
   type BackendEvent,
 } from '@shared/agent-pane/types.js';
+import { MAX_WORKER_PTYS } from '@shared/types';
 
 const sessions = new Map<string, ClaudeSession>();
 let mainWindowRef: BrowserWindow | null = null;
@@ -57,10 +58,27 @@ function ensureSession(options?: {
     emit: makeEmit(sessionId),
     resume,
     onSessionId: isConv ? saveSessionId : () => undefined,
+    // When the session dies on its own (SDK stream end or error), drop it
+    // from the registry so the next send lazily creates a FRESH one instead
+    // of resurrecting a zombie. Host-initiated close() suppresses this
+    // callback, so endSession's own delete remains the path for teardown.
+    onClosed: () => {
+      sessions.delete(sessionId);
+    },
     model: options?.model,
   });
   sessions.set(sessionId, session);
   return session;
+}
+
+/** Count live worker sessions (everything except the conv session). Mirrors
+ * the pty route's MAX_WORKER_PTYS accounting (claude-pty.ts spawnWorker). */
+function workerSessionCount(): number {
+  let n = 0;
+  for (const id of sessions.keys()) {
+    if (id !== CONV_SESSION_ID) n += 1;
+  }
+  return n;
 }
 
 async function endSession(sessionId: string): Promise<void> {
@@ -125,8 +143,21 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
       payload: { text: string; model?: string; sessionId?: string },
     ) => {
       if (typeof payload?.text !== 'string') return;
+      const sessionId = payload.sessionId ?? CONV_SESSION_ID;
+      // Create-only-for-conv: a send to an unknown worker id must NOT spin up
+      // a brand-new full Claude session (a renderer routing bug — e.g. a
+      // stale `worker-ctx-${Date.now()}` id — would otherwise mint N silent
+      // background sessions, each a real query() subprocess with cost). Worker
+      // sessions are created exclusively via agent:spawnSession; a send to an
+      // unknown worker is a logged no-op, matching the pty route's behavior.
+      if (sessionId !== CONV_SESSION_ID && !sessions.has(sessionId)) {
+        console.warn(
+          `[agent-pane] agent:send to unknown worker session "${sessionId}" — ignoring (workers are created via agent:spawnSession)`,
+        );
+        return;
+      }
       const s = ensureSession({
-        sessionId: payload.sessionId,
+        sessionId,
         model: typeof payload.model === 'string' ? payload.model : undefined,
       });
       s.send(payload.text);
@@ -249,6 +280,20 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
         payload.sessionId === CONV_SESSION_ID ||
         typeof payload.prompt !== 'string'
       ) {
+        return;
+      }
+      // Cap simultaneous worker sessions, mirroring the pty route's
+      // MAX_WORKER_PTYS guard. Without this, spawnSession had no limit while
+      // the pty route refused past 16 — accidental fan-out (a stuck loop
+      // spamming Create Context) could open unbounded query() subprocesses.
+      // Re-spawning an already-live id is fine (it reuses the entry).
+      if (
+        !sessions.has(payload.sessionId) &&
+        workerSessionCount() >= MAX_WORKER_PTYS
+      ) {
+        console.warn(
+          `[agent-pane] worker session limit reached (${MAX_WORKER_PTYS}) — refusing to spawn "${payload.sessionId}"`,
+        );
         return;
       }
       const s = ensureSession({

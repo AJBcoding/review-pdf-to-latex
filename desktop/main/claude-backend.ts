@@ -88,6 +88,12 @@ export interface StartSessionOptions {
   emit: EventSink;
   resume?: string | undefined;
   onSessionId?: (sessionId: string) => void;
+  /** Called once when the session terminates on its own — either the SDK
+   * stream ended or `query()` threw. NOT called for a host-initiated
+   * `close()` (the host already owns teardown in that path). Symmetric to
+   * `onSessionId`: lets the host drop its registry entry so the next send
+   * lazily creates a FRESH session instead of feeding this dead one. */
+  onClosed?: () => void;
   /** Optional initial model. Closes the pre-session selection gap — if the
    * user picks a model before the first send, the renderer threads it
    * through here so the fresh query() starts with the right model rather
@@ -96,11 +102,16 @@ export interface StartSessionOptions {
 }
 
 export function startSession(opts: StartSessionOptions): ClaudeSession {
-  const { emit, resume, onSessionId, model } = opts;
+  const { emit, resume, onSessionId, onClosed, model } = opts;
   const queue = new UserMessageQueue();
   const pending = new Map<string, PendingApproval>();
   let q: Query | null = null;
   let sessionId: string | null = null;
+  // Set by close() so the run() teardown knows the host is already handling
+  // teardown and must NOT fire onClosed (which would race a freshly-created
+  // session for the same registry key — e.g. agent:newSession closes then
+  // immediately re-creates "conv").
+  let hostClosing = false;
 
   const wrappedEmit: EventSink = (event) => {
     if (event.type === "session" && !sessionId && event.session.sessionId) {
@@ -149,6 +160,16 @@ export function startSession(opts: StartSessionOptions): ClaudeSession {
   // session — multi-session lands at Project 3.
   const adapterState = createAdapterState();
 
+  // Resolve every outstanding canUseTool promise as a deny so the SDK (or its
+  // abort path) unblocks and no promise leaks. Idempotent — clears the map.
+  const drainPending = (message: string): void => {
+    for (const [id, p] of pending.entries()) {
+      p.resolve({ behavior: "deny", message });
+      wrappedEmit({ type: "permissionResolved", toolUseId: id });
+    }
+    pending.clear();
+  };
+
   const run = async (): Promise<void> => {
     try {
       console.log(
@@ -182,6 +203,17 @@ export function startSession(opts: StartSessionOptions): ClaudeSession {
           updatedAt: new Date().toISOString(),
         },
       });
+    } finally {
+      // The session is over — the SDK stream ended or query() threw. Without
+      // this, an errored session stayed in the host's registry as a zombie:
+      // queue never ended (so every later send() was silently buffered onto a
+      // consumer-less queue), pending approvals leaked, and ensureSession kept
+      // handing the dead session back. End the queue, drain approvals, and —
+      // unless the host is already tearing us down — notify it to drop the
+      // registry entry so the next send creates a fresh session.
+      drainPending("Session ended before approval.");
+      queue.end();
+      if (!hostClosing) onClosed?.();
     }
   };
 
@@ -243,15 +275,11 @@ export function startSession(opts: StartSessionOptions): ClaudeSession {
     },
 
     async close(): Promise<void> {
+      // Host-initiated teardown: suppress the run() onClosed callback so it
+      // can't race a session the host re-creates under the same registry key.
+      hostClosing = true;
       // Resolve any pending approvals as denies so canUseTool doesn't hang.
-      for (const [id, p] of pending.entries()) {
-        p.resolve({
-          behavior: "deny",
-          message: "Session closed before approval.",
-        });
-        wrappedEmit({ type: "permissionResolved", toolUseId: id });
-      }
-      pending.clear();
+      drainPending("Session closed before approval.");
       queue.end();
       if (q) {
         try {

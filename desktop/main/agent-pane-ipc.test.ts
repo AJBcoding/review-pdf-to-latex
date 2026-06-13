@@ -53,6 +53,7 @@ const createdSessions: Array<{
   options: { resume?: string; model?: string };
   emit: (event: BackendEvent) => void;
   onSessionId?: (id: string) => void;
+  onClosed?: () => void;
   spy: FakeSessionSpy;
 }> = [];
 
@@ -62,6 +63,7 @@ vi.mock('./claude-backend.js', () => ({
       emit: (e: BackendEvent) => void;
       resume?: string;
       onSessionId?: (id: string) => void;
+      onClosed?: () => void;
       model?: string;
     }) => {
       const spy: FakeSessionSpy = {
@@ -76,6 +78,7 @@ vi.mock('./claude-backend.js', () => ({
         options: { resume: opts.resume, model: opts.model },
         emit: opts.emit,
         onSessionId: opts.onSessionId,
+        onClosed: opts.onClosed,
         spy,
       });
       return spy;
@@ -191,20 +194,37 @@ describe('agent-pane-ipc', () => {
 
     it('does NOT apply the saved session id to a worker session', () => {
       savedSessionStore.current = 'sess-conv-saved';
-      call('agent:send', { text: 'work', sessionId: 'worker-1' });
+      // Workers are created via spawnSession, not agent:send.
+      call('agent:spawnSession', { sessionId: 'worker-1', prompt: 'work' });
       expect(createdSessions[0]!.options.resume).toBeUndefined();
     });
 
-    it('creates separate sessions for conv vs worker sessionIds', () => {
+    it('routes conv vs worker sends to their respective sessions', () => {
       call('agent:send', { text: 'conv1' });
-      call('agent:send', { text: 'work1', sessionId: 'worker-a' });
+      call('agent:spawnSession', { sessionId: 'worker-a', prompt: 'work1' });
       call('agent:send', { text: 'conv2' });
       call('agent:send', { text: 'work2', sessionId: 'worker-a' });
       expect(createdSessions).toHaveLength(2);
       // conv session received both conv messages
       expect(createdSessions[0]!.spy.send).toHaveBeenCalledTimes(2);
-      // worker session received both worker messages
+      // worker session received the spawn prompt + the later send
       expect(createdSessions[1]!.spy.send).toHaveBeenCalledTimes(2);
+      expect(createdSessions[1]!.spy.send).toHaveBeenNthCalledWith(1, 'work1');
+      expect(createdSessions[1]!.spy.send).toHaveBeenNthCalledWith(2, 'work2');
+    });
+
+    it('does NOT create a session when sending to an unknown worker id', () => {
+      // A renderer routing bug (stale/mistyped worker id) must not silently
+      // spin up a brand-new full Claude session — it is a logged no-op.
+      call('agent:send', { text: 'orphan', sessionId: 'worker-ctx-999' });
+      expect(createdSessions).toHaveLength(0);
+    });
+
+    it('sends to an existing worker created via spawnSession', () => {
+      call('agent:spawnSession', { sessionId: 'wk', prompt: 'seed' });
+      call('agent:send', { text: 'follow-up', sessionId: 'wk' });
+      expect(createdSessions).toHaveLength(1);
+      expect(createdSessions[0]!.spy.send).toHaveBeenNthCalledWith(2, 'follow-up');
     });
   });
 
@@ -221,7 +241,7 @@ describe('agent-pane-ipc', () => {
     });
 
     it('forwards events with the worker sessionId tag', () => {
-      call('agent:send', { text: 'hi', sessionId: 'worker-x' });
+      call('agent:spawnSession', { sessionId: 'worker-x', prompt: 'hi' });
       const worker = createdSessions[0]!;
       worker.emit({ type: 'turnDone', turnDone: { sessionId: 'sess-1', success: true } });
       expect(emittedEvents.at(-1)?.payload).toMatchObject({
@@ -245,7 +265,7 @@ describe('agent-pane-ipc', () => {
     });
 
     it('targets a specified worker sessionId', async () => {
-      call('agent:send', { text: 'hi', sessionId: 'wk' });
+      call('agent:spawnSession', { sessionId: 'wk', prompt: 'hi' });
       const worker = createdSessions[0]!;
       call('agent:approveTool', {
         toolUseId: 't1',
@@ -311,6 +331,66 @@ describe('agent-pane-ipc', () => {
       call('agent:spawnSession', { sessionId: 'wk', prompt: 123 });
       call('agent:spawnSession', null);
       expect(createdSessions).toHaveLength(0);
+    });
+
+    it('caps simultaneous worker sessions at MAX_WORKER_PTYS (16)', () => {
+      for (let i = 0; i < 16; i += 1) {
+        call('agent:spawnSession', { sessionId: `wk-${i}`, prompt: 'p' });
+      }
+      expect(createdSessions).toHaveLength(16);
+      // 17th worker is refused.
+      call('agent:spawnSession', { sessionId: 'wk-overflow', prompt: 'p' });
+      expect(createdSessions).toHaveLength(16);
+      // The conv session is NOT counted against the worker cap.
+      call('agent:send', { text: 'still works' });
+      expect(call('agent:listSessions', undefined) as string[]).toContain(
+        'conv',
+      );
+    });
+
+    it('re-spawning an already-live worker id is allowed past the cap math', () => {
+      for (let i = 0; i < 16; i += 1) {
+        call('agent:spawnSession', { sessionId: `wk-${i}`, prompt: 'p' });
+      }
+      // Re-spawn an existing id — reuses the entry, not a new session.
+      call('agent:spawnSession', { sessionId: 'wk-0', prompt: 'again' });
+      expect(createdSessions).toHaveLength(16);
+      expect(createdSessions[0]!.spy.send).toHaveBeenNthCalledWith(2, 'again');
+    });
+  });
+
+  describe('self-termination cleanup (zombie fix)', () => {
+    it('drops the session from the registry when it closes on its own', () => {
+      call('agent:send', { text: 'hi' });
+      expect(call('agent:listSessions', undefined)).toEqual(['conv']);
+      // Simulate the backend's onClosed firing (SDK stream end or error).
+      createdSessions[0]!.onClosed?.();
+      expect(call('agent:listSessions', undefined)).toEqual([]);
+    });
+
+    it('a send after self-termination creates a FRESH session, not a zombie', () => {
+      call('agent:send', { text: 'first' });
+      const first = createdSessions[0]!;
+      first.onClosed?.(); // session errored / ended
+      call('agent:send', { text: 'second' });
+      // A brand-new session object was created for the second send.
+      expect(createdSessions).toHaveLength(2);
+      expect(createdSessions[1]!.spy.send).toHaveBeenCalledWith('second');
+      // The dead session did NOT receive the second message.
+      expect(first.spy.send).not.toHaveBeenCalledWith('second');
+    });
+
+    it('frees a worker slot when a worker self-terminates', () => {
+      for (let i = 0; i < 16; i += 1) {
+        call('agent:spawnSession', { sessionId: `wk-${i}`, prompt: 'p' });
+      }
+      // One worker dies → its slot frees up.
+      createdSessions[0]!.onClosed?.();
+      call('agent:spawnSession', { sessionId: 'wk-new', prompt: 'p' });
+      expect(createdSessions).toHaveLength(17);
+      expect(call('agent:listSessions', undefined) as string[]).toContain(
+        'wk-new',
+      );
     });
   });
 
