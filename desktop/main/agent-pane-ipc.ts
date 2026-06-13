@@ -109,6 +109,11 @@ function flushDocSwitch(): void {
 
 // ─── IPC handlers ────────────────────────────────────────────────────────
 
+/** Update the main window reference when the window is recreated. */
+export function rebindMainWindow(mainWindow: BrowserWindow): void {
+  mainWindowRef = mainWindow;
+}
+
 /** Register the agent-pane IPC handlers. Safe to call once at app boot. */
 export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
   mainWindowRef = mainWindow;

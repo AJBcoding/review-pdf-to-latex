@@ -8,7 +8,7 @@ import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
-import { registerAgentPaneIpc, shutdownAgentPane } from './agent-pane-ipc.js';
+import { registerAgentPaneIpc, rebindMainWindow, shutdownAgentPane } from './agent-pane-ipc.js';
 import { runSidecarMigration, findSidecarByFingerprint } from './sidecar-migration.js';
 import {
   promoteDraft,
@@ -808,7 +808,10 @@ void app.whenReady().then(async () => {
   registerAgentPaneIpc(mainWin);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      const newWin = createWindow();
+      rebindMainWindow(newWin);
+    }
   });
 });
 
