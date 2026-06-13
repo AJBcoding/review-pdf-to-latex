@@ -442,7 +442,245 @@ Assembled strictly from the cited assets above (5B Part 3); field names illustra
 
 ## Roadmap
 
-_Phase B — requires GATE 1 open_
+_Phase B output (2026-06-12). GATE 1 verified OPEN this session; GATE 2 verified CLOSED — nothing below is implementation, and every item executes only after GATE 2 opens. Inputs: the ~57 findings above (14 ✓ independently verified C1–C14), the Capability section's "DRAFT — input to Phase B" sketch, and the GATE 1 packet's owner-decision list. Drafted in evidence/phaseB/B1 (roadmap) and B2 (spec), adversarially challenged in B3 (14 issues), dispositions in B4 — all 14 resolved and folded in below. Every item names the finding(s) it rests on; effort tags S/M/L as used throughout this review. The companion spec is `docs/specs/2026-06-12-unified-comment-model-and-roundtrip.md`._
+
+### NOW — standalone correctness fixes + de-risking spikes (do NOT fold into refactors)
+
+The five confirmed data-loss/correctness bugs plus the submit unhappy-path stranding (Exec Summary §1; GATE 1 packet CHECK item: sequence C1/C2/C7/C8/C9 as immediate fixes, not inside the larger refactors). Each is standalone; none waits on the Next-phase restructures.
+
+**N1. Stop deleting Markdown frontmatter on save [S]**
+- Resolves: Renderer — Viewers & Anchoring → "Saving an edited Markdown file silently deletes its frontmatter" (high, C7 ✓).
+- Done when: vitest case "load doc-with-frontmatter → edit → getContent() contains the block" passes, and a manual edit of a frontmatter'd .md leaves the YAML block on disk. Also covers the lazy-regex horizontal-rule false match noted in the same finding.
+- Deps: none. Restores the input to sidecar rename recovery (`DocFingerprint.title_from_frontmatter`) that the bug currently destroys.
+
+**N2. Make v1.1 draft seeding idempotent against DISK [S]**
+- Resolves: Renderer — Comments, Submit UX & Panes → "Re-opening a doc with a completed round re-seeds the next version's draft, clobbering comments" (high, C8 ✓).
+- Done when: read-before-write guard (skip or merge into a non-empty existing draft, or a persisted `seeded_from: <submit_id>` marker) lands with the finding's rig-free test: complete round → add v1.1 comments → re-open v1 → v1.1 sidecar intact.
+- Deps: the stale `draftsCache` masking (Renderer — Orchestration "Also noted": path-keyed, never invalidated) rides along — key by path+sha256 or delete the cache (S) — since it can mask this exact fix. Hard prerequisite for the X5 migration (spec §4.4 step 0).
+
+**N3. Filter `.abandoned.json` tombstones at BOTH layers [S]**
+- Resolves: Desktop Main — Persistence → "Abandoned-round tombstone is re-emitted by the results watcher" (high, C9 ✓) + Renderer — Comments → "applyResultsEvent has no `.abandoned` filter" (high).
+- Done when: `isResultsName` rejects `*.abandoned.json` with a vitest case (the C9 verifier already node-tested the regex), `applyResultsEvent` carries the belt-and-suspenders guard, and Abandon → doc re-open does not resurrect the round banner.
+- Deps: none. Filtering (not an `abandoned:true` flag) is the default per the finding.
+
+**N4. Hoist status validation above the .tex mutation in apply/revert [S]**
+- Resolves: Engine — Core Pipeline → "apply_edit / revert_edit mutate the .tex file BEFORE status validation" (high, C1 ✓).
+- Done when: pure reordering lands in both functions and a regression test shows `apply_edit` on an `accepted` annotation raises `IllegalStatusTransitionError` with the .tex file byte-identical to before the call.
+- Deps: none; no happy-path behavior change.
+
+**N5. Resolve the commit-phase vs extract .gitignore contradiction [S]**
+- Resolves: Engine — Core Pipeline → "commit_phase stages .gitignore'd `.review-state/` files without `-f` — exit-19 on every extract-bootstrapped project" (high, C2 ✓, repro'd on git 2.50.1).
+- Done when: one policy wins (stop staging `.review-state/*` — the commit message already points at the snapshot path — or stage with `-f`) and a regression test whose fixture includes the extract-written .gitignore passes `commit-phase` cleanly.
+- Deps: none.
+
+**N6. Un-strand the submit unhappy paths (retry/resume/compensation) [M–L]**
+- Resolves: Renderer — Comments → "Every submit failure path strands the user" (high, C10 ✓): timeout Re-sling no-op, circular Resume, Retry minting a duplicate round against the same-submit_id contract, failed slings leaving comments `submitted` forever.
+- Done when: a real `retrySling(submitId, destination)` entry point calls `submitSling` directly against the cached frozen `submitFilePath` (no re-promote, no picker); `canFire()`/`handleSubmitBundle` accept the retry path in `timeout`/`send_failed`; Resume wires to the same entry point; the `submit:comments-promoted` flip moves to after `slingResult.ok` (or a compensating un-promote fires on terminal failure/Dismiss). Unit tests cover timeout→retry reusing the SAME submit_id and failed-sling→comments back to `open`.
+- Deps: deliberately bundles TWO M findings (challenge issue 5): the submit-state-machine extraction + vitest ("Zero tests on the submit state machine", med/M) is the stated precondition for safely landing the retry re-plumb (high/M) — hence M–L, not M.
+
+**N7. SPIKE (1 day): PDF /IRT reply chains — read AND write halves [S]**
+- De-risks: Capability §1 "replies where feasible = feasible-unproven" (GATE 1 packet UNCERTAIN). Per challenge issue 3, NO evidence establishes even read-side reply support: the spike's readback field set has no reply parent (readback.json), the sketch annotates `in_reply_to` "captured nowhere today", and a fresh grep over readback.json + spike.mjs found zero /IRT hits — so the spike must prove BOTH halves.
+- Done when: a throwaway spike (extending `desktop/spikes/rev-cvr-pdf-lib/`) (a) READS /IRT chains from an Acrobat-authored threaded PDF via pdf.js `getAnnotations` or a pdf-lib walk, and (b) WRITES an /IRT-chained reply via pdf-lib that Acrobat displays threaded; result recorded as a dated note in docs/research/.
+- KILL LADDER: write half fails within the day → cut reply CREATION from L4 scope, keep read-only display of existing replies; read half ALSO fails → replies are out of v1 entirely (no read-only display either), `native.in_reply_to` stays an optional field populated only when readable.
+- Deps: informs the spec's `native.in_reply_to` semantics and L4 scope. Parallelizable with N1–N6.
+
+**N8. SPIKE (1 day): per-line quads write-back [S]**
+- De-risks: Capability §1 spike (b) — the capture side already has `screenRects`; bundle.ts's single-region quad is an acknowledged v1 limit (bundle.ts:73-76 as cited in Capability §1).
+- Done when: spike writes a multi-line Highlight with per-line /QuadPoints from captured rects and it survives an Acrobat open/annotate/save cycle without bbox-collapse, including on a restored/degraded PDF (domain trap #8 class); dated research note recorded.
+- KILL CRITERIA: if per-line quads can't be produced reliably or don't survive the Acrobat round-trip within the day, KEEP single-bbox writes as the shipped limit and mark `quads[]` in the union as read-fidelity-only (native annots read back with per-line quads regardless, per readback.json).
+- Deps: informs `PdfQuadAnchor.quads[]` semantics in the spec and L4 scope.
+
+**Now-adjacent S ride-alongs (judgement: same files, same sitting — each names its finding):**
+- Empty-text revert destroys an unrelated line (Engine — Core Pipeline, med/S): reject empty `new_text` or special-case the degenerate range; apply-empty→revert tests. Companion to N4.
+- `gt mail` stdin EPIPE can crash the main process (Desktop Main — Persistence, med/S): stdin error listener routed into the existing settle path. Companion to N6.
+- Errored SDK session becomes a message-eating zombie + uncapped lazy session creation (Desktop Main — Claude/Agent → "Session-registry failure modes", high/S): end queue, clear pending approvals, drop registry entry; create-only-for-conv.
+- Re-created window never receives agent events (Desktop Main — Claude/Agent "Also noted", S, C13 ✓): re-bind `mainWindowRef` on window creation.
+- Skip-permissions setting silently rewritten to `true` (Renderer — Orchestration, med/S): module state + spread previously-read app state so no-UI fields can't be clobbered.
+- Concurrent doc-open race mis-keys sidecars (Renderer — Orchestration, high/S–M): load-epoch guard re-checked after every await; later subsumed by X7's single-flight open queue, but not deferred behind it.
+- Pre-v2 bundle/submit gate (spec §4.4 step 0; challenge issue 7): `writeBundle` rejects comments whose file-level `anchor_kind !== 'pdf-glyph-rect'` or that carry `md_anchor`, and `handleSubmitBundle` gains the explicit `classifyPath(...) === 'pdf'` gate the Renderer — Comments "Also noted" tail already recommends — closes the C5 exposure immediately, before the union lands.
+
+### NEXT — the anchor-union schema event + duplication-divergence convergence
+
+Sequencing rule (Capability §3: the union is the precondition for both adapters; Exec Summary §2: it is a three-party schema event): X1–X5 land BEFORE any Later format adapter. Convergence items stop live behavioral drift before the multi-format work multiplies it (Exec Summary §3).
+
+**X1. Vitest safety net on the persistence writers, BEFORE the union retrofit [M]**
+- Resolves: Desktop Main — Persistence → "Test investment is inverted: zero tests on the three highest-consequence persistence writers" (med/M); the submit-machine remainder beyond N6's scope.
+- Done when: vitest covers RESULTS_RE/tombstone behavior (locks in N3), quad-point ordering + out-of-range page skip, promote status-flip semantics, and shared/bundle.ts parsing/palette — the finding's own list.
+- Deps: BLOCKS X5 ("Before any unified-model refactor, add vitest coverage").
+
+**X2. Finalize the status-vocabulary mapping table (spec work, owner sign-off) [M]**
+- Resolves: Capability §4 → "Three status vocabularies, zero mapping code, near-miss names" (high/M — "the hardest non-code problem"). Tag restored to M per the finding (challenge issue 5).
+- Done when: the spec's §6 table is owner-signed: the unified vocabulary is the 7-value desktop `CommentStatus` unchanged, shipped spellings verbatim (incl. `build_failed`), engine statuses mapped at the seam with `workflow.engine_status` passthrough — every former `?` cell carries the OD-1 PROPOSED DEFAULTs below. Scope correction folded in (challenge issue 14): "share zero strings" is engine↔desktop only; the rig enum is a declared strict subset of the desktop enum. No adapter code is written against an unfinished table.
+- Deps: BLOCKS X5 and all Later adapters. Pure spec work — already drafted in the companion spec §6.
+
+**X3. Split shared/types.ts along its five seams [M]**
+- Resolves: Desktop Main — IPC → "shared/types.ts is a 1008-line five-concern type god-file" (med/M).
+- Done when: shared/engine.ts, shared/comments.ts, shared/files.ts, shared/ipc.ts, shared/pty.ts exist (mirroring the shared/agent-pane/ precedent) and typecheck passes across all three configs.
+- Deps: the finding's explicit ordering — first step of the unified-model work. shared/comments.ts is where X5 lands.
+
+**X4. IPC type dedup + typed handle() wrapper [S then M]**
+- Resolves: Desktop Main — IPC → "The hand-wired typed IPC surface is vacuous on the result side and has already drifted on both bridges" (high/S–M); the no-runtime-validation finding's wrapper half (med/M).
+- Done when: (S) engine.ts type copies deleted in favor of @shared imports; agentViewer bridge type moved to shared/ and imported by BOTH preload and ipc-client; the three `as any` casts deleted. (M) a typed `handle<K extends keyof ElectronAPI>` wrapper checks main-side bodies against the same contract the preload implements, with per-channel runtime checks and fs path-scoping folded in.
+- Deps: land before the multi-format work adds docx/html comment channels (i.e., before L3–L6).
+
+**X5. THE CENTERPIECE: per-comment discriminated anchor union (M-2) + DraftsFile v2 + rig coordination [L]**
+- Resolves (the three-party schema event, Exec Summary §2): Desktop Main — IPC → comment model accretes per-format fields; Desktop Main — Persistence → "Bundle writer is anchor-kind-blind" (med/M, C5 ✓); Renderer — Viewers → "HTML/DOCX anchors smuggled through md_anchor with as any" (high/M, C6 ✓); Capability §3 → M-2 union with `quads[]`/`origin`/`native_ref`; Capability §5 → "the rig results contract is PDF-typed too" (med, C12 ✓); Capability §7 → native-record field set. Tag is L, not M (challenge issue 5): it bundles the schema, the migration, the writeBundle retrofit, submit/results v2, AND the multi-step cross-party rig rollout — "coordination is the real cost".
+- Done when, per the companion spec (§3–§4 are normative):
+  - shared/comments.ts defines `anchor: PdfQuadAnchor | TextQuoteAnchor | HtmlSelectorHint` per comment (kinds named truthfully; DOCX anchors by text-quote per spec D3), plus `origin` provenance and the `native` block (generalizing `pdf_annotation_id`);
+  - DraftsFile `schema_version: 2` ships with the spec §3.3 LAZY read-time migration (rows migrate in memory on `drafts:read`; file rewritten as v2 on next `drafts:write`; NO startup sweep — challenge issue 9). The migration maps all FIVE v1 row shapes including `new_anchor` (challenge issue 8);
+  - `writeBundle` narrows to the pdf anchor kind and skips/reports others (closes C5); the `as any` write/read sites are deleted and `FileViewer.anchorKind` reports truthfully (closes C6); `MdAnchor` becomes the single imported definition;
+  - submit/results files bump additively; `new_anchor` re-types to the union; the rollout follows the spec §4.4 four-step order, with desktop v2-results tolerance shipped at step 1 (challenge issue 4), the transition-window v2→v1 SubmitFile down-converter (challenge issue 11), and the desktop submit-writer flip gated on an OBSERVED `schema_version: 2` rig results file (challenge issue 10).
+- Deps: blocked by X1 (tests), X2 (status set), X3 (file split), N2 (seed idempotence — the migration must not ride a known clobber path); informed by N7/N8 spike outcomes. BLOCKS X6, X7, X11 and ALL Later format adapters (L3–L6). The single highest-leverage item in the roadmap, named by three passes.
+
+**X6. Renderer comment surface on the union: one payload builder, honest cards, polymorphic reveal [M]**
+- Resolves: Renderer — Comments → "The comment surface is PDF-shaped end-to-end" (med/M).
+- Done when: one `buildPayload(buf, anchorUnion)` replaces the three builders; per-kind card location renderer (page+rect / char-range / selector); reveal routes through the active viewer handle (nulled on switch like the other refs); click/Enter unified on `new_anchor ?? anchor`; `commitNewComment` tail + AUTHOR constant extracted.
+- Deps: blocked by X5. Blocks L3 (native PDF annots render through this same card stream).
+
+**X7. openDocument + DocSession + format registry; renegotiate FileViewer around the union [M–L]**
+- Resolves (three findings merged — hence M–L, challenge issue 5): Renderer — Orchestration → "four cloned loaders whose reset/dispose lists have already diverged, atop 21 mutable module lets" (high/M); "Per-format knowledge scattered across ≥6 places with no registry" (med/S–M); Renderer — Viewers → "The FileViewer interface is decorative" (med/M).
+- Done when: one `openDocument(path)` = teardown + DocSession reset + per-format adapter from a registry keyed by classifyPath; `shared/file-kinds.ts` consumed by classifyPath, tree.ts, main's classifyFile, and the indexer; Open… routes through the same dispatch; FileViewer renegotiated to `loadBytes(bytes, ctx)` / `onSelection(unified | null)` / `applyAnchors(Anchor[])` / `reveal(Anchor)` / `capabilities`, host holding ONE ref. The Now-adjacent epoch guard is subsumed by the single-flight open queue.
+- Deps: blocked by X5 (FileViewer's anchor-typed surface). Structural precondition for L5/L6 — "before DOCX/HTML comment work lands, or that work becomes the fifth and sixth clones".
+
+**X8. Claude-route convergence, staged per OD-3 [L overall; first parity items S each]**
+- Resolves: Desktop Main — Claude/Agent → "Two live Claude routes have materially divergent semantics" (high/L, C11 ✓); "Priming serialized twice with magic wall-clock delays" (med/M); Renderer — Comments → "new agent-pane workers are fire-and-forget" (high/M).
+- Done when, staged: (1) [S each] cwd and skip-permissions parity via one shared session-policy module both routes consume; (2) [M] the shared pure priming module (bundle→text, doc-switch, fresh-start) with unit tests, pty-side triggered by observed output with timeout as fallback only; (3) [M] a minimal worker UI on the new-pane route (sessionId → status/stop) so spawned sessions are visible and stoppable; (4) the flag default flips ONLY after the parity checklist (cwd, permissions, worker cap, sling gating, resume) is green.
+- Deps: depends on OD-3. The priming module is the natural place for anchor-kind-aware context — schedule stage (2) after X5.
+
+**X9. One atomicWriteJson util at all EIGHT write sites [S]**
+- Resolves: Desktop Main — Persistence → "Atomic temp+rename write helper duplicated 5×, with 2 non-atomic outliers" (med/S) + the session-store `writeFileSync` outlier (Claude/Agent "Also noted").
+- Done when: one util used at all eight sites — submit.ts, bundle.ts, the three main/index.ts inline copies, the drafts:read relink, sidecar-migration.ts, AND session-store.ts:43 (count fixed per challenge issue 13).
+- Deps: none; do early in Next. Protects every sidecar the X5 migration rewrites.
+
+**X10. Single-source the engine exit-code contract across both layers [S]**
+- Resolves: Engine — CLI → "Exit-code contract expressed four different ways, with a live 21 overload" (med/S); Desktop Main — IPC → engine.ts bridge's hand-mirrored numeric set.
+- Done when: one `exit_codes.py` imported by cli/apply/commit/extract/server/pdf_health; preview's exceptions folded into the exit-code-carrying hierarchy; the 21 overload resolved or documented; pinning test extended; a TS constants twin emitted/checked with a contract test; `PdfHealthReport` minimally validated before the cast.
+- Deps: none hard; do before L3–L6 multiply engine-backed calls. Pairs with engine.ts resolution memoization (S).
+
+**X11. IframeDocViewer base: collapse the html/docx twins, one not-found behavior [M]**
+- Resolves: Renderer — Viewers → "html-viewer and docx-viewer are ~60% verbatim twins that have already drifted, and their selector/charOffset capture is lossy by construction" (med/M); the dark-mode inversion note.
+- Done when: one base (stage/iframe/sandbox, injectStyles, wireSelectionCapture, applyHighlights, cssPath, findTextNode) with a `bytesToHtml` strategy; the two index.ts highlight functions collapse to one; ONE not-found behavior (skip, like docx); capture redesigned on the md strategy (prefix/quoted_text/suffix + fuzzyMatchAnchor) with the CSS selector demoted to a locality hint.
+- Deps: blocked by X5 ("designed inside the unified anchor union, not before it"). BLOCKS L5/L6 (epics rev-2h6, rev-6k6).
+
+**X12. Harden fuzzyMatchAnchor: verify guesses, immutable provenance [S–M]**
+- Resolves: Renderer — Viewers → "Fuzzy re-anchoring persists unverified guesses back into the sidecar" (med/S–M).
+- Done when: steps 3-4 verify the candidate slice (similarity threshold, downgrade to orphaned on failure); nearest-occurrence disambiguation; ORIGINAL quoted_text/prefix/suffix immutable with relocations in the union's `relocated` field; CONTEXT_CHARS exported; anchors.test.ts gains the four missing cases.
+- Deps: blocks L5/L6 — this module is the text-anchor leg of the unified model for MD, HTML, and DOCX alike. Naturally co-lands with X5's TextQuoteAnchor.
+
+### LATER — capability build-out, decompositions off the critical path, disposition decisions
+
+**L1. Migration-safety hardening: guarded readers + CLI schema-error handling [M]**
+- Resolves: Engine — CLI → "Schema-version guard is bypassed by every mutator and uncaught when it fires" (high/M, C3 ✓); Exec Summary §4.
+- Done when: apply._read_json deleted; apply/commit/server state reads route through state.read_json with schema errors wrapped per the existing _guard_source_pdf pattern; a top-level cli.main catch maps SchemaVersionError/MigrationRequiredError to a spec'd exit code (riding X10's single source).
+- Deps: HARD-BLOCKS L2 (no engine schema bump while the hot path bypasses the guard). Pull earlier if L2 moves up.
+
+**L2. Engine schema-v2: persist subtype / native id / in_reply_to; de-LaTeX the names [M]**
+- Resolves: Engine — Core Pipeline reusability note ("annotations.json schema-v2 is unavoidable for the Acrobat round-trip"); Capability §7; the half-adopted dataclass layer's "pick a direction before schema-v2" (drift fixes (a)–(c) are S and land immediately regardless).
+- Done when: annotations.json persists subtype, native annotation id, optional `in_reply_to`; `latex_file` → `file`; fuzzy_map's glob + strip function parameterized per format; the dataclass-vs-dict direction decided and the three drifts fixed; one migration registered in migrate.py exercising the (now-working, L1) guard.
+- Deps: blocked by L1; coordinated with X5's union (the `native` block adopts the readback.json field set). Blocks engine extraction serving as the PDF adapter's in-bound leg.
+
+**L3. PDF round-trip, read half: display native annotations in the viewer [S–M]**
+- Resolves: Capability §1 read+display; the format-matrix gap "desktop viewer does NOT display PDF annots".
+- Done when: `page.getAnnotations()` consumed inside the existing `renderPage`, normalized immediately into the union (X5), rendered through the EXISTING card stream + reveal (X6) — explicitly NOT a second pdf.js annotation DOM. `origin` provenance prevents re-import duplication on the next bundle write.
+- Deps: blocked by X5, X6 (and X7 for the viewer interface). First user-visible capability payoff — schedule it first in Later.
+
+**L4. PDF round-trip, write half: pdf-comments.ts adapter (create/edit/delete; StrikeOut/Text; replies per spike) [M]**
+- Resolves: Capability §1 write-back; the "unused richness" suspicion (StrikeOut/Text proven unshipped).
+- Done when: bundle.ts extends into a per-format adapter implementing the spec §5.1 interface: create = existing buildHighlight + spike's StrikeOut/Text shapes; edit = locate by /NM or (page, index) handle captured at read time, stamping /NM on first edit of foreign annots; delete = remove from /Annots. Reply and per-line-quads scope set by N7/N8 outcomes (kill ladders there). Port (don't invoke) the engine's bbox-crop fallback and sticky-association heuristics when foreign-PDF breadth lands.
+- Deps: blocked by X5, N7, N8; informed by L2.
+
+**L5. DOCX comments.xml adapter, v1 flat comments + display [read M, write M, edit/delete S, display S]**
+- Resolves: Capability §2 (jszip/fflate + hand-rolled OOXML adapter; SuperDoc stays rejected on new grounds); the C14 ✓ range-marker nuance (create/delete must touch document.xml range markers — body TEXT untouched, part mutated; stated in the spec, not discovered in implementation).
+- Done when: main-process docx-comments.ts reads comments.xml + range markers into unified comments; writes mint w:id, create part+rels when absent, insert range markers with run-splitting, anchors resolved by TextQuoteSelector scan; edit/delete per the finding; mammoth `comment-reference` style map lands independently (S). Approach gated by spike S-3 (spec §8); hedge on record: python-docx write-only via the engine. Closes beads epic rev-6k6.
+- Deps: blocked by X5 (anchor union + spec D3 anchor decision), X7 (registry), X11 (iframe base), X12 (text-anchor leg).
+
+**L6. HTML comments UI on the unified text anchor [S–M]**
+- Resolves: the Capability adapter-table HTML row; the format matrix's "wired, no comment UI" gap.
+- Done when: HTML comment creation/display runs on TextQuoteAnchor truth + HtmlSelectorHint locality (spec §5.5), through the X6 card surface. Closes beads epic rev-2h6.
+- Deps: blocked by X5, X7, X11, X12. Cheapest format build-out; good sequencing probe before L5.
+
+**L7. Extract events.py from server.py; fix the --since cursor [M]**
+- Resolves: Engine — Server → "Keep-vs-kill: split the format-agnostic event bus out of server.py" (high/M), incl. the same-second event-drop and the kqueue side-effect notes; ALSO owns the wait-event test gap (assigned here once, per challenge issue 12 — tests target the post-extraction events.py).
+- Done when: _validate_event/_append_event_line/wait_for_events/handle_wait_event live in an events.py with zero viewer imports; the --since cursor uses sub-second timestamps or a sequence number; wait-event gains its missing tests.
+- Deps: HARD-BLOCKS L8 (extract the survivable ~40% before any keep-vs-kill decision).
+
+**L8. Legacy HTTP viewer + terminal.py disposition (per OD-2) [S–M]**
+- Resolves: Engine — Server → "Viewer auto-reload contract unimplemented" (high/S, C4 ✓); the keep-vs-kill option call; Exec Summary §4.
+- Done when (proposed default = delete, OD-2): server-viewer + terminal.py + templates (~2.6K LOC + 283 KB vendored xterm) removed, `wait-event` retained on events.py; or, on owner override to keep: do_HEAD implemented with Last-Modified/ETag, the SimpleHTTPRequestHandler fallthrough closed, and a "legacy, headless-only" freeze note.
+- Deps: blocked by L7 and OD-2.
+
+**L9. main/index.ts decomposition + single before-quit teardown [M; quit collapse S]**
+- Resolves: Desktop Main — IPC → "main/index.ts registers the IPC surface in three styles, and its two independent before-quit handlers double-run teardown" (med/M); the "Also noted" API-residue sweep rides along (S).
+- Done when: fs-ipc.ts / external-open.ts / quit-flush.ts registrars exist; ONE before-quit handler sequences flush → agent shutdown → pty shutdown → watcher stop before re-quit; the residue sweep lands (drop dead `_sha256` params, extend argv/index filtering to the FileKind set, rename the generic byte loader).
+- Deps: the quit collapse (S) can be pulled into Next if quit-time data loss is observed. The FileKind extension overlaps X7's shared/file-kinds.ts — land that part with X7.
+
+**L10. claude-pty.ts split + marker-parser tests — scope per OD-3 outcome [M]**
+- Resolves: Desktop Main — Claude/Agent → "claude-pty.ts mixes six concerns and its pure parser core has zero tests" (med/M).
+- Done when: pure parts (β-marker parser, priming builders — superseded by X8's shared module — whichSync) importable with vitest coverage. If OD-3's convergence retires the pty route on schedule, do ONLY the parser tests needed while it remains live (avoid investing in a deprecated surface).
+- Deps: depends on OD-3 staging; whichSync consolidation pairs with L9's fs utils.
+
+**L11. renderer/index.ts residual decomposition + hygiene batch [M]**
+- Resolves: Renderer — Orchestration "Also noted" cluster: one Debounced utility + drain registry; requireEl(id) + jsdom smoke test for the 87-id silent-bail class; writeFileText returning the new sha; tree filter walk debounce; basename/dirnameOf dedup; notifyPanesDocSwitch extraction.
+- Done when: the listed S items land post-X7 (DocSession makes them mechanical).
+- Deps: blocked by X7 (don't decompose twice). NOT on the critical path for L3–L6.
+
+**L12. Engine per-operation cost: window-index fuzzy_map + cached PDF guard [S–M]**
+- Resolves: Engine — Core Pipeline → "fuzzy_map re-reads and re-scores the entire .tex tree per annotation; every mutator re-hashes the full source PDF" (med/S–M).
+- Done when: build_window_index(root) + resolve(target, index) split (M); PDF guard cached per (path, mtime, size) and apply_batch guards once (S).
+- Deps: the refactor "pays twice" — co-design with X12/X5's resolver, but don't block them on it.
+
+**L13. Engine contract polish batch: uniform --json, bulk-surface tests, status-enum single source [S each]**
+- Resolves: Engine — CLI → "--json silently ignored by most subcommands" (low-med/S); the bulk-surface half of "bulk-surface and wait-event untested" (med/S — wait-event's tests live in L7, challenge issue 12); Engine — Core "Also noted" status-enum 4× definition (S); preview build-ID TOCTOU + in-place-edit snapshot if the preview path survives L8.
+- Done when: structured {error, exit_code} envelope at minimum; the bulk-surface test module exists; canonical status sets exported from state.py (feeding X2's mapping table — pull that single S forward into Next); preview fixes decided alongside L8.
+- Deps: the status-enum export is an input to X2.
+
+**L14. Bundle generalization: per-format native artifact + sidecar [S spec + rides L4/L5]**
+- Resolves: Capability §6 → "the bundle grammar hard-commits every round to a PDF+JSON pair" (med/S spec).
+- Done when: SubmitFile carries `{ native_artifact_path?, sidecar_json_path?, format }` per round (transport already tolerates it — matching is doc_version-only); writers generalized as part of L4/L5 adapter work.
+- Deps: spec decision lives in the companion spec §4.2; implementation rides the adapters.
+
+**L15. Retire the sidecar migration; single doc-identity function [S]**
+- Resolves: Desktop Main — Persistence "Also noted": permanent startup migration machinery for a completed one-shot migration; inline fingerprint re-implementation; mintSubmitId/mintBundleId duplication + same-second overwrite uniquification.
+- Done when: migration deleted keeping findSidecarByFingerprint; one canonical fingerprint function; shared id minting with uniquification.
+- Deps: after X5's v2 migration lands (it reuses the tolerant-reader precedent first).
+
+### Owner decisions (GATE 1 packet UNCERTAIN list) — PROPOSED DEFAULTS
+
+Each is a pending owner decision. A default is proposed with rationale; none is settled. All are marked: **PROPOSED DEFAULT — owner may override at GATE 2.** The full status table and decision log live in the companion spec (§6, §9).
+
+**OD-1. Status-vocabulary mapping (feeds X2)** — PROPOSED DEFAULT — owner may override at GATE 2. The unified vocabulary is the 7-value desktop `CommentStatus` UNCHANGED, shipped spellings verbatim (incl. underscore `build_failed`); engine statuses are mapped at the engine↔desktop seam and preserved losslessly in `workflow.engine_status`. The former `?` cells (per spec §6 — this supersedes the withdrawn B1-draft default, challenge issues 1–2):
+- engine `needs_review` is NEVER a unified status — it is anchor-resolution/apply-failure workflow, surfaced as `workflow.engine_status` plus anchor confidence; it does NOT map to rig `needs-followup` (a disposition) nor to `build_failed` (the rig's build outcome).
+- engine `surfaced_pending` → unified `open` + `engagement_level: 'surface'` (the model already carries the concept orthogonally).
+- engine `accepted`/`redrafted` → unified `applied`, distinction preserved in `workflow.engine_status`.
+- no unified `resolved` value; `surfaced_resolved` folds per the spec §6 table.
+
+**OD-2. Legacy HTTP viewer + terminal.py: keep vs kill (feeds L7/L8)** — PROPOSED DEFAULT — owner may override at GATE 2: **kill** — after L7 extracts events.py, delete server-viewer + terminal.py + templates, keeping only `wait-event`. Rationale: the viewer's core loop is confirmed broken (C4 ✓ — it cannot auto-reload, and nobody noticed, which is itself the strongest usage evidence); the finding's own conclusion is "Evidence favors (a) unless a headless use-case is documented", and none is on record; ~2.6K LOC + vendored xterm of carrying cost disappears from a tool the Electron app superseded by design.
+
+**OD-3. Claude-route convergence target (feeds X8/L10)** — PROPOSED DEFAULT — owner may override at GATE 2: **converge on the SDK/agent-pane route**; retire the pty route after X8's parity checklist (cwd, permissions, worker cap, sling gating, resume) and the worker UI land. Rationale: the C11 finding names the SDK route "the structurally better base — typed events, native permission hooks, no TUI timing races"; the SDK-route cluster is the best-tested desktop code; the wall-clock priming fragility class "disappears on the SDK route". The pty route's worker UI (stop/retry/progress) is kept as the REQUIREMENTS SPEC for the SDK worker surface, not as deletable legacy.
+
+**OD-4. `_reviewer_rig_guard` commit-phase exemption** — PROPOSED DEFAULT — owner may override at GATE 2: **document the exemption as deliberate, do not extend the guard** — add the spec-§10.5.2 reference at the guard site and a test pinning the exact guarded subcommand set (apply/build/revert) so the set can't drift silently. Rationale: the Engine — CLI finding flags the exemption as "possibly deliberate per spec §10.5.2"; documenting + pinning is the no-behavior-change option; if the owner instead wants commit-phase guarded, it is a 2-line change at the same site.
+
+Further PROPOSED DEFAULTs minted by the spec itself (each marked in place; see spec §9 decision log): D1 centerpiece confirmation (the GATE-1 checklist box is unchecked — the M-2 union as centerpiece is itself proposed, not recorded as accepted), D2 no-handshake rollout with the observed-v2-results manual gate, D3 DOCX anchors as text-quote (no docx-range anchor kind), D7 engine bridges-not-adopts the union, D9 jszip over fflate, D11 verbatim spellings + deprecated bundle aliases.
+
+### Dependency spine (one screen)
+
+```
+NOW    N1 N2 N3 N4 N5 N6  (independent fixes)        N7,N8 spikes ──┐
+NEXT   X1 tests ┐                                                   │
+       X2 status┼─► X5 ANCHOR UNION [L] (3-party: sidecar+submit/results+rig)
+       X3 split ┘        │                                          │ (spike outcomes
+       X4 IPC dedup      ├─► X6 comment surface                     │  set quads/IRT scope)
+       X9 atomic util    ├─► X7 DocSession/registry/FileViewer      │
+       X10 exit codes    ├─► X11 iframe base ──► X12 fuzzy guard    │
+       X8 claude converge (OD-3)                                    │
+LATER  L1 migration guard ─► L2 engine schema-v2 ─► (PDF in-bound)  │
+       X5+X6+X7 ─► L3 PDF read ─► L4 PDF write ◄────────────────────┘
+       X5+X7+X11+X12 ─► L5 DOCX adapter, L6 HTML comments
+       L7 events.py ─► L8 legacy disposition (OD-2)
+       L9–L15 off critical path
+```
+
+Ordering rationale: Now items are standalone and must not wait (GATE 1 packet CHECK item); the union (X5) lands BEFORE every format adapter that depends on it (Capability §3) and is coordinated as a three-party schema event (Capability §5, C12 ✓); convergence items stop live divergence before multi-format work multiplies it (Exec Summary §3); capability build-out, off-path decompositions, migration hardening, and the legacy-viewer disposition follow (Exec Summary §4–5).
 
 ---
 
@@ -483,4 +721,61 @@ Replace line 1 of `docs/reports/arch-review/2026-06-12/GATES.md` (human edit onl
 
 ```
 GATE 1 (review findings → proposals & roadmap): OPEN — approved by <name> <YYYY-MM-DD>
+```
+
+---
+
+## GATE 2 Review Packet (Phase B complete — 2026-06-12)
+
+### PRODUCED
+
+- The phased **Roadmap** above (Now 8 / Next 12 / Later 15, plus Now-adjacent ride-alongs): every item names its REVIEW.md finding(s), carries S/M/L effort and a done-when acceptance criterion, with a one-screen dependency spine and the owner-decision sheet OD-1..OD-4.
+- The promoted **spec**: `docs/specs/2026-06-12-unified-comment-model-and-roundtrip.md` — anchor union, CommentV2, DraftsFile v2 + lazy migration, the three-party rollout table, four format adapters, the normative status-mapping table, the engine bridge decision, three spikes with kill ladders, decision log D1–D11, and 8 acceptance criteria.
+- The challenge/disposition trail: `evidence/phaseB/B1-roadmap-draft.md` and `B2-spec-draft.md` (drafts), `B3-challenge.md` (14 adversarial issues: 4 HIGH / 6 MEDIUM / 4 LOW), `B4-dispositions.md` (all 14 resolved: 13 FIXED, 1 FIXED-WITH-NOTE, 0 REBUTTED — including withdrawal of a draft owner-default that misread its own cited finding).
+- A Phase-B PROGRESS block (lanes B1–B4, dispositions summary, anomalies) ending `LAST COMPLETED PASS: 7 (Phase B)`.
+- No code was changed; the spec file is the only write outside the review output dir; GATES.md untouched.
+
+### UNCERTAIN
+
+Every PROPOSED DEFAULT awaiting owner sign-off (each marked "PROPOSED DEFAULT — owner may override at GATE 2" where it appears):
+
+1. **OD-1 / spec D4** — the unified status vocabulary is the 7-value desktop `CommentStatus` UNCHANGED; engine statuses mapped at the seam with lossless `workflow.engine_status` passthrough (no merged super-enum).
+2. **OD-1 / spec D5** — engine `needs_review` is NEVER a unified status: it is anchor-resolution/apply-failure workflow — it maps neither to rig `needs-followup` (a disposition) nor to `build_failed` (the rig's build outcome).
+3. **OD-1 / spec D6 (cell a)** — engine `surfaced_pending` → unified `open` + `engagement_level: 'surface'`.
+4. **OD-1 / spec D6 (cell b)** — engine `accepted`/`redrafted` fold into unified `applied`, distinction preserved in `workflow.engine_status`.
+5. **OD-1 / spec D6 (cell c)** — no unified `resolved` value; `surfaced_resolved` folds per the spec §6 table.
+6. **Spec D11** — shipped status spellings kept verbatim (incl. underscore `build_failed`); `bundle_pdf`/`bundle_json` kept as deprecated aliases through the transition window.
+7. **Spec D1** — the M-2 anchor union as the Phase-B centerpiece: well-evidenced (C5/C6/C12), but the GATE-1 checklist confirmation box is UNCHECKED — no artifact records owner acceptance, so the designation itself is proposed, not settled.
+8. **Spec D2** — no runtime version negotiation/handshake for the three-party rollout; the desktop's step-3 submit-writer flip is gated on a manually OBSERVED rig-written `schema_version: 2` results file, recorded in a bead.
+9. **Spec D3** — DOCX comments anchor by `text-quote` over run text; OOXML range markers are the native projection in `native_ref`, NOT a separate `docx-range` anchor kind.
+10. **Spec D7** — the engine BRIDGES to the unified model (one-way, engine → unified) rather than adopting the TS union; engine schema-v2 rides the engine's own next bump, gated on the C3 fix (roadmap L1→L2).
+11. **Spec D9** — jszip (over fflate) as the one new DOCX zip dependency.
+12. **OD-2** — KILL the legacy HTTP viewer + terminal.py + templates after L7 extracts events.py (keep only `wait-event`).
+13. **OD-3** — converge the two Claude routes on the SDK/agent-pane route; retire the pty route after X8's parity checklist + worker UI land (pty worker UI kept as the requirements spec).
+14. **OD-4** — document `_reviewer_rig_guard`'s commit-phase exemption as deliberate (spec-§10.5.2 reference + a test pinning the guarded set), rather than extending the guard.
+
+Unproven spikes (1 day each, kill criteria in spec §8; none may be skipped by assuming success): **S-1** PDF /IRT reply chains — BOTH read and write halves are unproven (fresh grep over the 2026-05-21 spike artifacts found zero /IRT hits, so even read-only reply display is not established); **S-2** per-line quads write-back surviving an Acrobat cycle; **S-3** DOCX range-marker insertion with run-splitting on a no-comments document.
+
+Also carried: REVIEW.md's Exec Summary and Capability takeaway retain the overbroad "three status vocabularies share zero strings" phrasing — the grep proves it only for engine↔desktop; the rig enum is a declared strict subset of the desktop enum (correction announced in spec §6 and B4 issue 14; this packet's write rules forbade editing those earlier sections).
+
+### CHECK BEFORE OPENING
+
+- [ ] Read the Roadmap's NOW section and confirm the five data-loss fixes (N1–N5) + N6 match your priority — especially that N6 is deliberately M–L because it bundles the submit-state-machine extraction (its stated precondition) with the retry re-plumb.
+- [ ] Sanity-check the X5 centerpiece item: it is tagged **L** (not M) because it includes the three-party rig rollout; confirm you accept its blockers (X1 tests, X2 status table, X3 type split, N2 seed idempotence) and that L3–L6 all wait on it.
+- [ ] In the spec, the rig contract is decided by **§4.3 (what the rig must change: read v2 submit, echo anchor kinds, write v2 results)** and **§4.4 (rollout order incl. the step-3 observed-results gate)** plus acceptance criteria 5–7 — read those three before anything else; they are the parts that move a system you don't redeploy casually.
+- [ ] Walk the UNCERTAIN list above and for each of the 14 PROPOSED DEFAULTs either confirm, override, or explicitly defer (a deferral keeps the default but records it as provisional in the GATE-2 beads). Items 1–6 (the status table) and 8 (rollout gate) shape the most code.
+- [ ] Confirm the three spikes (S-1/S-2/S-3) are scheduled BEFORE their gated features are filed as implementation beads — N7/N8 sit in NOW for that reason.
+- [ ] Spot-check one disposition end-to-end for trust calibration (suggested: B3 issue 1 → B4 disposition 1 → roadmap OD-1 + spec §6 D5 — the withdrawn contradictory default).
+- [ ] Verify `GATES.md` still reads as you expect (GATE 1 OPEN with your name; GATE 2 CLOSED; no agent has edited it).
+
+### RECOMMENDED DECISION
+
+**OPEN GATE 2.** The roadmap and spec rest entirely on the verified Phase-A findings (no new factual claims were introduced without fresh citations); the adversarial challenge found 14 real issues — including one HIGH-severity contradiction between the drafts and one misread finding — and ALL are dispositioned with fixes folded in, none surviving into the deliverables. The NOW items are pure correctness fixes that carry no design risk, and everything design-risky (the union, the rig contract, replies, DOCX markers) is either behind a PROPOSED DEFAULT awaiting your sign-off or behind a 1-day spike with a kill ladder. The one caveat: decide (or explicitly defer) the 14 defaults above at opening time, since the first implementation beads (X2's table, X5's schema) encode them.
+
+### TO OPEN
+
+Replace line 2 of `docs/reports/arch-review/2026-06-12/GATES.md` (human edit only — agents must never touch that file) with, filling in your name and the date:
+
+```
+GATE 2 (proposals → implementation): OPEN — approved by <name> <YYYY-MM-DD>
 ```

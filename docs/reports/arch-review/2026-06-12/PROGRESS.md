@@ -128,3 +128,27 @@ Artifacts: evidence/pass6/verification.md; REVIEW.md (exec summary + 14 ✓ mark
 Phase A complete. Next step is human-only: review the GATE 1 packet at the end of REVIEW.md and, if approved, edit GATES.md line 1 per its TO OPEN section. No agent work remains until GATE 1 is OPEN.
 
 LAST COMPLETED PASS: 6
+
+## Pass 7 — Phase B: Proposals & Roadmap (2026-06-12)
+
+Gate check (every Phase-B agent, first action): GATES.md line 1 `GATE 1 (review findings → proposals & roadmap): OPEN — approved by Anthony Byrnes 2026-06-12` — exact open form, Phase B authorized. GATE 2 verified CLOSED throughout; no code or non-doc files touched; GATES.md untouched.
+
+Lanes:
+- **B1 (roadmap draft)** — evidence/phaseB/B1-roadmap-draft.md: phased Now (8) / Next (12) / Later (15) roadmap, every item naming its REVIEW.md finding(s), S/M/L tags, acceptance criteria, dependency spine, 4 owner-decision PROPOSED DEFAULTs (OD-1..OD-4).
+- **B2 (spec draft)** — evidence/phaseB/B2-spec-draft.md: full unified-comment-model spec — anchor union, CommentV2, DraftsFile v2 + migration, three-party rollout, 4 adapters, status mapping table, engine bridge decision, 3 spikes, 11-entry decision log.
+- **B3 (adversarial challenge)** — evidence/phaseB/B3-challenge.md: 14 issues (4 HIGH, 6 MEDIUM, 4 LOW) from ≥10 spot-checks incl. fresh ground-truth re-opens (types.ts:109-117, :227-235) and a fresh /IRT grep over the spike artifacts (zero hits). Clean checks asserted explicitly (no NOW item depends on the union; adapters all sequenced after X5; PROPOSED DEFAULT markings present).
+- **B4 (closer dispositions)** — evidence/phaseB/B4-dispositions.md: all 14 issues resolved — **13 FIXED, 1 FIXED-WITH-NOTE, 0 REBUTTED**. Highlights: B1's contradictory `needs_review` default WITHDRAWN in favor of the spec §6 table (issues 1–2); spike S-1 widened to BOTH /IRT halves with a kill ladder (issue 3); rollout step 1 gains desktop v2-results tolerance (issue 4); effort tags corrected (X5→L, N6→M–L, X7→M–L, X2→M; issue 5); spec D1's "owner accepted" provenance claim corrected to PROPOSED DEFAULT (issue 6); pre-v2 C5 guard reworded to an implementable v1-shape check and scheduled (issue 7); migration gains the `new_anchor` row (issue 8); single lazy migration story (issue 9); step-3 flip gated on an observed v2 results file (issue 10); v2→v1 down-converter specified (issue 11); wait-event tests assigned once to L7 (issue 12); X9 = eight sites (issue 13); "share zero strings" scope correction announced in spec §6 (issue 14).
+
+Deliverables:
+- REVIEW.md `## Roadmap` placeholder replaced with the corrected phased roadmap (Now 8 / Next 12 / Later 15 + Now-adjacent ride-alongs + OD-1..OD-4 with PROPOSED DEFAULTs + dependency spine). Nothing else in REVIEW.md's body touched.
+- Spec promoted to `docs/specs/2026-06-12-unified-comment-model-and-roundtrip.md` (dated, numbered §1–§10, decision log D1–D11, 8 acceptance criteria; every unsettled point marked "PROPOSED DEFAULT — owner may override at GATE 2") — the single permitted write outside the review output dir.
+- GATE 2 Review Packet appended to the end of REVIEW.md (PRODUCED / UNCERTAIN / CHECK BEFORE OPENING / RECOMMENDED DECISION / TO OPEN).
+
+Anomalies:
+- REVIEW.md's Exec Summary (:17) and Capability takeaway (:367) carry the overbroad "share zero strings" phrasing (B3 issue 14); the closer's write rules forbid editing those sections, so the correction lives in spec §6, B4, and the GATE 2 packet — a future REVIEW.md revision may fold it in.
+- B1's OD-1 first bullet proposed a default that misread its own cited finding (B3 issue 1) — caught by the challenge lane, withdrawn at close; recorded as evidence the adversarial lane earned its cost.
+- No other anomalies; no writes outside the permitted set; node_modules/release/out never entered.
+
+Phase B complete. Next step is human-only: review the GATE 2 packet at the end of REVIEW.md, decide the PROPOSED DEFAULTs (or defer them as recorded), and if approved edit GATES.md line 2 per its TO OPEN section. No agent work remains until GATE 2 is OPEN.
+
+LAST COMPLETED PASS: 7 (Phase B)
