@@ -133,6 +133,19 @@ const docState: DocState = {
   rounds: new Map(), originRig: null,
 };
 
+// rev-ra6 — concurrent doc-open guard. The four load* functions all mutate the
+// single shared `docState` and `await` several times (flush, readPdfBytes,
+// loadDrafts, viewer.loadBytes). If the user opens doc B while doc A is still
+// loading, A is suspended at an await; when it resumes it would clobber
+// docState and mis-key A's sidecars (drafts) against B. Each load claims a
+// monotonic epoch on entry; after every await it re-checks the epoch and bails
+// the instant a newer load has superseded it. This replaces the older, partial
+// path/sha256 comparison guards with one uniform, race-proof check.
+let loadEpoch = 0;
+function loadSuperseded(epoch: number): boolean {
+  return epoch !== loadEpoch;
+}
+
 // ─── §10.1 / §10.5 — origin + recent-rigs persistence ─────────────────────
 //
 // AppState (rev-1md.4 additions):
@@ -1228,11 +1241,14 @@ async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Pr
 }
 
 async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
+  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
+  const myEpoch = ++loadEpoch;
   // Flush pending .md save before switching away
   if (mdSaveTimer !== null) {
     window.clearTimeout(mdSaveTimer);
     mdSaveTimer = null;
     await flushMdSave();
+    if (loadSuperseded(myEpoch)) return;
   }
   if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
   void window.electronAPI.unwatchFile();
@@ -1250,6 +1266,7 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     window.clearTimeout(writeTimer);
     writeTimer = null;
     await flushDraftsWrite();
+    if (loadSuperseded(myEpoch)) return;
   }
   // Reset per-doc state. selection cache and in-memory drafts belong to the
   // previous document. Results-watcher state likewise resets so banners for
@@ -1285,6 +1302,7 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
     window.electronAPI.readPdfBytes(path),
     window.electronAPI.pdfHealth(path),
   ]);
+  if (loadSuperseded(myEpoch)) return;
 
   // Render the health banner first so a render failure below still has the
   // diagnostic context visible. The banner is non-blocking either way.
@@ -1306,25 +1324,23 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
   // on the floor. Serializing the two avoids that race; loadDrafts is a
   // single readFile so the added latency is negligible.
   await loadDraftsForCurrentDoc();
-  // Bail if the user opened a different doc while drafts were loading —
-  // applies-to-different-doc state is meaningless now.
-  if (docState.path !== path || docState.sha256 !== bytesResult.sha256) {
-    // continue with viewer load below; the new loadPdf will have already
-    // reset state — nothing to do here.
-  } else {
-    // Start watching `.review-state/`. Failures aren't fatal; we just flash
-    // the anchor meta so the user knows reflection is offline.
-    void window.electronAPI.watchResultsStart(path, bytesResult.sha256).then((res) => {
-      if (!res.ok) {
-        flashAnchorMeta(`Results watcher failed (${res.reason ?? 'unknown'}): ${res.error ?? ''}`);
-      }
-    });
-  }
+  // rev-ra6 — bail if the user opened a different doc while drafts were
+  // loading; anything below (viewer load, watcher, notifications) belongs to
+  // the superseding load now.
+  if (loadSuperseded(myEpoch)) return;
+  // Start watching `.review-state/`. Failures aren't fatal; we just flash
+  // the anchor meta so the user knows reflection is offline.
+  void window.electronAPI.watchResultsStart(path, bytesResult.sha256).then((res) => {
+    if (!res.ok) {
+      flashAnchorMeta(`Results watcher failed (${res.reason ?? 'unknown'}): ${res.error ?? ''}`);
+    }
+  });
 
   let viewerLoaded = false;
   try {
     showViewer(h);
     await h.viewer.loadBytes(bytesResult.bytes);
+    if (loadSuperseded(myEpoch)) return;
     h.title.textContent = basename(path);
     setViewerControlsEnabled(h, true);
     viewerLoaded = true;
@@ -1377,6 +1393,8 @@ async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
 }
 
 async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
+  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
+  const myEpoch = ++loadEpoch;
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
   // Flush pending .md save for previous doc
@@ -1384,11 +1402,13 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
     window.clearTimeout(mdSaveTimer);
     mdSaveTimer = null;
     await flushMdSave();
+    if (loadSuperseded(myEpoch)) return;
   }
   if (writeTimer !== null) {
     window.clearTimeout(writeTimer);
     writeTimer = null;
     await flushDraftsWrite();
+    if (loadSuperseded(myEpoch)) return;
   }
   // Stop watching previous file
   if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
@@ -1413,6 +1433,7 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
   void window.electronAPI.watchResultsStop();
 
   const bytesResult = await window.electronAPI.readPdfBytes(path);
+  if (loadSuperseded(myEpoch)) return;
   if (!bytesResult.ok) {
     h.title.textContent = basename(path);
     showLoadError(h, bytesResult);
@@ -1422,6 +1443,7 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
 
   docState.sha256 = bytesResult.sha256;
   await loadDraftsForCurrentDoc();
+  if (loadSuperseded(myEpoch)) return;
 
   if (mdViewerRef) {
     mdViewerRef.dispose();
@@ -1472,6 +1494,7 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
   try {
     showViewer(h);
     await mdViewer.loadBytes(bytesResult.bytes);
+    if (loadSuperseded(myEpoch)) return;
     h.title.textContent = basename(path);
     h.prevBtn.disabled = true;
     h.nextBtn.disabled = true;
@@ -1507,12 +1530,15 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
 }
 
 async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
+  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
+  const myEpoch = ++loadEpoch;
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
   if (mdSaveTimer !== null) {
     window.clearTimeout(mdSaveTimer);
     mdSaveTimer = null;
     await flushMdSave();
+    if (loadSuperseded(myEpoch)) return;
   }
   if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
   void window.electronAPI.unwatchFile();
@@ -1522,6 +1548,7 @@ async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
     window.clearTimeout(writeTimer);
     writeTimer = null;
     await flushDraftsWrite();
+    if (loadSuperseded(myEpoch)) return;
   }
 
   docState.path = path;
@@ -1543,6 +1570,7 @@ async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
   void window.electronAPI.watchResultsStop();
 
   const bytesResult = await window.electronAPI.readPdfBytes(path);
+  if (loadSuperseded(myEpoch)) return;
   if (!bytesResult.ok) {
     h.title.textContent = basename(path);
     showLoadError(h, bytesResult);
@@ -1552,6 +1580,7 @@ async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
 
   docState.sha256 = bytesResult.sha256;
   await loadDraftsForCurrentDoc();
+  if (loadSuperseded(myEpoch)) return;
 
   const htmlViewer = new HtmlViewer({
     container: h.mount,
@@ -1566,6 +1595,7 @@ async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
   try {
     showViewer(h);
     await htmlViewer.loadBytes(bytesResult.bytes);
+    if (loadSuperseded(myEpoch)) return;
     h.title.textContent = basename(path);
     h.prevBtn.disabled = true;
     h.nextBtn.disabled = true;
@@ -1601,15 +1631,17 @@ async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
 }
 
 async function loadDocx(h: ViewerHandles, path: string): Promise<void> {
+  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
+  const myEpoch = ++loadEpoch;
   h.title.textContent = `Loading ${basename(path)}…`;
   hideBanner(h.banner);
-  if (mdSaveTimer !== null) { window.clearTimeout(mdSaveTimer); mdSaveTimer = null; await flushMdSave(); }
+  if (mdSaveTimer !== null) { window.clearTimeout(mdSaveTimer); mdSaveTimer = null; await flushMdSave(); if (loadSuperseded(myEpoch)) return; }
   if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
   void window.electronAPI.unwatchFile();
   if (mdViewerRef) { mdViewerRef.dispose(); mdViewerRef = null; }
   if (htmlViewerRef) { htmlViewerRef.dispose(); htmlViewerRef = null; }
   if (docxViewerRef) { docxViewerRef.dispose(); docxViewerRef = null; }
-  if (writeTimer !== null) { window.clearTimeout(writeTimer); writeTimer = null; await flushDraftsWrite(); }
+  if (writeTimer !== null) { window.clearTimeout(writeTimer); writeTimer = null; await flushDraftsWrite(); if (loadSuperseded(myEpoch)) return; }
 
   docState.path = path;
   docState.sha256 = '';
@@ -1630,6 +1662,7 @@ async function loadDocx(h: ViewerHandles, path: string): Promise<void> {
   void window.electronAPI.watchResultsStop();
 
   const bytesResult = await window.electronAPI.readPdfBytes(path);
+  if (loadSuperseded(myEpoch)) return;
   if (!bytesResult.ok) {
     h.title.textContent = basename(path);
     showLoadError(h, bytesResult);
@@ -1639,6 +1672,7 @@ async function loadDocx(h: ViewerHandles, path: string): Promise<void> {
 
   docState.sha256 = bytesResult.sha256;
   await loadDraftsForCurrentDoc();
+  if (loadSuperseded(myEpoch)) return;
 
   const viewer = new DocxViewer({
     container: h.mount,
@@ -1652,6 +1686,7 @@ async function loadDocx(h: ViewerHandles, path: string): Promise<void> {
   try {
     showViewer(h);
     await viewer.loadBytes(bytesResult.bytes);
+    if (loadSuperseded(myEpoch)) return;
     h.title.textContent = basename(path);
     h.prevBtn.disabled = true;
     h.nextBtn.disabled = true;
