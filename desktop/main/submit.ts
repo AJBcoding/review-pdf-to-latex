@@ -282,6 +282,13 @@ export async function slingViaGtMail(
         error: err instanceof Error ? err.message : String(err),
       });
     });
+    child.stdin.on('error', (err) => {
+      settle({
+        ok: false,
+        reason: 'stdin_error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
     child.on('close', (code) => {
       if (code === 0) {
         settle({
