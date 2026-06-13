@@ -1118,6 +1118,11 @@ async function handleSubmitBundle(): Promise<void> {
     flashAnchorMeta('Open a PDF before submitting.');
     return;
   }
+  // Pre-v2 C5 guard (§4.4 step 0): submit is PDF-only.
+  if (classifyPath(docState.path) !== 'pdf') {
+    flashAnchorMeta('Submit is only available for PDF documents.');
+    return;
+  }
   // §10.1 step 6 concurrent-round lock — if a round for this doc is
   // currently in_progress, the round banner already offers Resume/Abandon;
   // a fresh Submit would race the rig.
@@ -1192,6 +1197,17 @@ let lastBundleSnapshot: BundleSnapshot | null = null;
  *  debounce first so the JSON sidecar contains the freshest comments. */
 async function writeBundle(): Promise<boolean> {
   if (!docState.path || !docState.sha256 || !viewerRef) return false;
+  // Pre-v2 C5 guard (§4.4 step 0): bundle/submit pipeline is PDF-only.
+  // Reject if the open file is not a PDF (file-level anchor_kind guard)
+  // or if any live comment carries md_anchor (per-comment guard).
+  if (classifyPath(docState.path) !== 'pdf') {
+    flashAnchorMeta('Bundle export is only available for PDF documents.');
+    return false;
+  }
+  if (docState.comments.some((c) => c.md_anchor)) {
+    flashAnchorMeta('Cannot export bundle: one or more comments carry non-PDF anchors.');
+    return false;
+  }
   // Drain the pending drafts debounce so what's on disk matches what
   // goes into the bundle JSON. Otherwise a Cmd+S 100ms after editing
   // would write a bundle with the edits but a drafts file without —

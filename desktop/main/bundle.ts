@@ -155,6 +155,20 @@ async function atomicWrite(filePath: string, data: Uint8Array | string): Promise
  *       the IDs onto its in-memory drafts (saves a draft round-trip).
  */
 export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteResult> {
+  // Pre-v2 C5 guard (§4.4 step 0): bundle writer is PDF-only. Reject any
+  // comment carrying md_anchor — those belong to the md-fuzzy-snippet path
+  // and would produce garbage PDF annotations if passed through blind.
+  const mdComment = req.comments.find((c) => c.md_anchor);
+  if (mdComment) {
+    return {
+      ok: false,
+      reason: 'render_failed',
+      error: `comment '${mdComment.id}' carries md_anchor — writeBundle is PDF-only (C5 guard)`,
+      bundlePdfPath: null,
+      bundleJsonPath: null,
+    };
+  }
+
   const date = new Date();
   const sourcePath = resolve(req.sourcePath);
   const sourceDir = dirname(sourcePath);
