@@ -2710,6 +2710,10 @@ function wireResultsEvents(): void {
 }
 
 async function applyResultsEvent(event: ResultsEvent): Promise<void> {
+  // Belt-and-suspenders: skip .abandoned.json tombstones. Primary filter is
+  // isResultsName() in results-watcher.ts; this guard catches any edge case
+  // where the event escapes that layer (e.g., a future code path change).
+  if (event.filePath.endsWith('.abandoned.json')) return;
   const { results, submit } = event;
   // §10.1 step 4 — handoff to the Submit state machine. The first time we
   // see this round's results file with any content, that's the ack signal

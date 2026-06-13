@@ -65,8 +65,8 @@ interface ActiveWatch {
 
 let active: ActiveWatch | null = null;
 
-function isResultsName(name: string): boolean {
-  return RESULTS_RE.test(name);
+export function isResultsName(name: string): boolean {
+  return RESULTS_RE.test(name) && !name.endsWith('.abandoned.json');
 }
 function isSubmitName(name: string): boolean {
   return SUBMIT_RE.test(name);
