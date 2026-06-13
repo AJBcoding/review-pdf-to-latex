@@ -485,6 +485,7 @@ function bootClaudeSettings(): void {
   } catch {}
 
   skipCheck.addEventListener('change', () => {
+    claudeSkipPermissions = skipCheck.checked;
     scheduleAppStateSave();
   });
   costCheck.addEventListener('change', () => {
@@ -495,9 +496,6 @@ function bootClaudeSettings(): void {
       detail: { show: costCheck.checked },
     }));
   });
-
-  // Expose the skip-permissions value for flushAppStateSave
-  (window as any).__claudeSkipPermissions = () => skipCheck?.checked ?? true;
 }
 
 /** §9.2.6 right-drawer toolbar (rev-1md.3). Wires the three buttons + their
@@ -588,6 +586,19 @@ let leftDrawerCollapsed = false;
 /** Mirror of AppStateFile.layout_widths. Updated by the splitter on every
  *  drag commit; flushed via the existing scheduleAppStateSave debounce. */
 let layoutWidths: LayoutWidths = {};
+
+/** Mirror of AppStateFile.claude_dangerous_skip_permissions. Seeded from
+ *  readAppState in restoreFromAppState; updated by the settings checkbox.
+ *  Held in module state so flushAppStateSave reads the live value on both
+ *  the legacy pane path and the new agent-pane path (where bootClaudeSettings
+ *  is never called and the window global is undefined). Default true matches
+ *  the AppStateFile field default (read site line 467). */
+let claudeSkipPermissions = true;
+
+/** Last AppState snapshot written or read. Spread into flushAppStateSave writes
+ *  so fields with no live UI (e.g., future additions) are never clobbered to
+ *  defaults. */
+let lastReadAppState: AppStateFile | null = null;
 
 function setLeftDrawerCollapsed(next: boolean): void {
   leftDrawerCollapsed = next;
@@ -804,6 +815,9 @@ async function flushAppStateSave(): Promise<void> {
   if (!fileTree) return;
   const snap = fileTree.snapshot();
   const state: AppStateFile = {
+    // Spread previously-read state first so fields with no live UI are never
+    // clobbered to defaults (e.g., future AppStateFile additions).
+    ...lastReadAppState,
     schema_version: 1,
     root: snap.root,
     last_opened_doc: docState.path || null,
@@ -814,12 +828,14 @@ async function flushAppStateSave(): Promise<void> {
     origin_rig_per_doc: Object.fromEntries(originRigPerDoc.entries()),
     recent_rigs: [...recentRigsList],
     last_destination_per_doc: Object.fromEntries(lastDestinationPerDoc.entries()),
-    claude_dangerous_skip_permissions: (window as any).__claudeSkipPermissions?.() ?? true,
+    claude_dangerous_skip_permissions: claudeSkipPermissions,
   };
   const res = await window.electronAPI.writeAppState(state);
   if (!res.ok) {
     flashAnchorMeta(`App-state save failed (${res.reason}): ${res.error}`);
+    return;
   }
+  lastReadAppState = state;
 }
 
 async function restoreFromAppState(): Promise<void> {
@@ -831,6 +847,8 @@ async function restoreFromAppState(): Promise<void> {
   }
   if (!res.state) return; // fresh install / corrupted-and-reset — start clean
   const state = res.state;
+  claudeSkipPermissions = state.claude_dangerous_skip_permissions !== false;
+  lastReadAppState = state;
   // §10.5 — restore origin + recent-rigs from prior session. The picker
   // reads from these maps directly via the SubmitContext.
   if (state.origin_rig_per_doc) {
