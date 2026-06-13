@@ -587,6 +587,16 @@ export type SubmitSlingResult =
       ok: false;
       reason: 'timeout';
       timeoutMs: number;
+    }
+  | {
+      ok: false;
+      reason: 'stdin_error';
+      error: string;
+    }
+  | {
+      ok: false;
+      reason: 'stdin_write_failed';
+      error: string;
     };
 
 export interface SubmitAbandonRequest {
