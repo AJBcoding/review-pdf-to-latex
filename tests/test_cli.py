@@ -1131,6 +1131,30 @@ def test_cli_apply_runs_with_unset_gt_rig(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
 
 
+def test_cli_commit_phase_not_guarded_under_reviewer_rig(tmp_path: Path) -> None:
+    """commit-phase is DELIBERATELY EXEMPT from the Reviewer-rig guard (OD-4).
+
+    The guarded set is exactly the source-mutating atomics apply/build/revert
+    (spec §10.5.3 item 2); commit-phase only commits what apply already wrote.
+    This pins the exemption so the guarded set can't silently drift to include
+    it. We assert the guard did NOT fire — commit-phase runs past it and fails
+    (if at all) on its own preconditions, never with EXIT_REVIEWER_RIG_REFUSED
+    and never with the guard's refusal message.
+    """
+    project, _, _ = _bootstrap_minimal_project(tmp_path)
+    r = _run_cli(
+        [
+            "--project-dir", str(project),
+            "commit-phase",
+            "--phase", "1",
+        ],
+        env=_env_with_gt_rig("reviewer/anthony"),
+    )
+    assert r.returncode != cli.EXIT_REVIEWER_RIG_REFUSED, (r.returncode, r.stderr)
+    assert "no source-mutation" not in r.stderr
+    assert "refused: invoked under Reviewer rig" not in r.stderr
+
+
 def test_exit_code_constants_match_spec():
     """Module-level exit-code constants match spec §8 verbatim.
 
