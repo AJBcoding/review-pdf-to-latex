@@ -32,6 +32,19 @@ def _reviewer_rig_guard(subcommand: str) -> int | None:
     (23) when ``$GT_RIG`` starts with ``reviewer/``; otherwise ``None``
     and the caller proceeds normally. An unset or empty ``$GT_RIG`` is
     not a Reviewer context.
+
+    Guarded set: ``apply``, ``build``, ``revert`` — the source-mutating
+    atomics named verbatim by spec §10.5.3 item 2. ``commit-phase`` is
+    DELIBERATELY EXEMPT (decision OD-4): it is not a source-mutating
+    atomic — it only ``git commit``s what ``apply`` already wrote and
+    advances ``state.json.phase``. With the three mutating atomics
+    refused, a Reviewer rig has no automated source changes left to
+    commit, so guarding ``commit-phase`` would close no hole the spec
+    intends closed (manual edits inside a Reviewer pty are deliberately
+    NOT blocked — §10.5.3 enforces the *automated pipeline boundary*).
+    The guarded set is pinned by tests in test_cli.py so it can't drift;
+    extend BOTH the call sites and that pin (and amend §10.5.3) if this
+    decision is ever revisited.
     """
     gt_rig = os.environ.get("GT_RIG", "")
     if gt_rig.startswith("reviewer/"):
