@@ -18,7 +18,7 @@
 // The tree never persists anything itself — that's the host's job. Same
 // separation as PdfViewer / loadPdf.
 
-import type { DirEntry } from '@shared/types';
+import type { DirEntry } from '@shared/files';
 
 export interface FileTreeOptions {
   /** Element the tree paints into. The tree replaces its children on every

@@ -10,7 +10,7 @@
 // under a frame. If this ever shows in a profile, swap to a precomputed
 // trigram index or a worker.
 
-import type { IndexedPdf } from '@shared/types';
+import type { IndexedPdf } from '@shared/files';
 
 export interface PaletteOptions {
   root: HTMLElement;          // #palette

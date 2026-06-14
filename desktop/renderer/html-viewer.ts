@@ -1,5 +1,5 @@
 import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
+import type { AnchorKind } from '@shared/comments';
 
 export interface HtmlAnchor {
   selector: string;

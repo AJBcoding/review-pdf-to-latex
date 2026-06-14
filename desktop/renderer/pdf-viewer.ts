@@ -25,7 +25,7 @@
 // the sentinel, pointerup/blur/keyup global resets, abort-signal teardown.
 
 import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
+import type { AnchorKind } from '@shared/comments';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import {

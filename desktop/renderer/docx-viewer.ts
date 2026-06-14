@@ -1,6 +1,6 @@
 import mammoth from 'mammoth';
 import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
+import type { AnchorKind } from '@shared/comments';
 import type { HtmlAnchor } from './html-viewer';
 
 export interface DocxViewerOptions {

@@ -27,7 +27,7 @@ import type {
   SubmitSlingRequest,
   SubmitSlingResult,
   CommentPayload,
-} from '@shared/types';
+} from '@shared/comments';
 
 const GT_MAIL_TIMEOUT_MS = 30_000;
 const DEFAULT_SUBJECT_PREFIX = 'review-pdf submit';

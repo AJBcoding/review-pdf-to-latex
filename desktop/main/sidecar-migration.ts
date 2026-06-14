@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
-import type { DraftsFile, DocFingerprint } from '@shared/types';
+import type { DraftsFile, DocFingerprint } from '@shared/comments';
 
 /** Run at app startup before any document is opened. Walks known project
  *  roots (from AppState) and migrates sha256-keyed sidecars to path-based

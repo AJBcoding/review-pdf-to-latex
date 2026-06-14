@@ -8,17 +8,17 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { seedNextVersionDraft, type SeedDraftIO } from './seed-next-draft';
+import type { ReadPdfBytesResult } from '@shared/engine';
 import type {
   AnchorRegion,
   CommentPayload,
   DraftsFile,
   DraftsReadResult,
-  ReadPdfBytesResult,
   ResultEntry,
   ResultsEvent,
   ResultsFile,
   SubmitFile,
-} from '@shared/types';
+} from '@shared/comments';
 
 const V11_PATH = '/proj/paper.v1.1.md';
 const V11_SHA = 'sha-of-v1.1';

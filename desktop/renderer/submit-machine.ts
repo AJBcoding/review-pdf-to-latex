@@ -22,7 +22,7 @@ import type {
   SubmitPromoteResult,
   SubmitSlingRequest,
   SubmitSlingResult,
-} from '@shared/types';
+} from '@shared/comments';
 
 export type SubmitState =
   | 'idle'

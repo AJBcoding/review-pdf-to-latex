@@ -29,7 +29,7 @@ import type {
   BundleWriteRequest,
   BundleWriteResult,
   CommentPayload,
-} from '@shared/types';
+} from '@shared/comments';
 import {
   ENGAGEMENT_PALETTE,
   buildBundleFilename,

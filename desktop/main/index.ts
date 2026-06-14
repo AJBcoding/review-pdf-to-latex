@@ -16,29 +16,33 @@ import {
   abandonRound,
 } from './submit.js';
 import type {
-  AppStateFile,
-  AppStateReadResult,
-  AppStateWriteResult,
+  OpenPdfDialogResult,
+  ReadPdfBytesResult,
+} from '@shared/engine';
+import type {
   BundleWriteRequest,
   BundleWriteResult,
-  DirEntry,
   DraftsFile,
   DraftsReadResult,
   DraftsWriteResult,
+  ResultsWatchStartResult,
+  SubmitAbandonRequest,
+  SubmitPromoteRequest,
+  SubmitSlingRequest,
+} from '@shared/comments';
+import type {
+  AppStateFile,
+  AppStateReadResult,
+  AppStateWriteResult,
+  DirEntry,
   FileKind,
   IndexPdfsResult,
   IndexedPdf,
   ListDirResult,
   OpenFolderDialogResult,
-  OpenPdfDialogResult,
   PathExistsResult,
-  ReadPdfBytesResult,
-  ResultsWatchStartResult,
-  SubmitAbandonRequest,
-  SubmitPromoteRequest,
-  SubmitSlingRequest,
   WriteFileTextResult,
-} from '@shared/types';
+} from '@shared/files';
 
 /** Drafts file location: path-based keying. The sidecar lives next to the
  *  source doc in `.review-state/drafts/<basename>.json`. Path-based keying

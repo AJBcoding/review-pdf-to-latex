@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { runSidecarMigration, findSidecarByFingerprint } from './sidecar-migration.js';
-import type { DraftsFile, DocFingerprint } from '@shared/types.js';
+import type { DraftsFile, DocFingerprint } from '@shared/comments.js';
 
 let testDir: string;
 let userDataDir: string;

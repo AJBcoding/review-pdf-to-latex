@@ -39,7 +39,7 @@ import type {
   ResultsFile,
   ResultsWatchStartResult,
   SubmitFile,
-} from '@shared/types';
+} from '@shared/comments';
 
 const RESULTS_RE = /^results-.+\.json$/;
 const SUBMIT_RE = /^submit-.+\.json$/;

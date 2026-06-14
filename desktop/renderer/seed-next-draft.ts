@@ -5,14 +5,14 @@
 // read-before-write idempotency guard (N2) can be tested rig-free: the live
 // renderer only injects `window.electronAPI` + crypto + the clock here.
 
+import type { ReadPdfBytesResult } from '@shared/engine';
 import type {
   CommentPayload,
   DraftsFile,
   DraftsReadResult,
   DraftsWriteResult,
-  ReadPdfBytesResult,
   ResultsEvent,
-} from '@shared/types';
+} from '@shared/comments';
 
 /** I/O + entropy the seed needs, injected so tests can supply in-memory fakes.
  *  Method shapes match the corresponding `window.electronAPI` methods. */

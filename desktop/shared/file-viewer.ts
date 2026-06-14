@@ -1,4 +1,4 @@
-import type { AnchorKind } from './types';
+import type { AnchorKind } from './comments';
 
 export interface FileViewerPageInfo {
   page: number;

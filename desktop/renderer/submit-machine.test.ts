@@ -6,7 +6,7 @@ import type {
   SubmitPromoteResult,
   SubmitSlingRequest,
   SubmitSlingResult,
-} from '@shared/types.js';
+} from '@shared/comments.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 

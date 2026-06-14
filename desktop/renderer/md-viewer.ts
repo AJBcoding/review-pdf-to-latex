@@ -11,7 +11,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { syntaxTree, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
+import type { AnchorKind } from '@shared/comments';
 import type { MdAnchor } from '@shared/md/anchors';
 
 export interface MdSelection {
