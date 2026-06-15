@@ -38,6 +38,15 @@ import {
   resolveSkipPermissions,
   ptySkipPermissionArgs,
 } from './session-policy.js';
+import {
+  PRIMING_SLASH_COMMAND,
+  PRIMING_CONV_FALLBACK_MS,
+  PRIMING_WORKER_FALLBACK_MS,
+  detectClaudeReady,
+  buildFreshStartPriming,
+  buildCreateContextPriming,
+  buildSlingPriming,
+} from '@shared/priming';
 import { spawnSync as spawnSyncBlocking } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -52,7 +61,6 @@ import {
   type PtyStartParams,
   type PtyStartResult,
   type ReviewerProbe,
-  type ToolbarContextBundle,
   type WorkerProgressMarker,
   type WorkerStartParams,
   type WorkerStartResult,
@@ -176,6 +184,56 @@ function writeBracketedPaste(p: IPty, text: string): void {
   p.write(`${PASTE_START}${normalized}${PASTE_END}\r`);
 }
 
+/**
+ * Fire `prime()` once claude's interactive prompt is observed in the pty
+ * output (priming.detectClaudeReady), falling back to a wall-clock timeout only
+ * if the ready marker never arrives. This replaces the prior fire-on-magic-delay
+ * approach (rev-gkl) that raced claude's startup screen-clear and dropped the
+ * slash-command from visible scrollback (C11). `alive()` lets the caller abort
+ * if the pty was replaced or killed before priming fires; the readiness listener
+ * disposes itself after firing so it never leaks past startup.
+ */
+function primeWhenReady(
+  p: IPty,
+  alive: () => boolean,
+  fallbackMs: number,
+  prime: () => void,
+): void {
+  let fired = false;
+  let buffer = '';
+  let disposable: { dispose(): void } | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const cleanup = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    try { disposable?.dispose(); } catch { /* already disposed */ }
+    disposable = null;
+  };
+
+  const fireOnce = (): void => {
+    if (fired) return;
+    fired = true;
+    cleanup();
+    if (!alive()) return;
+    prime();
+  };
+
+  disposable = p.onData((data) => {
+    if (fired) return;
+    buffer += data;
+    // Bound the buffer — ready markers sit near the tail of the startup render,
+    // so the last few KB is always enough and a slow-talking session can't grow
+    // it without bound.
+    if (buffer.length > 65536) buffer = buffer.slice(-65536);
+    if (detectClaudeReady(buffer)) fireOnce();
+  });
+
+  timer = setTimeout(fireOnce, fallbackMs);
+}
+
 function buildPtyEnv(reviewer: ReviewerProbe): Record<string, string> {
   const env: Record<string, string> = {
     ...Object.fromEntries(
@@ -255,37 +313,39 @@ function spawnConversational(
     webContents.send('pty:onExit', ev);
   });
 
-  // Skill priming (§9.2.3). The slash-command is the activation path.
+  // Skill priming (§9.2.3). The slash-command is the activation path;
   // primingExtra carries the Fresh-Start handoff line when present.
   //
-  // Delay bumped 500 → 1500ms (rev-gkl): claude-code 2.1.146 prints a banner +
-  // clears the screen before presenting its prompt; firing at 500ms races that
-  // clear and the slash-command line disappears from visible scrollback (the
-  // skill itself still activates, just no audit trail). 1500ms lands after
-  // claude's startup-render is done on a modern Mac. If verification still
-  // shows the line missing, the next fix is a visible-marker write from the
-  // renderer (display-only, not via the pty).
-  setTimeout(() => {
-    if (convHandle !== handle) return;
-    console.log('[claude-pty] firing slash-command priming /review-pdf-to-latex (rev-gkl diagnostic)');
-    try { p.write('/review-pdf-to-latex\r'); } catch { /* pty closed */ }
-    if (primingExtra && primingExtra.trim().length > 0) {
-      // Give claude a beat to ack the slash-command before the next line —
-      // empirically the slash echo + skill banner take ~150-300ms.
-      setTimeout(() => {
-        if (convHandle !== handle) return;
-        try {
-          // Single-line: bare \r. Multi-line: bracketed-paste so claude
-          // sees it as one user turn (same fix as worker pty).
-          if (primingExtra.includes('\n') || primingExtra.includes('\r')) {
-            writeBracketedPaste(p, primingExtra);
-          } else {
-            p.write(`${primingExtra}\r`);
-          }
-        } catch { /* pty closed */ }
-      }, 350);
-    }
-  }, 1500);
+  // Fire when claude's interactive prompt is observed in the output rather than
+  // on a magic wall-clock delay (rev-gkl bumped it 500 → 1500ms chasing the
+  // startup screen-clear race; C11 flagged the fragility). The observed-output
+  // trigger fires right after the render settles; PRIMING_CONV_FALLBACK_MS is a
+  // safety net only, so behavior is unchanged when detection misses.
+  primeWhenReady(
+    p,
+    () => convHandle === handle,
+    PRIMING_CONV_FALLBACK_MS,
+    () => {
+      console.log('[claude-pty] firing slash-command priming /review-pdf-to-latex (observed-ready trigger)');
+      try { p.write(`${PRIMING_SLASH_COMMAND}\r`); } catch { /* pty closed */ }
+      if (primingExtra && primingExtra.trim().length > 0) {
+        // Give claude a beat to ack the slash-command before the next line —
+        // empirically the slash echo + skill banner take ~150-300ms.
+        setTimeout(() => {
+          if (convHandle !== handle) return;
+          try {
+            // Single-line: bare \r. Multi-line: bracketed-paste so claude
+            // sees it as one user turn (same fix as worker pty).
+            if (primingExtra.includes('\n') || primingExtra.includes('\r')) {
+              writeBracketedPaste(p, primingExtra);
+            } else {
+              p.write(`${primingExtra}\r`);
+            }
+          } catch { /* pty closed */ }
+        }, 350);
+      }
+    },
+  );
 
   return { ok: true, already_running: false, cwd, reviewer };
 }
@@ -302,18 +362,6 @@ function killConversational(): void {
 }
 
 // ─── §9.2.6 Fresh Start ──────────────────────────────────────────────────
-
-/** Build the handoff priming line. Bracketed so it reads as a system-style
- *  message in scrollback (same shape as §9.2.4's `[Now viewing: ...]`). */
-function buildFreshStartPriming(handoff: string): string {
-  const trimmed = handoff.trim();
-  if (!trimmed) return '[Fresh start — clean session.]';
-  // Multi-line handoffs: collapse to a single bracketed line. Claude reads
-  // stdin as line-buffered, and a multi-line paste would interleave with
-  // the slash-command's own ack frames.
-  const single = trimmed.replace(/\s+/g, ' ');
-  return `[Fresh start — handoff from prior session: ${single}]`;
-}
 
 function freshStart(
   webContents: Electron.WebContents,
@@ -348,73 +396,6 @@ function freshStart(
 }
 
 // ─── §9.2.6 worker ptys ──────────────────────────────────────────────────
-
-/** Serialize a context bundle into the worker's first-line priming. The shape
- *  is deliberately human-readable rather than JSON — the user sees this
- *  scrollback and should be able to grok what was sent. */
-function bundleToPrimingText(bundle: ToolbarContextBundle): string {
-  const lines: string[] = [];
-  lines.push('# Context bundle');
-  lines.push(`doc: ${bundle.docPath}`);
-  if (bundle.currentPage !== null) {
-    lines.push(`page: ${bundle.currentPage}${bundle.pageCount !== null ? ` of ${bundle.pageCount}` : ''}`);
-  }
-  if (bundle.sectionHeading) {
-    lines.push(`section: ${bundle.sectionHeading}`);
-  }
-  if (bundle.selection) {
-    const s = bundle.selection;
-    const text = s.highlightedText.replace(/\s+/g, ' ').trim();
-    const snippet = text.length > 280 ? `${text.slice(0, 277)}…` : text;
-    lines.push(`selection (p.${s.page}): "${snippet}"`);
-  } else {
-    lines.push('selection: (none — operating on the whole page)');
-  }
-  if (bundle.nearbyComments.length > 0) {
-    lines.push('nearby comments:');
-    for (const c of bundle.nearbyComments) {
-      const body = (c.body || c.highlightedText).replace(/\s+/g, ' ').trim();
-      const snippet = body.length > 160 ? `${body.slice(0, 157)}…` : body;
-      lines.push(`  - [${c.engagementLevel}/${c.status}] p.${c.page}: ${snippet}`);
-    }
-  }
-  lines.push('');
-  if (bundle.userPrompt.trim().length > 0) {
-    lines.push('# User intent');
-    lines.push(bundle.userPrompt.trim());
-  }
-  return lines.join('\n');
-}
-
-function buildCreateContextPriming(params: WorkerStartParams): string {
-  const head: string[] = [];
-  head.push('[Worker spawn — Create Context. Use the /review-pdf-to-latex skill.]');
-  const mode = params.mode ?? { kind: 'single-shot' };
-  if (mode.kind === 'ralph-loop') {
-    head.push(`[Ralph loop mode — iterate this prompt ${mode.iterations} times, ` +
-      `reporting progress on each iteration via the §9.2.7 [β] marker grammar ` +
-      `(e.g., "[β] kind=progress phase=ralph done=K total=${mode.iterations}").]`);
-  } else {
-    head.push('[Single-shot mode — answer the user interactively. ' +
-      'You MAY emit [β] kind=status text="..." markers to surface progress in the inline strip.]');
-  }
-  head.push('');
-  head.push(bundleToPrimingText(params.bundle));
-  return head.join('\n');
-}
-
-function buildSlingPriming(params: WorkerStartParams): string {
-  const destination = params.destination ?? 'reviewer/';
-  const subjectPrefix = params.subjectPrefix ?? 'review-pdf sling';
-  const head: string[] = [];
-  head.push(`[Worker spawn — Sling. Forward this context bundle to ${destination} ` +
-    `via \`gt mail send\`. Use --type task --priority 2 --subject "${subjectPrefix}" ` +
-    `and pipe the bundle JSON to --stdin. Report progress via [β] markers ` +
-    `(kind=status text="sending..." → kind=done text="sent" on success).]`);
-  head.push('');
-  head.push(bundleToPrimingText(params.bundle));
-  return head.join('\n');
-}
 
 /** Extract `[β] key=value key="quoted value" ...` lines out of the worker's
  *  stdout. Returns the cleaned stream (with marker lines removed) plus any
@@ -571,8 +552,9 @@ function spawnWorker(
     });
   });
 
-  // Priming. Same delay rationale as the conv pty — give claude time to render
-  // its initial prompt. Slash-command first, then the bundle as a follow-up
+  // Priming. Same observed-output trigger as the conv pty — fire when claude's
+  // prompt is rendered rather than on a magic delay, with PRIMING_WORKER_FALLBACK_MS
+  // as a safety net only. Slash-command first, then the bundle as a follow-up
   // message. The bundle goes in as a single (multi-line) message so claude
   // sees it as one user turn.
   const primingText =
@@ -580,23 +562,27 @@ function spawnWorker(
       ? buildSlingPriming(params)
       : buildCreateContextPriming(params);
 
-  setTimeout(() => {
-    if (!workerHandles.has(workerId)) return;
-    try { p.write('/review-pdf-to-latex\r'); } catch { /* pty closed */ }
-    setTimeout(() => {
-      if (!workerHandles.has(workerId)) return;
-      try {
-        // Multi-line priming uses bracketed-paste mode so claude's TUI
-        // treats the entire prompt as a single user turn. The previous
-        // approach (write each line followed by \r) made claude submit
-        // each line as its own message, which produced the "Enter hangs
-        // after first round" bug AJB hit during M7 verification.
-        // ESC [ 200 ~ ... ESC [ 201 ~ is the standard xterm bracketed-paste
-        // start/end; the final \r commits the now-multi-line buffer.
-        writeBracketedPaste(p, primingText);
-      } catch { /* pty closed */ }
-    }, 400);
-  }, 500);
+  primeWhenReady(
+    p,
+    () => workerHandles.has(workerId),
+    PRIMING_WORKER_FALLBACK_MS,
+    () => {
+      try { p.write(`${PRIMING_SLASH_COMMAND}\r`); } catch { /* pty closed */ }
+      setTimeout(() => {
+        if (!workerHandles.has(workerId)) return;
+        try {
+          // Multi-line priming uses bracketed-paste mode so claude's TUI
+          // treats the entire prompt as a single user turn. The previous
+          // approach (write each line followed by \r) made claude submit
+          // each line as its own message, which produced the "Enter hangs
+          // after first round" bug AJB hit during M7 verification.
+          // ESC [ 200 ~ ... ESC [ 201 ~ is the standard xterm bracketed-paste
+          // start/end; the final \r commits the now-multi-line buffer.
+          writeBracketedPaste(p, primingText);
+        } catch { /* pty closed */ }
+      }, 400);
+    },
+  );
 
   return { ok: true, workerId, cwd, reviewer };
 }
