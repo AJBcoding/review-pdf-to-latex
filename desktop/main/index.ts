@@ -21,17 +21,9 @@ import { typedHandle } from './typed-ipc.js';
 import { assertObjectArg, assertPathArg, assertStringArg } from './ipc-validators.js';
 import type { DocFormat } from '@shared/comments';
 import type {
-  AppStateFile,
-  AppStateReadResult,
-  AppStateWriteResult,
   BundleWriteResult,
-  DirEntry,
   DraftsReadResult,
   DraftsWriteResult,
-  ResultsWatchStartResult,
-  SubmitAbandonRequest,
-  SubmitPromoteRequest,
-  SubmitSlingRequest,
 } from '@shared/comments';
 import type {
   AppStateFile,
@@ -43,6 +35,7 @@ import type {
   IndexedPdf,
   ListDirResult,
   OpenFolderDialogResult,
+  OpenPdfDialogResult,
   PathExistsResult,
   ReadPdfBytesResult,
   ResultsWatchStartResult,
