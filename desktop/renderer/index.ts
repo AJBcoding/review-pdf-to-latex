@@ -145,17 +145,27 @@ const docState: DocState = {
   rounds: new Map(), originRig: null,
 };
 
-// rev-ra6 — concurrent doc-open guard. The four load* functions all mutate the
-// single shared `docState` and `await` several times (flush, readPdfBytes,
-// loadDrafts, viewer.loadBytes). If the user opens doc B while doc A is still
-// loading, A is suspended at an await; when it resumes it would clobber
-// docState and mis-key A's sidecars (drafts) against B. Each load claims a
-// monotonic epoch on entry; after every await it re-checks the epoch and bails
-// the instant a newer load has superseded it. This replaces the older, partial
-// path/sha256 comparison guards with one uniform, race-proof check.
-let loadEpoch = 0;
-function loadSuperseded(epoch: number): boolean {
-  return epoch !== loadEpoch;
+// X7 single-flight open queue. Subsumes rev-ra6's epoch guard: `openDocument`
+// is the one entry point for loading a doc (tree / palette / Open… / external /
+// wikilink all funnel through it). Every request claims a monotonic token and
+// is chained after the previous open settles, so two opens never interleave
+// their `docState` mutations. A request newer than mine bumps `openToken`;
+// `openSuperseded(myToken)` then short-circuits a queued-but-stale open before
+// it starts and bails an in-flight one after each await — exactly the race the
+// epoch guard fixed, now without four hand-copied checklists.
+let openToken = 0;
+let openChain: Promise<void> = Promise.resolve();
+
+function openSuperseded(token: number): boolean {
+  return token !== openToken;
+}
+
+/** THE document open entry point (X7). Returns a promise that settles when this
+ *  request finishes or is superseded. */
+function openDocument(path: string): Promise<void> {
+  const myToken = ++openToken;
+  openChain = openChain.then(() => runOpen(path, myToken)).catch(() => { /* runOpen surfaces its own errors */ });
+  return openChain;
 }
 
 // ─── §10.1 / §10.5 — origin + recent-rigs persistence ─────────────────────
@@ -190,12 +200,10 @@ function rememberDestination(path: string, destination: string): void {
   scheduleAppStateSave();
 }
 let activeTool: Tool = 'comment';
-let viewerRef: PdfViewer | null = null;
-let mdViewerRef: MarkdownViewer | null = null;
-let htmlViewerRef: HtmlViewer | null = null;
-let docxViewerRef: DocxViewer | null = null;
-let lastMdSelection: MdSelection | null = null;
-let lastHtmlSelection: HtmlSelection | null = null;
+/** The currently-mounted viewer, whatever its format (X7). One ref replaces the
+ *  v1 quartet of pdf/md/html/docx `*ViewerRef` lets; the open queue disposes it
+ *  and constructs the next via the format registry. */
+let activeViewer: FileViewer | null = null;
 
 // ─── M-md-3: .md source save debounce (500ms) ────────────────────────────
 let mdSaveTimer: number | null = null;
@@ -215,8 +223,8 @@ function scheduleMdSave(): void {
 }
 
 async function flushMdSave(): Promise<void> {
-  if (!docState.path || !mdViewerRef) return;
-  const content = mdViewerRef.getContent();
+  if (!docState.path || !(activeViewer instanceof MarkdownViewer)) return;
+  const content = activeViewer.getContent();
   if (!content && content !== '') return;
   window.electronAPI.suppressFileWatch();
   const res = await window.electronAPI.writeFileText(docState.path, content);
@@ -554,15 +562,17 @@ function bootToolbar(): void {
     ctx: {
       docPath: () => docState.path,
       docSourceDir: () => docState.path ? dirnameOf(docState.path) : '',
-      currentPage: () => viewerRef?.currentPage ?? null,
-      pageCount: () => viewerRef?.totalPages ?? null,
+      currentPage: () => activeViewer?.currentPage ?? null,
+      pageCount: () => activeViewer?.totalPages ?? null,
       selection: () => {
+        // Create-Context is PDF-centric; only a pdf-quad selection carries the
+        // page + region the toolbar context needs.
         const sel = docState.lastSelection;
-        if (!sel) return null;
+        if (!sel || sel.kind !== 'pdf-quad') return null;
         return {
           page: sel.page,
           region: sel.region,
-          highlightedText: sel.highlighted_text,
+          highlightedText: sel.text,
         };
       },
       comments: () => docState.comments,
@@ -640,29 +650,29 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
 
   fileTree = new FileTree({
     body, title, empty, toggleHiddenBtn: hiddenBtn,
-    onOpenFile: (path) => { void openFileFromTreeOrPalette(path); },
+    onOpenFile: (path) => { void openDocument(path); },
     onStateChange: () => { scheduleAppStateSave(); },
   });
 
   palette = new QuickOpenPalette({
     root: paletteRoot, input: paletteInput, list: paletteList, empty: paletteEmpty,
-    onPick: (path) => { void openFileFromTreeOrPalette(path); },
+    onPick: (path) => { void openDocument(path); },
   });
 
   openBtn.addEventListener('click', () => { void openFolderPicker(); });
   emptyOpenLink.addEventListener('click', (e) => { e.preventDefault(); void openFolderPicker(); });
 
   // §3.4 — main pushes external-open requests through this channel. We wire
-  // it here (after the tree is alive) so loadPdf is always callable when
+  // it here (after the tree is alive) so openDocument is always callable when
   // a buffered cold-launch request flushes. §10.5.1 — record the `from`
-  // rig-id (if any) before loadPdf so the picker logic sees an origin on
+  // rig-id (if any) before openDocument so the picker logic sees an origin on
   // first Submit.
   window.electronAPI.onOpenExternalFile((event) => {
     if (event.from) {
       rememberOriginRig(event.path, event.from);
       scheduleAppStateSave();
     }
-    void openFileFromTreeOrPalette(event.path);
+    void openDocument(event.path);
   });
 
   // §3.5 — Cmd+P opens the palette. Spec §15's focus discipline doesn't
@@ -800,19 +810,6 @@ async function refreshPdfIndex(root: string): Promise<void> {
 
 /** One canonical "open this file" entry point shared by the tree, the palette,
  *  and external handoff. Dispatches by file kind to the right viewer. */
-async function openFileFromTreeOrPalette(path: string): Promise<void> {
-  if (!viewerHandlesRef) return;
-  const kind = classifyPath(path);
-  if (kind === 'md') {
-    await loadMarkdown(viewerHandlesRef, path);
-  } else if (kind === 'html') {
-    await loadHtml(viewerHandlesRef, path);
-  } else if (kind === 'docx') {
-    await loadDocx(viewerHandlesRef, path);
-  } else {
-    await loadPdf(viewerHandlesRef, path);
-  }
-}
 
 function scheduleAppStateSave(): void {
   if (appStateSaveTimer !== null) window.clearTimeout(appStateSaveTimer);
@@ -914,7 +911,7 @@ async function restoreFromAppState(): Promise<void> {
   if (state.last_opened_doc && viewerHandlesRef) {
     const exists = await window.electronAPI.pathExists(state.last_opened_doc);
     if (exists.ok && exists.exists && exists.isFile) {
-      await openFileFromTreeOrPalette(state.last_opened_doc);
+      await openDocument(state.last_opened_doc);
       fileTree.setActiveFile(state.last_opened_doc);
     }
   }
@@ -1036,39 +1033,31 @@ function bootProjectOpenFlow(): void {
     !fitPageBtn || !fitWidthBtn || !pageLabel
   ) return;
 
-  // The viewer takes over `mount`'s children, so we keep the empty state
-  // as a sibling element and toggle visibility between them.
-  const viewer = new PdfViewer({
-    container: mount,
-    onSelection: handleSelection,
-    onPageInfo: ({ page, totalPages }) => {
-      pageLabel.textContent = `${page} / ${totalPages}`;
-      prevBtn.disabled = page <= 1;
-      nextBtn.disabled = page >= totalPages;
-    },
-  });
-  viewerRef = viewer;
-
+  // X7: the viewer is no longer created here. `openDocument` builds the right
+  // one per open via the format registry and assigns `activeViewer`. This boot
+  // only owns the DOM chrome + button wiring (delegating to whatever viewer is
+  // currently active) and the empty-state toggle.
   const handles: ViewerHandles = {
-    viewer, mount, empty, title, banner,
-    prevBtn, nextBtn, fitPageBtn, fitWidthBtn, darkBtn,
+    mount, empty, title, banner,
+    prevBtn, nextBtn, fitPageBtn, fitWidthBtn, darkBtn, pageLabel,
   };
-  // Exposed to bootLeftDrawerAndPalette so file-tree / palette / external
-  // handoff all open through the same loadPdf path the Open… button uses.
+  // Exposed to bootLeftDrawerAndPalette + the registry so the tree / palette /
+  // external open / Open… button all open through the same openDocument path.
   viewerHandlesRef = handles;
 
   bootToolPaletteAndInput();
 
-  prevBtn.addEventListener('click', () => { void viewer.prevPage(); });
-  nextBtn.addEventListener('click', () => { void viewer.nextPage(); });
-  fitPageBtn.addEventListener('click', () => { void viewer.fitPage(); });
-  fitWidthBtn.addEventListener('click', () => { void viewer.fitWidth(); });
+  prevBtn.addEventListener('click', () => { void activeViewer?.prevPage(); });
+  nextBtn.addEventListener('click', () => { void activeViewer?.nextPage(); });
+  fitPageBtn.addEventListener('click', () => { void activeViewer?.fitPage(); });
+  fitWidthBtn.addEventListener('click', () => { void activeViewer?.fitWidth(); });
   darkBtn.addEventListener('click', () => {
-    viewer.setDarkMode(!viewer.isDarkMode());
-    darkBtn.setAttribute('aria-pressed', String(viewer.isDarkMode()));
+    if (!activeViewer) return;
+    activeViewer.setDarkMode(!activeViewer.isDarkMode());
+    darkBtn.setAttribute('aria-pressed', String(activeViewer.isDarkMode()));
   });
 
-  openBtn.addEventListener('click', () => { void handleOpenClick(handles, openBtn); });
+  openBtn.addEventListener('click', () => { void handleOpenClick(openBtn); });
 
   bindCommentStreamKeyboard();
 
@@ -1077,7 +1066,7 @@ function bootProjectOpenFlow(): void {
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
       e.preventDefault();
-      void handleOpenClick(handles, openBtn);
+      void handleOpenClick(openBtn);
     }
   });
 
@@ -1129,8 +1118,9 @@ async function handleSubmitBundle(): Promise<void> {
     flashAnchorMeta('Open a PDF before submitting.');
     return;
   }
-  // Pre-v2 C5 guard (§4.4 step 0): submit is PDF-only.
-  if (classifyPath(docState.path) !== 'pdf') {
+  // Pre-v2 C5 guard (§4.4 step 0): submit is PDF-only — now keyed on the
+  // viewer's `submit` capability rather than re-classifying the path (X7).
+  if (!activeViewer?.capabilities.submit) {
     flashAnchorMeta('Submit is only available for PDF documents.');
     return;
   }
@@ -1214,11 +1204,11 @@ let lastBundleSnapshot: BundleSnapshot | null = null;
  *  write so callers can chain follow-up flows. Flushes any pending drafts
  *  debounce first so the JSON sidecar contains the freshest comments. */
 async function writeBundle(): Promise<boolean> {
-  if (!docState.path || !docState.sha256 || !viewerRef) return false;
+  if (!docState.path || !docState.sha256 || !activeViewer) return false;
   // C5 guard (§4.4 step 0): bundle/submit pipeline is PDF-only. Reject if the
-  // open file is not a PDF, or if any live comment carries a non-`pdf-quad`
-  // anchor (the per-comment guard, now keyed on the truthful union kind).
-  if (classifyPath(docState.path) !== 'pdf') {
+  // active viewer can't submit, or if any live comment carries a non-`pdf-quad`
+  // anchor (the per-comment guard, keyed on the truthful union kind).
+  if (!activeViewer.capabilities.submit) {
     flashAnchorMeta('Bundle export is only available for PDF documents.');
     return false;
   }
@@ -1235,7 +1225,7 @@ async function writeBundle(): Promise<boolean> {
     writeTimer = null;
     await flushDraftsWrite();
   }
-  const pageCount = viewerRef.totalPages;
+  const pageCount = activeViewer.totalPages;
   if (pageCount === 0) {
     flashAnchorMeta('Wait for the PDF to finish loading before exporting.');
     return false;
@@ -1281,248 +1271,46 @@ async function writeBundle(): Promise<boolean> {
  *  refactor to an injected build-time constant when packaging lands. */
 const APP_VERSION = '0.0.1';
 
-async function handleOpenClick(h: ViewerHandles, openBtn: HTMLButtonElement): Promise<void> {
+async function handleOpenClick(openBtn: HTMLButtonElement): Promise<void> {
   openBtn.disabled = true;
   try {
     const picked = await window.electronAPI.openPdfDialog();
     if (!picked.path) return; // user canceled — leave current state untouched
-    await loadPdf(h, picked.path);
+    await openDocument(picked.path);
   } finally {
     openBtn.disabled = false;
   }
 }
 
-async function loadPdf(h: ViewerHandles, path: string): Promise<void> {
-  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
-  const myEpoch = ++loadEpoch;
-  // Flush pending .md save before switching away
-  if (mdSaveTimer !== null) {
-    window.clearTimeout(mdSaveTimer);
-    mdSaveTimer = null;
-    await flushMdSave();
-    if (loadSuperseded(myEpoch)) return;
-  }
-  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
-  void window.electronAPI.unwatchFile();
-  mdSourceModified = false;
-  if (docxViewerRef) { docxViewerRef.dispose(); docxViewerRef = null; }
-  if (htmlViewerRef) { htmlViewerRef.dispose(); htmlViewerRef = null; }
-  if (mdViewerRef) {
-    mdViewerRef.dispose();
-    mdViewerRef = null;
-  }
-  h.title.textContent = `Loading ${basename(path)}…`;
-  hideBanner(h.banner);
-  // Flush any pending write for the previous doc before its sha256 is gone.
-  if (writeTimer !== null) {
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    await flushDraftsWrite();
-    if (loadSuperseded(myEpoch)) return;
-  }
-  // Reset per-doc state. selection cache and in-memory drafts belong to the
-  // previous document. Results-watcher state likewise resets so banners for
-  // the previous doc's rounds don't bleed onto this one.
-  docState.path = path;
-  docState.sha256 = '';
-  docState.lastSelection = null;
-  docState.comments = [];
-  docState.rounds = new Map();
-  // §10.5.1 — restore the originating rig for this doc (if recorded earlier
-  // via --from). Survives app restarts (loaded from AppState on boot).
-  docState.originRig = originRigPerDoc.get(path) ?? null;
-  // §10.1 — reset Submit pill/banner so the previous doc's in-flight
-  // state doesn't bleed onto this one.
-  resetSubmit();
-  lastBundleSnapshot = null;
-  focusedCommentId = null;
-  editingCommentId = null;
-  clearInput();
-  renderAllCards();
-  updateAnchorMeta();
-  hideRoundBanner();
-  // §10.4 — reset the Saved indicator on doc switch. The previous doc's
-  // bundle stamp doesn't belong to this one.
-  setSavedIndicator({ kind: 'idle' });
-  // Stop watching the previous doc's `.review-state/` (no-op when nothing
-  // was being watched). Stop is awaitable but we don't need the result.
-  void window.electronAPI.watchResultsStop();
+// ─── X7 format registry ────────────────────────────────────────────────────
+//
+// One adapter per openable kind, keyed by classifyPath. Each factory mounts a
+// fresh viewer into the document pane and wires its format-specific options:
+// every format routes selection through the unified `handleSelection`; PDF also
+// reports page info; markdown also wires content-change / blur / wikilink. The
+// host no longer branches on format downstream — it asks the viewer's
+// `capabilities` instead.
+type ViewerKind = 'pdf' | 'md' | 'html' | 'docx';
 
-  // Kick off bytes + health in parallel. Both round-trip through main; running
-  // them concurrently shaves ~engine-startup-time off the visible load latency.
-  const [bytesResult, healthResult] = await Promise.all([
-    window.electronAPI.readPdfBytes(path),
-    window.electronAPI.pdfHealth(path),
-  ]);
-  if (loadSuperseded(myEpoch)) return;
-
-  // Render the health banner first so a render failure below still has the
-  // diagnostic context visible. The banner is non-blocking either way.
-  renderHealthBanner(h.banner, healthResult);
-
-  if (!bytesResult.ok) {
-    h.title.textContent = basename(path);
-    showLoadError(h, bytesResult);
-    setViewerControlsEnabled(h, false);
-    return;
-  }
-
-  docState.sha256 = bytesResult.sha256;
-
-  // §10.1 step 6 / §10.3 — load drafts *before* starting the results
-  // watcher. The watcher's initial scan immediately emits events for
-  // pre-existing results files; if drafts haven't populated docState.comments
-  // by then, those events find no matching ids and drop their dispositions
-  // on the floor. Serializing the two avoids that race; loadDrafts is a
-  // single readFile so the added latency is negligible.
-  await loadDraftsForCurrentDoc();
-  // rev-ra6 — bail if the user opened a different doc while drafts were
-  // loading; anything below (viewer load, watcher, notifications) belongs to
-  // the superseding load now.
-  if (loadSuperseded(myEpoch)) return;
-  // Start watching `.review-state/`. Failures aren't fatal; we just flash
-  // the anchor meta so the user knows reflection is offline.
-  void window.electronAPI.watchResultsStart(path, bytesResult.sha256).then((res) => {
-    if (!res.ok) {
-      flashAnchorMeta(`Results watcher failed (${res.reason ?? 'unknown'}): ${res.error ?? ''}`);
-    }
-  });
-
-  let viewerLoaded = false;
-  try {
-    showViewer(h);
-    await h.viewer.loadBytes(bytesResult.bytes);
-    if (loadSuperseded(myEpoch)) return;
-    h.title.textContent = basename(path);
-    setViewerControlsEnabled(h, true);
-    viewerLoaded = true;
-  } catch (err) {
-    h.title.textContent = basename(path);
-    showLoadError(h, null, err);
-    setViewerControlsEnabled(h, false);
-  }
-  // §9.2 — lazy spawn the Claude pane on first PDF open. Doc-switches after
-  // the first emit a debounced notification line (§9.2.4). Both are
-  // best-effort; failures show inline in the pane and don't block load.
-  if (viewerLoaded) {
-    if (useNewAgentPane()) {
-      // Project 4 / M-int-3 — same payload, routed to the agent-viewer
-      // backend's debounced notifyDocSwitch (sends a context line on the
-      // active session, creating one if needed).
-      const w = window as unknown as {
-        agentViewer?: {
-          notifyDocSwitch: (payload: {
-            path: string;
-            pages: number;
-            comments: number;
-          }) => Promise<void>;
-        };
-      };
-      void w.agentViewer?.notifyDocSwitch({
-        path,
-        pages: h.viewer.totalPages,
-        comments: docState.comments.length,
-      });
-    } else {
-      const sourceDir = dirnameOf(path);
-      void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
-        notifyClaudeDocSwitch({
-          path,
-          pages: h.viewer.totalPages,
-          comments: docState.comments.length,
-        });
-      });
-    }
-  }
-  // §3.3 — persist last-opened-doc and reflect the active row in the tree.
-  // Safe to no-op when boot ordering hasn't wired them up yet.
-  fileTree?.setActiveFile(path);
-  scheduleAppStateSave();
-  // rev-1md.3 — let the toolbar re-evaluate its enabled state now that a
-  // doc is active. Pty-spawn-state is already broadcast separately by
-  // claude-pane via 'claude-pane:spawn-state-changed'.
-  window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
-}
-
-async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
-  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
-  const myEpoch = ++loadEpoch;
-  h.title.textContent = `Loading ${basename(path)}…`;
-  hideBanner(h.banner);
-  // Flush pending .md save for previous doc
-  if (mdSaveTimer !== null) {
-    window.clearTimeout(mdSaveTimer);
-    mdSaveTimer = null;
-    await flushMdSave();
-    if (loadSuperseded(myEpoch)) return;
-  }
-  if (writeTimer !== null) {
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    await flushDraftsWrite();
-    if (loadSuperseded(myEpoch)) return;
-  }
-  // Stop watching previous file
-  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
-  void window.electronAPI.unwatchFile();
-  mdSourceModified = false;
-
-  docState.path = path;
-  docState.sha256 = '';
-  docState.lastSelection = null;
-  docState.comments = [];
-  docState.rounds = new Map();
-  docState.originRig = originRigPerDoc.get(path) ?? null;
-  resetSubmit();
-  lastBundleSnapshot = null;
-  focusedCommentId = null;
-  editingCommentId = null;
-  clearInput();
-  renderAllCards();
-  updateAnchorMeta();
-  hideRoundBanner();
-  setSavedIndicator({ kind: 'idle' });
-  void window.electronAPI.watchResultsStop();
-
-  const bytesResult = await window.electronAPI.readPdfBytes(path);
-  if (loadSuperseded(myEpoch)) return;
-  if (!bytesResult.ok) {
-    h.title.textContent = basename(path);
-    showLoadError(h, bytesResult);
-    setViewerControlsEnabled(h, false);
-    return;
-  }
-
-  docState.sha256 = bytesResult.sha256;
-  await loadDraftsForCurrentDoc();
-  if (loadSuperseded(myEpoch)) return;
-
-  if (mdViewerRef) {
-    mdViewerRef.dispose();
-    mdViewerRef = null;
-  }
-
-  lastMdSelection = null;
-  const mdViewer = new MarkdownViewer({
-    container: h.mount,
-    onWikilinkClick: (target) => {
-      resolveAndOpenWikilink(target);
+const VIEWER_REGISTRY: Record<ViewerKind, (mount: HTMLElement) => FileViewer> = {
+  pdf: (mount) => new PdfViewer({
+    container: mount,
+    onSelection: handleSelection,
+    onPageInfo: ({ page, totalPages }) => {
+      const h = viewerHandlesRef;
+      if (!h) return;
+      h.pageLabel.textContent = `${page} / ${totalPages}`;
+      h.prevBtn.disabled = page <= 1;
+      h.nextBtn.disabled = page >= totalPages;
     },
+  }),
+  md: (mount) => new MarkdownViewer({
+    container: mount,
+    onSelection: handleSelection,
+    onWikilinkClick: (target) => { resolveAndOpenWikilink(target); },
     onContentChange: () => {
       scheduleMdSave();
       syncMdAnchorsToComments();
-    },
-    onSelection: (sel) => {
-      lastMdSelection = sel;
-      updateAnchorMeta();
-      if (sel) {
-        const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
-        if (input && activeTool === 'redraft') {
-          input.value = sel.text;
-          input.focus();
-          input.select();
-        }
-      }
     },
     onBlur: () => {
       if (mdSaveTimer !== null) {
@@ -1531,271 +1319,189 @@ async function loadMarkdown(h: ViewerHandles, path: string): Promise<void> {
         void flushMdSave();
       }
     },
-  });
-  mdViewerRef = mdViewer;
+  }),
+  html: (mount) => new HtmlViewer({ container: mount, onSelection: handleSelection }),
+  docx: (mount) => new DocxViewer({ container: mount, onSelection: handleSelection }),
+};
 
-  // Start watching for external changes
-  void window.electronAPI.watchFile(path);
-  mdFileChangeUnsub = window.electronAPI.onFileChange((event) => {
-    if (event.filePath !== path) return;
-    if (mdSourceModified) {
-      showExternalModificationModal(h, path);
-    }
-  });
-
-  try {
-    showViewer(h);
-    await mdViewer.loadBytes(bytesResult.bytes);
-    if (loadSuperseded(myEpoch)) return;
-    h.title.textContent = basename(path);
-    h.prevBtn.disabled = true;
-    h.nextBtn.disabled = true;
-    reanchorMdComments();
-  } catch (err) {
-    h.title.textContent = basename(path);
-    showLoadError(h, null, err);
-    setViewerControlsEnabled(h, false);
-  }
-
-  if (useNewAgentPane()) {
-    const w = window as unknown as {
-      agentViewer?: {
-        notifyDocSwitch: (payload: {
-          path: string; pages: number; comments: number;
-        }) => Promise<void>;
-      };
-    };
-    void w.agentViewer?.notifyDocSwitch({
-      path, pages: 1, comments: docState.comments.length,
-    });
-  } else {
-    const sourceDir = dirnameOf(path);
-    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
-      notifyClaudeDocSwitch({
-        path, pages: 1, comments: docState.comments.length,
-      });
-    });
-  }
-  fileTree?.setActiveFile(path);
-  scheduleAppStateSave();
-  window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
-}
-
-async function loadHtml(h: ViewerHandles, path: string): Promise<void> {
-  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
-  const myEpoch = ++loadEpoch;
-  h.title.textContent = `Loading ${basename(path)}…`;
-  hideBanner(h.banner);
-  if (mdSaveTimer !== null) {
-    window.clearTimeout(mdSaveTimer);
-    mdSaveTimer = null;
-    await flushMdSave();
-    if (loadSuperseded(myEpoch)) return;
-  }
-  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
-  void window.electronAPI.unwatchFile();
-  if (mdViewerRef) { mdViewerRef.dispose(); mdViewerRef = null; }
-  if (htmlViewerRef) { htmlViewerRef.dispose(); htmlViewerRef = null; }
-  if (writeTimer !== null) {
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    await flushDraftsWrite();
-    if (loadSuperseded(myEpoch)) return;
-  }
-
+/** Reset all per-document session state to a clean slate for `path` (X7
+ *  "DocSession reset"). This is the single, uniform reset the four cloned
+ *  loaders used to hand-copy — and diverge on (e.g. the md loader forgot to
+ *  dispose the docx/html viewers; each cleared only its own format's selection
+ *  cache). One `docState.lastSelection` now covers every format. */
+function resetDocSession(path: string): void {
   docState.path = path;
   docState.sha256 = '';
   docState.lastSelection = null;
   docState.comments = [];
   docState.rounds = new Map();
+  // §10.5.1 — restore the originating rig for this doc (if recorded earlier
+  // via --from). Survives app restarts (loaded from AppState on boot).
   docState.originRig = originRigPerDoc.get(path) ?? null;
+  // §10.1 — reset Submit pill/banner so the previous doc's in-flight state
+  // doesn't bleed onto this one.
   resetSubmit();
   lastBundleSnapshot = null;
   focusedCommentId = null;
   editingCommentId = null;
-  lastHtmlSelection = null;
   clearInput();
   renderAllCards();
   updateAnchorMeta();
   hideRoundBanner();
+  // §10.4 — the previous doc's bundle stamp doesn't belong to this one.
   setSavedIndicator({ kind: 'idle' });
+  // Stop watching the previous doc's `.review-state/` (no-op when idle).
   void window.electronAPI.watchResultsStop();
-
-  const bytesResult = await window.electronAPI.readPdfBytes(path);
-  if (loadSuperseded(myEpoch)) return;
-  if (!bytesResult.ok) {
-    h.title.textContent = basename(path);
-    showLoadError(h, bytesResult);
-    setViewerControlsEnabled(h, false);
-    return;
-  }
-
-  docState.sha256 = bytesResult.sha256;
-  await loadDraftsForCurrentDoc();
-  if (loadSuperseded(myEpoch)) return;
-
-  const htmlViewer = new HtmlViewer({
-    container: h.mount,
-    basePath: path,
-    onSelection: (sel) => {
-      lastHtmlSelection = sel;
-      updateAnchorMeta();
-    },
-  });
-  htmlViewerRef = htmlViewer;
-
-  try {
-    showViewer(h);
-    await htmlViewer.loadBytes(bytesResult.bytes);
-    if (loadSuperseded(myEpoch)) return;
-    h.title.textContent = basename(path);
-    h.prevBtn.disabled = true;
-    h.nextBtn.disabled = true;
-    applyHtmlCommentHighlights();
-  } catch (err) {
-    h.title.textContent = basename(path);
-    showLoadError(h, null, err);
-    setViewerControlsEnabled(h, false);
-  }
-
-  if (useNewAgentPane()) {
-    const w = window as unknown as {
-      agentViewer?: {
-        notifyDocSwitch: (payload: {
-          path: string; pages: number; comments: number;
-        }) => Promise<void>;
-      };
-    };
-    void w.agentViewer?.notifyDocSwitch({
-      path, pages: 1, comments: docState.comments.length,
-    });
-  } else {
-    const sourceDir = dirnameOf(path);
-    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
-      notifyClaudeDocSwitch({
-        path, pages: 1, comments: docState.comments.length,
-      });
-    });
-  }
-  fileTree?.setActiveFile(path);
-  scheduleAppStateSave();
-  window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
 }
 
-async function loadDocx(h: ViewerHandles, path: string): Promise<void> {
-  // rev-ra6 — claim this load's epoch before any await; re-checked after each.
-  const myEpoch = ++loadEpoch;
-  h.title.textContent = `Loading ${basename(path)}…`;
-  hideBanner(h.banner);
-  if (mdSaveTimer !== null) { window.clearTimeout(mdSaveTimer); mdSaveTimer = null; await flushMdSave(); if (loadSuperseded(myEpoch)) return; }
-  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
-  void window.electronAPI.unwatchFile();
-  if (mdViewerRef) { mdViewerRef.dispose(); mdViewerRef = null; }
-  if (htmlViewerRef) { htmlViewerRef.dispose(); htmlViewerRef = null; }
-  if (docxViewerRef) { docxViewerRef.dispose(); docxViewerRef = null; }
-  if (writeTimer !== null) { window.clearTimeout(writeTimer); writeTimer = null; await flushDraftsWrite(); if (loadSuperseded(myEpoch)) return; }
-
-  docState.path = path;
-  docState.sha256 = '';
-  docState.lastSelection = null;
-  docState.comments = [];
-  docState.rounds = new Map();
-  docState.originRig = originRigPerDoc.get(path) ?? null;
-  resetSubmit();
-  lastBundleSnapshot = null;
-  focusedCommentId = null;
-  editingCommentId = null;
-  lastHtmlSelection = null;
-  clearInput();
-  renderAllCards();
-  updateAnchorMeta();
-  hideRoundBanner();
-  setSavedIndicator({ kind: 'idle' });
-  void window.electronAPI.watchResultsStop();
-
-  const bytesResult = await window.electronAPI.readPdfBytes(path);
-  if (loadSuperseded(myEpoch)) return;
-  if (!bytesResult.ok) {
-    h.title.textContent = basename(path);
-    showLoadError(h, bytesResult);
-    setViewerControlsEnabled(h, false);
-    return;
-  }
-
-  docState.sha256 = bytesResult.sha256;
-  await loadDraftsForCurrentDoc();
-  if (loadSuperseded(myEpoch)) return;
-
-  const viewer = new DocxViewer({
-    container: h.mount,
-    onSelection: (sel) => {
-      lastHtmlSelection = sel;
-      updateAnchorMeta();
-    },
-  });
-  docxViewerRef = viewer;
-
-  try {
-    showViewer(h);
-    await viewer.loadBytes(bytesResult.bytes);
-    if (loadSuperseded(myEpoch)) return;
-    h.title.textContent = basename(path);
-    h.prevBtn.disabled = true;
-    h.nextBtn.disabled = true;
-    applyDocxCommentHighlights();
-  } catch (err) {
-    h.title.textContent = basename(path);
-    showLoadError(h, null, err);
-    setViewerControlsEnabled(h, false);
-  }
-
+/** §9.2 — notify the Claude / agent pane that the active doc changed. Lazy
+ *  spawn on first open; debounced context line thereafter. Best-effort. */
+function announceDocSwitch(path: string, pages: number, comments: number): void {
   if (useNewAgentPane()) {
     const w = window as unknown as {
       agentViewer?: {
         notifyDocSwitch: (payload: { path: string; pages: number; comments: number }) => Promise<void>;
       };
     };
-    void w.agentViewer?.notifyDocSwitch({ path, pages: 1, comments: docState.comments.length });
+    void w.agentViewer?.notifyDocSwitch({ path, pages, comments });
   } else {
     const sourceDir = dirnameOf(path);
     void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
-      notifyClaudeDocSwitch({ path, pages: 1, comments: docState.comments.length });
+      notifyClaudeDocSwitch({ path, pages, comments });
     });
   }
+}
+
+/** The single document-load path (X7). Collapses the four cloned loaders into
+ *  teardown → DocSession reset → registry-built viewer → load → anchors. Runs
+ *  under the single-flight open queue: `token` is re-checked after every await
+ *  so a superseding open bails this one cleanly (the rev-ra6 epoch check, now
+ *  in one place instead of four hand-copied checklists). */
+async function runOpen(path: string, token: number): Promise<void> {
+  const h = viewerHandlesRef;
+  if (!h) return;
+  if (openSuperseded(token)) return;
+
+  const kind = classifyPath(path);
+  const viewerKind: ViewerKind = kind === 'other' ? 'pdf' : kind;
+  const isPdf = viewerKind === 'pdf';
+
+  h.title.textContent = `Loading ${basename(path)}…`;
+  hideBanner(h.banner);
+
+  // ── teardown of the previous document ──
+  // Flush a pending .md save before its viewer is gone (uses the still-current
+  // previous-doc path/sha — reset happens below).
+  if (mdSaveTimer !== null) {
+    window.clearTimeout(mdSaveTimer);
+    mdSaveTimer = null;
+    await flushMdSave();
+    if (openSuperseded(token)) return;
+  }
+  // Flush a pending drafts write before the previous sha256 is overwritten.
+  if (writeTimer !== null) {
+    window.clearTimeout(writeTimer);
+    writeTimer = null;
+    await flushDraftsWrite();
+    if (openSuperseded(token)) return;
+  }
+  if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
+  void window.electronAPI.unwatchFile();
+  mdSourceModified = false;
+  if (activeViewer) { activeViewer.dispose(); activeViewer = null; }
+
+  // ── DocSession reset ──
+  resetDocSession(path);
+
+  // ── read bytes (+ health, PDF only — run concurrently to hide latency) ──
+  const [bytesResult, healthResult] = await Promise.all([
+    window.electronAPI.readPdfBytes(path),
+    isPdf ? window.electronAPI.pdfHealth(path) : Promise.resolve(null),
+  ]);
+  if (openSuperseded(token)) return;
+
+  // Render the health banner (PDF only) before the bytes check so a render
+  // failure still has the diagnostic context visible. Non-blocking either way.
+  if (healthResult) renderHealthBanner(h.banner, healthResult);
+
+  if (!bytesResult.ok) {
+    h.title.textContent = basename(path);
+    showLoadError(h, bytesResult);
+    setViewerControlsEnabled(h, false);
+    return;
+  }
+  docState.sha256 = bytesResult.sha256;
+
+  // §10.1 step 6 / §10.3 — load drafts BEFORE the results watcher so the
+  // watcher's initial scan finds the comment ids its dispositions target.
+  await loadDraftsForCurrentDoc();
+  if (openSuperseded(token)) return;
+
+  // Results watching is PDF-only (results come from the PDF-only Submit
+  // pipeline). Failures aren't fatal — just surface them.
+  if (isPdf) {
+    void window.electronAPI.watchResultsStart(path, bytesResult.sha256).then((res) => {
+      if (!res.ok) {
+        flashAnchorMeta(`Results watcher failed (${res.reason ?? 'unknown'}): ${res.error ?? ''}`);
+      }
+    });
+  }
+
+  // ── construct the viewer via the registry + load ──
+  const viewer = VIEWER_REGISTRY[viewerKind](h.mount);
+  activeViewer = viewer;
+
+  // Editable-text formats (md) want an external-change watch so a change on
+  // disk while the user has unsaved edits prompts a reload.
+  if (viewer.capabilities.editableText) {
+    void window.electronAPI.watchFile(path);
+    mdFileChangeUnsub = window.electronAPI.onFileChange((event) => {
+      if (event.filePath !== path) return;
+      if (mdSourceModified) showExternalModificationModal(path);
+    });
+  }
+
+  let loaded = false;
+  try {
+    showViewer(h);
+    await viewer.loadBytes(bytesResult.bytes, { path });
+    if (openSuperseded(token)) return;
+    h.title.textContent = basename(path);
+    // fit/dark apply to every format (dark toggles; fit no-ops where unpaged).
+    setViewerControlsEnabled(h, true);
+    // Non-paged formats have no prev/next; PDF's onPageInfo manages them.
+    if (!viewer.capabilities.paged) {
+      h.prevBtn.disabled = true;
+      h.nextBtn.disabled = true;
+    }
+    // Project the live comment set into the viewer (md re-tracks, html/docx
+    // re-highlight, pdf no-ops). Replaces the per-format highlight helpers.
+    viewer.applyAnchors(docState.comments);
+    loaded = true;
+  } catch (err) {
+    h.title.textContent = basename(path);
+    showLoadError(h, null, err);
+    setViewerControlsEnabled(h, false);
+  }
+
+  // §9.2 — spawn / notify the agent pane only once the doc actually rendered
+  // (the v1 PDF path's behavior; the other loaders notified even on failure).
+  if (loaded) {
+    announceDocSwitch(path, viewer.totalPages, docState.comments.length);
+  }
+  // §3.3 — persist last-opened-doc + reflect the active tree row.
   fileTree?.setActiveFile(path);
   scheduleAppStateSave();
+  // Let the toolbar re-evaluate enabled state now a doc is active.
   window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
 }
 
-/** Collect the html-selector-hint anchors from the live comments as the
- *  iframe viewers' `HtmlAnchor` shape. The v1 `as any` md_anchor smuggle (C6)
- *  is gone — selector anchors are now a declared union kind. */
-function htmlSelectorAnchors(): HtmlAnchor[] {
-  const anchors: HtmlAnchor[] = [];
-  for (const c of docState.comments) {
-    if (c.anchor.kind !== 'html-selector-hint') continue;
-    const a = c.anchor;
-    anchors.push({
-      selector: a.selector,
-      text_content: a.quoted_text,
-      char_offset: a.char_offset,
-      char_length: a.char_length || a.quoted_text.length,
-    });
-  }
-  return anchors;
-}
+// X7: the html/docx comment-highlight derivation moved into the viewers
+// (`applyAnchors` → `htmlAnchorsFromComments`), and md re-anchoring moved into
+// `MarkdownViewer.applyAnchors`. The host now calls `activeViewer.applyAnchors`
+// uniformly instead of the per-format helpers that used to live here.
 
-function applyDocxCommentHighlights(): void {
-  if (!docxViewerRef) return;
-  docxViewerRef.setHighlightedAnchors(htmlSelectorAnchors());
-}
-
-function applyHtmlCommentHighlights(): void {
-  if (!htmlViewerRef) return;
-  htmlViewerRef.setHighlightedAnchors(htmlSelectorAnchors());
-}
-
-function showExternalModificationModal(h: ViewerHandles, path: string): void {
+function showExternalModificationModal(path: string): void {
   const existing = document.getElementById('externalModModal');
   if (existing) return;
 
@@ -1818,37 +1524,17 @@ function showExternalModificationModal(h: ViewerHandles, path: string): void {
   document.getElementById('extModReload')!.addEventListener('click', () => {
     overlay.remove();
     mdSourceModified = false;
-    void openFileFromTreeOrPalette(path);
+    void openDocument(path);
   });
   document.getElementById('extModKeep')!.addEventListener('click', () => {
     overlay.remove();
   });
 }
 
-function reanchorMdComments(): void {
-  if (!mdViewerRef) return;
-  const doc = mdViewerRef.getContent();
-  const tracked: Array<{ commentId: string; from: number; to: number; orphaned: boolean }> = [];
-  for (const c of docState.comments) {
-    if (c.anchor.kind !== 'text-quote') continue;
-    const a = c.anchor;
-    // TextQuoteAnchor is structurally a superset of MdAnchor.
-    const match = fuzzyMatchAnchor(doc, a);
-    tracked.push({
-      commentId: c.id,
-      from: match.from,
-      to: match.to,
-      orphaned: match.confidence === 'orphaned',
-    });
-    a.char_start = match.from;
-    a.char_end = match.to;
-  }
-  mdViewerRef.setTrackedAnchors(tracked);
-}
-
 function syncMdAnchorsToComments(): void {
-  if (!mdViewerRef) return;
-  const anchors = mdViewerRef.getTrackedAnchors();
+  if (!(activeViewer instanceof MarkdownViewer)) return;
+  const mdViewer = activeViewer;
+  const anchors = mdViewer.getTrackedAnchors();
   const byId = new Map(docState.comments.map((c) => [c.id, c]));
   for (const a of anchors) {
     const c = byId.get(a.commentId);
@@ -1860,7 +1546,7 @@ function syncMdAnchorsToComments(): void {
     } else {
       tq.char_start = a.from;
       tq.char_end = a.to;
-      const doc = mdViewerRef.getContent();
+      const doc = mdViewer.getContent();
       if (a.from >= 0 && a.to <= doc.length) {
         // NOTE: provenance-immutable re-anchoring (relocations → anchor.relocated,
         // originals write-once) is roadmap X12; v2 introduces the field but the
@@ -1885,7 +1571,7 @@ function resolveAndOpenWikilink(target: string): void {
   for (const candidate of candidates) {
     void window.electronAPI.pathExists(candidate).then((res) => {
       if (res.ok && res.exists && res.isFile) {
-        void openFileFromTreeOrPalette(candidate);
+        void openDocument(candidate);
       }
     });
   }
@@ -2122,38 +1808,41 @@ function setActiveTool(next: Tool): void {
     b.classList.toggle('is-active', on);
     b.setAttribute('aria-pressed', String(on));
   });
-  // Switching INTO Redraft with a live selection → populate the input with
-  // highlighted_text as the editing starter (§4.3). Switching OUT of Redraft
+  // Switching INTO Redraft with a live selection → populate the input with the
+  // selected text as the editing starter (§4.3). Switching OUT of Redraft
   // leaves whatever is in the input alone — the user owns the buffer.
   if (next === 'redraft' && previous !== 'redraft' && docState.lastSelection) {
     const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
     if (input) {
-      input.value = docState.lastSelection.highlighted_text;
+      input.value = docState.lastSelection.text;
       input.focus();
       input.select();
     }
   }
 }
 
-/** Selection callback wired into PdfViewer. Caches the payload so it's
- *  available at submit time and updates the anchor-status meta line. */
-function handleSelection(payload: SelectionPayload): void {
-  docState.lastSelection = payload;
+/** Unified selection callback wired into every viewer (X7). Caches the
+ *  selection so it's available at submit time and updates the anchor-status
+ *  meta line. `null` clears the cached selection (the text viewers emit it on
+ *  collapse; PDF simply never emits it). */
+function handleSelection(sel: ViewerSelection | null): void {
+  docState.lastSelection = sel;
   updateAnchorMeta();
+  if (!sel) return;
   const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
   if (!input) return;
-  // §4.3: a fresh selection while Redraft is active populates the input as
-  // the editing starter. Comment / Surface tools leave the buffer alone.
+  // §4.3: a fresh selection while Redraft is active populates the input as the
+  // editing starter (v1 did this for PDF + md; X7 extends it to html/docx).
   if (activeTool === 'redraft') {
-    input.value = payload.highlighted_text;
+    input.value = sel.text;
     input.focus();
     input.select();
     return;
   }
   // §4.3 for Comment/Surface: "input gets focus; user types comment; Enter
-  // submits." Without this, keystrokes after a highlight land in the PDF
-  // text layer and never reach the textarea, so Enter does nothing.
-  input.focus();
+  // submits." Skip this for editable-text viewers (md) — stealing focus mid
+  // selection would yank the caret out of the editor (the v1 md behavior).
+  if (!activeViewer?.capabilities.editableText) input.focus();
 }
 
 function updateAnchorMeta(): void {
@@ -2170,44 +1859,33 @@ function updateAnchorMeta(): void {
     }
     editingCommentId = null;
   }
-  const fileKind = classifyPath(docState.path);
-  if (fileKind === 'md') {
-    if (!lastMdSelection) {
-      meta.textContent = docState.path
-        ? 'No selection — highlight text to anchor a comment.'
-        : 'No file loaded.';
-      meta.classList.remove('has-selection');
-      return;
-    }
-    const snippet = truncate(lastMdSelection.text, 60);
-    meta.textContent = `chars ${lastMdSelection.from}–${lastMdSelection.to} · “${snippet}”`;
-    meta.classList.add('has-selection');
-    return;
-  }
-  if (fileKind === 'html' || fileKind === 'docx') {
-    if (!lastHtmlSelection) {
-      meta.textContent = docState.path
-        ? 'No selection — highlight text to anchor a comment.'
-        : 'No file loaded.';
-      meta.classList.remove('has-selection');
-      return;
-    }
-    const snippet = truncate(lastHtmlSelection.text, 60);
-    meta.textContent = `${lastHtmlSelection.selector.slice(-30)} · “${snippet}”`;
-    meta.classList.add('has-selection');
-    return;
-  }
   const sel = docState.lastSelection;
   if (!sel) {
+    // No-selection wording stays format-aware: the PDF copy names the PDF, and
+    // an empty pane (no path) reads as the PDF empty-state (the v1 default).
+    const isText = classifyPath(docState.path) !== 'pdf' && docState.path !== '';
     meta.textContent = docState.path
-      ? 'No selection — highlight text in the PDF to anchor a comment.'
+      ? (isText
+          ? 'No selection — highlight text to anchor a comment.'
+          : 'No selection — highlight text in the PDF to anchor a comment.')
       : 'No PDF loaded.';
     meta.classList.remove('has-selection');
     return;
   }
-  const r = sel.region;
-  const snippet = truncate(sel.highlighted_text, 60);
-  meta.textContent = `p.${sel.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)} · “${snippet}”`;
+  const snippet = truncate(sel.text, 60);
+  switch (sel.kind) {
+    case 'text-quote':
+      meta.textContent = `chars ${sel.from}–${sel.to} · “${snippet}”`;
+      break;
+    case 'html-selector-hint':
+      meta.textContent = `${sel.selector.slice(-30)} · “${snippet}”`;
+      break;
+    case 'pdf-quad': {
+      const r = sel.region;
+      meta.textContent = `p.${sel.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)} · “${snippet}”`;
+      break;
+    }
+  }
   meta.classList.add('has-selection');
 }
 
@@ -2245,109 +1923,60 @@ async function handleSubmit(): Promise<void> {
     return;
   }
 
-  const fileKind = classifyPath(docState.path);
-
-  if (fileKind === 'md' && lastMdSelection && mdViewerRef) {
-    const doc = mdViewerRef.getContent();
-    const mdAnchor = createMdAnchor(doc, lastMdSelection.from, lastMdSelection.to);
-    const payload = buildMdCommentPayload(buf, lastMdSelection, mdAnchor);
-    docState.comments.unshift(payload);
-    renderAllCards();
-    scheduleDraftsWrite();
-    reanchorMdComments();
-    clearInput();
-    input.focus();
-    return;
-  }
-
-  if ((fileKind === 'html' || fileKind === 'docx') && lastHtmlSelection) {
-    const payload = buildHtmlCommentPayload(buf, lastHtmlSelection);
-    docState.comments.unshift(payload);
-    renderAllCards();
-    scheduleDraftsWrite();
-    if (fileKind === 'docx') applyDocxCommentHighlights();
-    else applyHtmlCommentHighlights();
-    clearInput();
-    input.focus();
-    return;
-  }
-
-  if (!docState.lastSelection) {
+  const sel = docState.lastSelection;
+  if (!sel) {
     flashAnchorMeta('Select text first to anchor this comment.');
     return;
   }
-  const payload = buildCommentPayload(buf, docState.lastSelection);
+  const payload = buildPayloadFromSelection(buf, sel);
   docState.comments.unshift(payload);
   renderAllCards();
   scheduleDraftsWrite();
+  // Re-project anchors into the viewer: md re-tracks (incl. the new comment),
+  // html/docx re-highlight, pdf no-ops. Subsumes the per-format post-submit
+  // calls (reanchorMdComments / apply{Html,Docx}CommentHighlights).
+  activeViewer?.applyAnchors(docState.comments);
   clearInput();
   input.focus();
 }
 
-function buildHtmlCommentPayload(buf: string, sel: HtmlSelection): CommentPayload {
-  const isRedraft = activeTool === 'redraft';
-  return {
-    id: crypto.randomUUID(),
-    doc_id: docState.path,
-    doc_version: docState.sha256,
-    // html/docx anchor by the declared html-selector-hint kind — the v1 `as any`
-    // smuggle through md_anchor (C6) is gone.
-    anchor: {
-      kind: 'html-selector-hint',
-      selector: sel.selector,
-      char_offset: sel.charOffset,
-      char_length: sel.charLength,
-      quoted_text: sel.text,
-    },
-    highlighted_text: sel.text,
-    comment: isRedraft ? '' : buf,
-    redraft: isRedraft ? buf : null,
-    redraft_suggestion: null,
-    engagement_level: activeTool,
-    author: 'AJB',
-    kind: 'comment',
-    status: 'open',
-    created_at: new Date().toISOString(),
-    origin: 'app-draft',
-  };
-}
-
-function buildMdCommentPayload(
-  buf: string,
-  sel: MdSelection,
-  mdAnchor: ReturnType<typeof createMdAnchor>,
-): CommentPayload {
-  const isRedraft = activeTool === 'redraft';
-  return {
-    id: crypto.randomUUID(),
-    doc_id: docState.path,
-    doc_version: docState.sha256,
-    // md anchors fold into the text-quote union kind verbatim (§3.1 rule 3).
-    anchor: { kind: 'text-quote', ...mdAnchor, relocated: null },
-    highlighted_text: sel.text,
-    comment: isRedraft ? '' : buf,
-    redraft: isRedraft ? buf : null,
-    redraft_suggestion: null,
-    engagement_level: activeTool,
-    author: 'AJB',
-    kind: 'comment',
-    status: 'open',
-    created_at: new Date().toISOString(),
-    origin: 'app-draft',
-  };
-}
-
-function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload {
+/** Build a v2 comment from the unified selection + the input buffer (X7).
+ *  Replaces the three near-identical buildPdf/buildMd/buildHtml payload
+ *  builders — only the `anchor` differs, switched on the selection kind. */
+function buildPayloadFromSelection(buf: string, sel: ViewerSelection): CommentPayload {
   // Tool ↔ engagement_level / field mapping (§11.1):
   //   Comment / Surface → buffer is the comment text; redraft is null.
   //   Redraft           → buffer is the edited replacement text; comment is "".
   const isRedraft = activeTool === 'redraft';
+  let anchor: Anchor;
+  switch (sel.kind) {
+    case 'pdf-quad':
+      anchor = { kind: 'pdf-quad', page: sel.page, region: sel.region };
+      break;
+    case 'text-quote': {
+      // md anchors fold into the text-quote union kind verbatim (§3.1 rule 3).
+      const doc = activeViewer instanceof MarkdownViewer ? activeViewer.getContent() : '';
+      anchor = { ...createMdAnchor(doc, sel.from, sel.to), relocated: null };
+      break;
+    }
+    case 'html-selector-hint':
+      // html/docx anchor by the declared html-selector-hint kind — the v1
+      // `as any` smuggle through md_anchor (C6) is gone.
+      anchor = {
+        kind: 'html-selector-hint',
+        selector: sel.selector,
+        char_offset: sel.charOffset,
+        char_length: sel.charLength,
+        quoted_text: sel.text,
+      };
+      break;
+  }
   return {
     id: crypto.randomUUID(),
     doc_id: docState.path,
     doc_version: docState.sha256,
-    anchor: { kind: 'pdf-quad', page: sel.page, region: sel.region },
-    highlighted_text: sel.highlighted_text,
+    anchor,
+    highlighted_text: sel.text,
     comment: isRedraft ? '' : buf,
     redraft: isRedraft ? buf : null,
     redraft_suggestion: null,
@@ -2438,7 +2067,7 @@ function bindCommentStreamKeyboard(): void {
       if (!focused.classList.contains('comment-card')) return;
       const id = focused.dataset.id;
       const c = id ? docState.comments.find((x) => x.id === id) : null;
-      if (!c || !viewerRef) return;
+      if (!c || !activeViewer) return;
       e.preventDefault();
       revealCommentAnchor(c.new_anchor ?? c.anchor);
     }
@@ -2450,8 +2079,7 @@ function bindCommentStreamKeyboard(): void {
  *  viewers (md/html/docx). Full polymorphic reveal across formats is roadmap
  *  X6 — this keeps the PDF path working and is a no-op for the others. */
 function revealCommentAnchor(a: Anchor): void {
-  if (!viewerRef) return;
-  if (a.kind === 'pdf-quad') void viewerRef.revealAnchor(a.page, a.region);
+  activeViewer?.reveal(a);
 }
 
 /** Short, kind-aware card location label. Replaces the v1 "p.1 · 0,0 0×0" that
@@ -2942,9 +2570,9 @@ function fillRoundBanner(banner: HTMLElement, round: ResultsRoundState): void {
         : 'Open new version';
       open.addEventListener('click', () => {
         // The seeded draft (if any) was written before this banner
-        // rendered, so loadPdf reads the freshly-seeded draft file when
+        // rendered, so openDocument reads the freshly-seeded draft file when
         // it opens the new doc.
-        void openFileFromTreeOrPalette(r.new_source_path!);
+        void openDocument(r.new_source_path!);
       });
       actions.append(open);
     }
