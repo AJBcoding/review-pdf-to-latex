@@ -31,7 +31,18 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import jinja2
 
 from review_pdf_to_latex import terminal as terminal_bridge
+from review_pdf_to_latex.exit_codes import (
+    EXIT_OK,
+    EXIT_PORT_UNAVAILABLE,
+    EXIT_STATE_MISSING,
+    EXIT_WAIT_TIMEOUT,
+)
 from review_pdf_to_latex.state import status_is_terminal
+
+# Ctrl-C during wait-event exits 128 + SIGINT(2) by shell convention. Not part
+# of the spec-§8 contract table, so it stays a documented literal here rather
+# than a named exit_codes.py constant.
+_EXIT_SIGINT = 130
 
 EVENTS_FILENAME = "state-events.jsonl"
 STATE_DIR_NAME = ".review-state"  # mirrors state.STATE_DIR_NAME for module independence
@@ -1097,14 +1108,14 @@ def handle_serve(
     state_path = project_dir / STATE_DIR_NAME / "state.json"
     if not state_path.exists():
         sys.stderr.write("state missing; run 'review-pdf extract' first\n")
-        return 6
+        return EXIT_STATE_MISSING
 
     lock_path = project_dir / STATE_DIR_NAME / "serve.lock"
     try:
         lock_fd = acquire_serve_lock(lock_path)
     except BlockingIOError:
         sys.stderr.write("another serve instance is running (lock held)\n")
-        return 5
+        return EXIT_PORT_UNAVAILABLE
 
     # Persist --order into state.json if it differs.
     try:
@@ -1119,7 +1130,7 @@ def handle_serve(
             lock_path.unlink()
         except FileNotFoundError:
             pass
-        return 6
+        return EXIT_STATE_MISSING
 
     if port == 0:
         port = pick_free_port()
@@ -1145,7 +1156,7 @@ def handle_serve(
             lock_path.unlink()
         except FileNotFoundError:
             pass
-    return 0
+    return EXIT_OK
 
 
 class _SigTermExit(BaseException):
@@ -1195,7 +1206,7 @@ def handle_wait_event(
     state_path = project_dir / STATE_DIR_NAME / "state.json"
     if not state_path.exists():
         sys.stderr.write("state missing; run 'review-pdf extract' first\n")
-        return 6
+        return EXIT_STATE_MISSING
 
     events_path = project_dir / STATE_DIR_NAME / EVENTS_FILENAME
 
@@ -1206,17 +1217,17 @@ def handle_wait_event(
                 events_path, since_ts=since, timeout_sec=timeout,
             )
         except _SigTermExit:
-            return 0
+            return EXIT_OK
         except _SigIntExit:
-            return 130
+            return _EXIT_SIGINT
         if not events:
-            return 20
+            return EXIT_WAIT_TIMEOUT
         for event in events:
             sys.stdout.write(
                 json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n"
             )
         sys.stdout.flush()
-        return 0
+        return EXIT_OK
     finally:
         signal.signal(signal.SIGTERM, prev_term)
         signal.signal(signal.SIGINT, prev_int)

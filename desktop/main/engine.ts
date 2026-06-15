@@ -18,6 +18,8 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { delimiter } from 'node:path';
 
+import { PDF_HEALTH_REPORTING_EXITS } from '@shared/exit-codes.js';
+
 export type EngineResolution =
   | { ok: true; resolvedPath: string; via: ResolutionStep }
   | { ok: false; triedPaths: ResolutionAttempt[] };
@@ -268,21 +270,48 @@ export async function pdfHealth(pdfPath: string): Promise<PdfHealthResult> {
 
   // pdf-health emits JSON on stdout regardless of exit code. Even the
   // "missing file" and "encrypted" exit codes carry a partial report.
-  const successfulExits = new Set([0, 2, 21]);
+  // The reporting exit set is single-sourced from the exit-code twin (rev-x10)
+  // rather than spelled as a bare `new Set([0, 2, 21])`.
   if (
-    (engine.ok || (!engine.ok && engine.reason === 'failed' && engine.exitCode !== null && successfulExits.has(engine.exitCode)))
+    (engine.ok || (!engine.ok && engine.reason === 'failed' && engine.exitCode !== null && PDF_HEALTH_REPORTING_EXITS.has(engine.exitCode)))
   ) {
-    const stdout = engine.ok ? engine.stdout : engine.stdout;
+    const stdout = engine.stdout;
     const exitCode = engine.ok ? engine.exitCode : (engine.reason === 'failed' ? (engine.exitCode ?? -1) : -1);
     const resolvedPath = engine.ok ? engine.resolvedPath : (engine.reason === 'failed' ? engine.resolvedPath : '');
+    let parsed: unknown;
     try {
-      const report = JSON.parse(stdout) as PdfHealthReport;
-      return { ok: true, report, exitCode, resolvedPath };
+      parsed = JSON.parse(stdout);
     } catch {
       // Engine exited but stdout wasn't JSON — treat as engine failure.
       return { ok: false, reason: 'engine_failed', engine };
     }
+    // Minimally validate the shape before the cast (rev-x10): the contract is
+    // schema_version 1, so anything else is a drifted/unknown report we must
+    // not silently trust.
+    if (!isPdfHealthReport(parsed)) {
+      return { ok: false, reason: 'engine_failed', engine };
+    }
+    return { ok: true, report: parsed, exitCode, resolvedPath };
   }
 
   return { ok: false, reason: 'engine_failed', engine };
+}
+
+/**
+ * Minimal structural guard for a `pdf-health` report (rev-x10). Pins the
+ * load-bearing fields the renderer reads — `schema_version === 1` plus the
+ * array/boolean shapes — without re-validating every optional field. Anything
+ * that fails this is treated as an engine failure rather than cast blindly.
+ */
+export function isPdfHealthReport(value: unknown): value is PdfHealthReport {
+  if (typeof value !== 'object' || value === null) return false;
+  const r = value as Record<string, unknown>;
+  return (
+    r.schema_version === 1 &&
+    Array.isArray(r.readable_pages) &&
+    Array.isArray(r.unreadable_pages) &&
+    Array.isArray(r.page_errors) &&
+    typeof r.ligature_loss_detected === 'boolean' &&
+    typeof r.encrypted === 'boolean'
+  );
 }

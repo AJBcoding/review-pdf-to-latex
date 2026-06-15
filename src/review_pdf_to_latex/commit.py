@@ -12,6 +12,14 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+from .exit_codes import (
+    EXIT_COMMIT_FAILED,
+    EXIT_DIRTY_GIT_STATE,
+    EXIT_GENERIC,
+    EXIT_LEGACY_STATE,
+    EXIT_SOURCE_PDF_CHANGED,
+    EngineError,
+)
 from .state import (
     LegacyStateError,
     SourcePdfChangedError,
@@ -21,32 +29,36 @@ from .state import (
 )
 
 
-class CommitError(Exception):
-    exit_code: int = 1
+class CommitError(EngineError):
+    """Base class for commit.py error conditions.
+
+    Inherits :attr:`exit_code` (the generic fallback) from
+    :class:`exit_codes.EngineError`; subclasses pin a spec-§8 code.
+    """
 
 
 class DirtyGitError(CommitError):
-    exit_code = 15
+    exit_code = EXIT_DIRTY_GIT_STATE
 
 
 class CommitFailedError(CommitError):
-    exit_code = 19
+    exit_code = EXIT_COMMIT_FAILED
 
 
 class IllegalPhaseError(CommitError):
-    exit_code = 1
+    exit_code = EXIT_GENERIC
 
 
 class SourcePdfChangedCommitError(CommitError):
     """Wraps state.SourcePdfChangedError; commit-phase refuses to proceed."""
 
-    exit_code = 21
+    exit_code = EXIT_SOURCE_PDF_CHANGED
 
 
 class LegacyStateCommitError(CommitError):
     """Wraps state.LegacyStateError; commit-phase refuses to proceed."""
 
-    exit_code = 22
+    exit_code = EXIT_LEGACY_STATE
 
 
 def assert_clean_git(project_root: Path, current_phase: str) -> None:

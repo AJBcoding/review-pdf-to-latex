@@ -15,6 +15,12 @@ from pathlib import Path
 import pdfannots
 from rapidfuzz import fuzz
 
+from review_pdf_to_latex.exit_codes import (
+    EXIT_EXISTING_STATE,
+    EXIT_MISSING_PDF,
+    EXIT_OK,
+    EXIT_PDFANNOTS_FAILED,
+)
 from review_pdf_to_latex.state import (
     Annotation,
     AnnotationState,
@@ -866,7 +872,7 @@ def run_extract(
 
     if not pdf_path.exists():
         print(f"error: PDF not found: {pdf_path}", file=sys.stderr)
-        return 2
+        return EXIT_MISSING_PDF
 
     state_dir = project_dir / ".review-state"
     annotations_path = state_dir / "annotations.json"
@@ -882,7 +888,7 @@ def run_extract(
             "or state.json; pass --force to overwrite",
             file=sys.stderr,
         )
-        return 3
+        return EXIT_EXISTING_STATE
 
     state_dir.mkdir(parents=True, exist_ok=True)
     pages_dir.mkdir(parents=True, exist_ok=True)
@@ -901,14 +907,14 @@ def run_extract(
         # read_annotations already formats a multi-line user-facing message
         # (see _corrupt_pdf_message); print it as-is rather than re-prefixing.
         print(f"error: {exc}", file=sys.stderr)
-        return 4
+        return EXIT_PDFANNOTS_FAILED
 
     # 2. Render pages.
     try:
         render_pages(pdf_path, pages_dir)
     except RuntimeError as exc:
         print(f"error: page rendering failed: {exc}", file=sys.stderr)
-        return 4
+        return EXIT_PDFANNOTS_FAILED
 
     # 3. Fuzzy-map every annotation.
     mappings: dict[str, Mapping] = {}
@@ -969,4 +975,4 @@ def run_extract(
             file=sys.stderr,
         )
 
-    return 0
+    return EXIT_OK

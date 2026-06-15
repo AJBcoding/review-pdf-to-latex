@@ -46,6 +46,10 @@ Exit codes::
     0   ok (report emitted; unreadable_pages may still be non-empty)
     2   PDF path missing or unreadable as a PDF at all
     21  PDF encrypted (partial report emitted with encrypted=true)
+
+Code ``21`` is shared with the mutator family's ``EXIT_SOURCE_PDF_CHANGED`` by
+deliberate per-subcommand namespace reuse — see ``exit_codes.py`` for why this
+is not a collision. The constants below are single-sourced from that module.
 """
 
 from __future__ import annotations
@@ -58,9 +62,11 @@ from typing import Any
 
 import pdfplumber
 
-EXIT_OK = 0
-EXIT_MISSING = 2
-EXIT_ENCRYPTED = 21
+from .exit_codes import EXIT_ENCRYPTED, EXIT_MISSING_PDF, EXIT_OK
+
+# Local alias kept for readability at the call sites in this module; the value
+# is single-sourced from exit_codes.py (spec §8 "2 pdf path missing").
+EXIT_MISSING = EXIT_MISSING_PDF
 
 SCHEMA_VERSION = 1
 

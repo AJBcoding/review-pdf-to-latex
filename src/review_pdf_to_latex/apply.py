@@ -18,6 +18,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .exit_codes import (
+    EXIT_ANNOTATION_NOT_FOUND,
+    EXIT_FILE_MUTATION_FAILED,
+    EXIT_ILLEGAL_STATUS_TRANSITION,
+    EXIT_INVALID_LINE_RANGE,
+    EXIT_LEGACY_STATE,
+    EXIT_MAPPING_UNRESOLVED,
+    EXIT_NO_PRIOR_APPLY,
+    EXIT_OVERLAPPING_LINE_RANGE,
+    EXIT_SOURCE_PDF_CHANGED,
+    EngineError,
+)
 from .state import (
     StateDir,
     LegacyStateError,
@@ -30,50 +42,52 @@ from .state import (
 
 # --- Errors -----------------------------------------------------------------
 
-class ApplyError(Exception):
-    """Base class for apply.py error conditions."""
+class ApplyError(EngineError):
+    """Base class for apply.py error conditions.
 
-    exit_code: int = 1
+    Inherits :attr:`exit_code` (the generic fallback) from
+    :class:`exit_codes.EngineError`; subclasses pin a spec-§8 code.
+    """
 
 
 class AnnotationNotFoundError(ApplyError):
-    exit_code = 7
+    exit_code = EXIT_ANNOTATION_NOT_FOUND
 
 
 class MappingUnresolvedError(ApplyError):
-    exit_code = 8
+    exit_code = EXIT_MAPPING_UNRESOLVED
 
 
 class FileMutationError(ApplyError):
-    exit_code = 9
+    exit_code = EXIT_FILE_MUTATION_FAILED
 
 
 class NoPriorApplyError(ApplyError):
-    exit_code = 10
+    exit_code = EXIT_NO_PRIOR_APPLY
 
 
 class InvalidLineRangeError(ApplyError):
-    exit_code = 13
+    exit_code = EXIT_INVALID_LINE_RANGE
 
 
 class OverlappingRangeError(ApplyError):
-    exit_code = 16
+    exit_code = EXIT_OVERLAPPING_LINE_RANGE
 
 
 class IllegalStatusTransitionError(ApplyError):
-    exit_code = 18
+    exit_code = EXIT_ILLEGAL_STATUS_TRANSITION
 
 
 class SourcePdfChangedApplyError(ApplyError):
     """Wraps state.SourcePdfChangedError for exit-code mapping."""
 
-    exit_code = 21
+    exit_code = EXIT_SOURCE_PDF_CHANGED
 
 
 class LegacyStateApplyError(ApplyError):
     """Wraps state.LegacyStateError for exit-code mapping."""
 
-    exit_code = 22
+    exit_code = EXIT_LEGACY_STATE
 
 
 def _guard_source_pdf(state_dir: Path) -> None:

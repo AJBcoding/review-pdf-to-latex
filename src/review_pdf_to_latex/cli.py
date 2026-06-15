@@ -684,21 +684,22 @@ def _handle_preview(args: argparse.Namespace) -> int:
     except _state.LegacyStateError as exc:
         print(f"legacy state (no source_pdf_md5): {exc}", file=sys.stderr)
         return EXIT_LEGACY_STATE
-    except _preview.AnnotationNotFoundError as exc:
-        print(f"annotation not found: {exc}", file=sys.stderr)
-        return EXIT_ANNOTATION_NOT_FOUND
-    except _preview.MappingUnresolvedError as exc:
-        print(f"mapping unresolved: {exc}", file=sys.stderr)
-        return EXIT_MAPPING_UNRESOLVED
     except _preview.InPlaceRestoreError as exc:
-        # Preserve the recovery-file instructions verbatim (spec §8 exit 17).
+        # Special-cased only for the extra recovery-file instructions (spec §8
+        # exit 17); the code itself still comes from exc.exit_code.
         print(f"in-place restore failed: {exc}", file=sys.stderr)
         print(
             "  recovery: copy the contents of the recovery file back over "
             "the original .tex location.",
             file=sys.stderr,
         )
-        return EXIT_RESTORE_FAILED
+        return exc.exit_code
+    except _preview.PreviewError as exc:
+        # AnnotationNotFoundError (7) / MappingUnresolvedError (8) — folded into
+        # the EngineError hierarchy (rev-x10), so this collapses like every
+        # other mutator handler.
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
     print(build_id)
     return EXIT_OK
 
@@ -820,26 +821,31 @@ def print_json(data: object) -> None:
 
 # Exit codes (spec §8 — pinned by tests/test_cli.py::test_exit_code_constants_match_spec).
 # The skill consumes these as its contract with the engine; do NOT renumber.
-EXIT_OK = 0
-EXIT_MISSING_PDF = 2  # extract: --pdf path absent or unreadable
-EXIT_EXISTING_STATE = 3  # extract: .review-state/ exists, no --force
-EXIT_PDFANNOTS_FAILED = 4  # extract: pdfannots parse error
-EXIT_PORT_UNAVAILABLE = 5  # serve: requested port in use
-EXIT_STATE_MISSING = 6  # any: state.json absent when required
-EXIT_ANNOTATION_NOT_FOUND = 7  # any per-annotation: id absent
-EXIT_MAPPING_UNRESOLVED = 8  # apply/preview: mapping has no latex_file/line_range
-EXIT_FILE_MUTATION_FAILED = 9  # apply: .tex write failed
-EXIT_NO_PRIOR_APPLY = 10  # revert: no before_text captured
-EXIT_BUILD_FAILED = 11  # build/preview: pdflatex non-zero
-EXIT_MAIN_FILE_NOT_FOUND = 12  # build: --main-file absent
-EXIT_INVALID_LINE_RANGE = 13  # override-mapping: bad START:END
-EXIT_UNSUPPORTED_MIGRATION = 14  # migrate-state: no path from N to M
-EXIT_DIRTY_GIT_STATE = 15  # commit-phase: git status --porcelain non-empty
-EXIT_OVERLAPPING_LINE_RANGE = 16  # apply: conflict with another annotation
-EXIT_RESTORE_FAILED = 17  # preview: in-place restore failed (engine emits recovery)
-EXIT_ILLEGAL_STATUS_TRANSITION = 18  # set-status: rejected by validate_status_transition
-EXIT_COMMIT_FAILED = 19  # commit-phase: hook or staging error
-EXIT_WAIT_TIMEOUT = 20  # wait-event: --timeout elapsed before any event
-EXIT_SOURCE_PDF_CHANGED = 21  # any mutator: PDF md5 differs from annotations.json.source_pdf_md5
-EXIT_LEGACY_STATE = 22  # any mutator: annotations.json predates source_pdf_md5 guard
-EXIT_REVIEWER_RIG_REFUSED = 23  # apply/build/revert refused under $GT_RIG=reviewer/* per spec §10.5.2
+# Single-sourced from exit_codes.py (rev-x10); re-exported at module level so
+# ``cli.EXIT_*`` references and the pinning test keep working unchanged.
+from .exit_codes import (  # noqa: E402,F401  (re-export for the contract surface)
+    EXIT_ANNOTATION_NOT_FOUND,
+    EXIT_BUILD_FAILED,
+    EXIT_COMMIT_FAILED,
+    EXIT_DIRTY_GIT_STATE,
+    EXIT_EXISTING_STATE,
+    EXIT_FILE_MUTATION_FAILED,
+    EXIT_GENERIC,
+    EXIT_ILLEGAL_STATUS_TRANSITION,
+    EXIT_INVALID_LINE_RANGE,
+    EXIT_LEGACY_STATE,
+    EXIT_MAIN_FILE_NOT_FOUND,
+    EXIT_MAPPING_UNRESOLVED,
+    EXIT_MISSING_PDF,
+    EXIT_NO_PRIOR_APPLY,
+    EXIT_OK,
+    EXIT_OVERLAPPING_LINE_RANGE,
+    EXIT_PDFANNOTS_FAILED,
+    EXIT_PORT_UNAVAILABLE,
+    EXIT_RESTORE_FAILED,
+    EXIT_REVIEWER_RIG_REFUSED,
+    EXIT_SOURCE_PDF_CHANGED,
+    EXIT_STATE_MISSING,
+    EXIT_UNSUPPORTED_MIGRATION,
+    EXIT_WAIT_TIMEOUT,
+)

@@ -28,14 +28,33 @@ import time
 from pathlib import Path
 from typing import Iterator
 
+from .exit_codes import (
+    EXIT_ANNOTATION_NOT_FOUND,
+    EXIT_MAPPING_UNRESOLVED,
+    EXIT_RESTORE_FAILED,
+    EngineError,
+)
 
-class InPlaceRestoreError(Exception):
+
+class PreviewError(EngineError):
+    """Base class for preview.py error conditions.
+
+    Folded into the shared :class:`exit_codes.EngineError` hierarchy (rev-x10)
+    so the ``preview`` CLI handler collapses to ``return exc.exit_code`` like
+    every other mutator handler, instead of mapping each class by hand.
+    """
+
+
+class InPlaceRestoreError(PreviewError):
     """Raised when :func:`with_in_place_edit` fails to restore the snapshot.
 
     Carries the path of the target file, the path of the recovery file
     holding the original bytes, and the underlying OS error. The CLI
-    handler prints the message to stderr and exits 17 (spec §8).
+    handler prints the message (plus recovery instructions) to stderr and
+    exits 17 (spec §8).
     """
+
+    exit_code = EXIT_RESTORE_FAILED
 
 
 def _find_state_dir(target: Path) -> Path:
@@ -155,18 +174,22 @@ def with_in_place_edit(
 from review_pdf_to_latex import state as _state
 
 
-class AnnotationNotFoundError(Exception):
+class AnnotationNotFoundError(PreviewError):
     """Raised when ``preview()`` is asked about an unknown annotation ID.
 
     CLI handler maps this to exit code 7 (``EXIT_ANNOTATION_NOT_FOUND``).
     """
 
+    exit_code = EXIT_ANNOTATION_NOT_FOUND
 
-class MappingUnresolvedError(Exception):
+
+class MappingUnresolvedError(PreviewError):
     """Raised when an annotation's mapping has no ``latex_file`` or ``line_range``.
 
     CLI handler maps this to exit code 8 (``EXIT_MAPPING_UNRESOLVED``).
     """
+
+    exit_code = EXIT_MAPPING_UNRESOLVED
 
 
 def _invoke_build(state_dir: _state.StateDir, **kwargs):  # type: ignore[no-untyped-def]

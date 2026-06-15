@@ -1185,3 +1185,74 @@ def test_exit_code_constants_match_spec():
     assert cli.EXIT_SOURCE_PDF_CHANGED == 21
     assert cli.EXIT_LEGACY_STATE == 22
     assert cli.EXIT_REVIEWER_RIG_REFUSED == 23
+
+
+def test_cli_constants_are_single_sourced_from_exit_codes():
+    """cli.EXIT_* are re-exports of the single-source exit_codes module (rev-x10).
+
+    The constant block in cli.py used to be a second hand-maintained copy; now
+    it imports from exit_codes.py. Pin that the re-export is by identity so the
+    two cannot silently diverge again.
+    """
+    from review_pdf_to_latex import exit_codes
+
+    # Every EXIT_* re-exported on the cli surface must equal the single source.
+    cli_codes = [n for n in dir(cli) if n.startswith("EXIT_")]
+    assert cli_codes, "cli should re-export the EXIT_* surface"
+    for name in cli_codes:
+        assert getattr(cli, name) == getattr(exit_codes, name), name
+
+
+def test_exception_class_exit_codes_match_constants():
+    """Every exit-code-carrying exception's ``exit_code`` matches the spec (rev-x10).
+
+    Before single-sourcing, the apply/commit/preview error classes spelled
+    their codes as bare integer literals with no test cross-checking them
+    against the cli constants. This pins the third notation to the contract.
+    """
+    from review_pdf_to_latex import apply, commit, exit_codes, preview
+
+    # apply.py hierarchy
+    assert apply.AnnotationNotFoundError.exit_code == exit_codes.EXIT_ANNOTATION_NOT_FOUND
+    assert apply.MappingUnresolvedError.exit_code == exit_codes.EXIT_MAPPING_UNRESOLVED
+    assert apply.FileMutationError.exit_code == exit_codes.EXIT_FILE_MUTATION_FAILED
+    assert apply.NoPriorApplyError.exit_code == exit_codes.EXIT_NO_PRIOR_APPLY
+    assert apply.InvalidLineRangeError.exit_code == exit_codes.EXIT_INVALID_LINE_RANGE
+    assert apply.OverlappingRangeError.exit_code == exit_codes.EXIT_OVERLAPPING_LINE_RANGE
+    assert apply.IllegalStatusTransitionError.exit_code == exit_codes.EXIT_ILLEGAL_STATUS_TRANSITION
+    assert apply.SourcePdfChangedApplyError.exit_code == exit_codes.EXIT_SOURCE_PDF_CHANGED
+    assert apply.LegacyStateApplyError.exit_code == exit_codes.EXIT_LEGACY_STATE
+
+    # commit.py hierarchy
+    assert commit.DirtyGitError.exit_code == exit_codes.EXIT_DIRTY_GIT_STATE
+    assert commit.CommitFailedError.exit_code == exit_codes.EXIT_COMMIT_FAILED
+    assert commit.IllegalPhaseError.exit_code == exit_codes.EXIT_GENERIC
+    assert commit.SourcePdfChangedCommitError.exit_code == exit_codes.EXIT_SOURCE_PDF_CHANGED
+    assert commit.LegacyStateCommitError.exit_code == exit_codes.EXIT_LEGACY_STATE
+
+    # preview.py hierarchy — folded into EngineError (rev-x10)
+    assert issubclass(preview.PreviewError, exit_codes.EngineError)
+    assert preview.AnnotationNotFoundError.exit_code == exit_codes.EXIT_ANNOTATION_NOT_FOUND
+    assert preview.MappingUnresolvedError.exit_code == exit_codes.EXIT_MAPPING_UNRESOLVED
+    assert preview.InPlaceRestoreError.exit_code == exit_codes.EXIT_RESTORE_FAILED
+
+    # apply/commit bases share the one hierarchy too.
+    assert issubclass(apply.ApplyError, exit_codes.EngineError)
+    assert issubclass(commit.CommitError, exit_codes.EngineError)
+
+
+def test_pdf_health_21_overload_is_the_same_number_by_design():
+    """pdf-health's EXIT_ENCRYPTED deliberately reuses 21 (rev-x10).
+
+    Spec §8 documents 21 as both "pdf encrypted" (pdf-health row) and "source
+    PDF changed" (mutator rows). The alias makes the shared number explicit;
+    pin that it stays 21 and stays tied to EXIT_SOURCE_PDF_CHANGED so a future
+    renumber of one moves the other.
+    """
+    from review_pdf_to_latex import exit_codes, pdf_health
+
+    assert exit_codes.EXIT_ENCRYPTED == 21
+    assert exit_codes.EXIT_ENCRYPTED == exit_codes.EXIT_SOURCE_PDF_CHANGED
+    assert pdf_health.EXIT_ENCRYPTED == exit_codes.EXIT_ENCRYPTED
+    assert pdf_health.EXIT_MISSING == exit_codes.EXIT_MISSING_PDF
+    assert pdf_health.EXIT_OK == exit_codes.EXIT_OK
