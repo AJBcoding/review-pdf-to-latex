@@ -25,7 +25,17 @@ function previewInput(input: Record<string, unknown>): string | null {
   }
 }
 
-function ApprovalCard({ request }: { request: PermissionRequest }) {
+// `sessionId` routes the approve/deny back to the right session. Omit it (or
+// pass undefined) for the conversational session; the WorkerPanel passes the
+// worker's sessionId so worker approvals resolve their own canUseTool prompt
+// (X8 Stage 3).
+export function ApprovalCard({
+  request,
+  sessionId,
+}: {
+  request: PermissionRequest;
+  sessionId?: string;
+}) {
   const [showDetails, setShowDetails] = useState(false);
   const headline =
     request.title ??
@@ -33,10 +43,10 @@ function ApprovalCard({ request }: { request: PermissionRequest }) {
   const preview = previewInput(request.input);
 
   const onAllow = (): void => {
-    void agentViewer.approveTool(request.toolUseId, true);
+    void agentViewer.approveTool(request.toolUseId, true, undefined, sessionId);
   };
   const onDeny = (): void => {
-    void agentViewer.approveTool(request.toolUseId, false);
+    void agentViewer.approveTool(request.toolUseId, false, undefined, sessionId);
   };
 
   return (

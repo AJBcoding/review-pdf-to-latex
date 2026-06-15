@@ -62,7 +62,7 @@ const initialState: State = {
   pendingApprovalIds: [],
 };
 
-function appendOrdered<T extends { id: string; createdAt: string }>(
+export function appendOrdered<T extends { id: string; createdAt: string }>(
   map: Record<string, T>,
   ids: string[],
   item: T,
@@ -78,7 +78,7 @@ function appendOrdered<T extends { id: string; createdAt: string }>(
 // `streaming`, concatenate text — the SDK ships per-delta chunks, not
 // cumulative snapshots. Otherwise replace (the authoritative full
 // assistant message ends streaming and overwrites the partial).
-function mergeMessage(
+export function mergeMessage(
   messages: Record<string, ChatMessage>,
   ids: string[],
   incoming: ChatMessage,

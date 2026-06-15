@@ -52,7 +52,7 @@ type FakeSessionSpy = {
 };
 
 const createdSessions: Array<{
-  options: { resume?: string; model?: string };
+  options: { resume?: string; model?: string; skipPermissions?: boolean };
   emit: (event: BackendEvent) => void;
   onSessionId?: (id: string) => void;
   onClosed?: () => void;
@@ -67,6 +67,7 @@ vi.mock('./claude-backend.js', () => ({
       onSessionId?: (id: string) => void;
       onClosed?: () => void;
       model?: string;
+      skipPermissions?: boolean;
     }) => {
       const spy: FakeSessionSpy = {
         send: vi.fn(),
@@ -77,7 +78,11 @@ vi.mock('./claude-backend.js', () => ({
         getSessionId: vi.fn(() => null),
       };
       createdSessions.push({
-        options: { resume: opts.resume, model: opts.model },
+        options: {
+          resume: opts.resume,
+          model: opts.model,
+          skipPermissions: opts.skipPermissions,
+        },
         emit: opts.emit,
         onSessionId: opts.onSessionId,
         onClosed: opts.onClosed,
@@ -321,6 +326,13 @@ describe('agent-pane-ipc', () => {
       });
       expect(createdSessions).toHaveLength(1);
       expect(createdSessions[0]!.spy.send).toHaveBeenCalledWith('do the thing');
+    });
+
+    it('starts workers with canUseTool active (skipPermissions=false) — X8 Stage 3', () => {
+      // Stage 3 built the WorkerPanel approval surface, so workers no longer
+      // force-skip permissions; canUseTool prompts route to the panel.
+      call('agent:spawnSession', { sessionId: 'wk-perm', prompt: 'go' });
+      expect(createdSessions[0]!.options.skipPermissions).toBe(false);
     });
 
     it('refuses to spawn into the conv sessionId', () => {
