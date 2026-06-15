@@ -6,8 +6,9 @@
 // Single-session for now; multi-session lands at Project 3.
 
 import { app } from "electron";
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { atomicWriteJson } from "./atomic-write.js";
 
 interface SessionFile {
   sessionId: string;
@@ -34,13 +35,17 @@ export function loadSavedSessionId(): string | null {
   }
 }
 
-export function saveSessionId(sessionId: string): void {
+// Async now that it routes through the shared atomic writer (tmp + rename),
+// so a crash mid-write can't truncate session.json. Callers use it as a
+// fire-and-forget `(sessionId) => void` callback; failures are swallowed and
+// logged here, so the unawaited promise never rejects to the caller.
+export async function saveSessionId(sessionId: string): Promise<void> {
   try {
     const data: SessionFile = {
       sessionId,
       savedAt: new Date().toISOString(),
     };
-    writeFileSync(pathFor(), JSON.stringify(data, null, 2));
+    await atomicWriteJson(pathFor(), data);
   } catch (err) {
     console.error("[session-store] failed to write session.json:", err);
   }

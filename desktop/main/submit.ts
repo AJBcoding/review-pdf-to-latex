@@ -15,9 +15,9 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { atomicWriteJson } from './atomic-write.js';
 import type {
   SubmitAbandonRequest,
   SubmitAbandonResult,
@@ -67,20 +67,6 @@ function whichGt(): string | null {
     }
   }
   return null;
-}
-
-/** Atomic write — temp file in same dir + rename. Matches the drafts /
- *  app-state pattern in main/index.ts. */
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf8');
-    await rename(tmpPath, filePath);
-  } catch (err) {
-    await unlink(tmpPath).catch(() => {});
-    throw err;
-  }
 }
 
 export async function promoteDraft(

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { basename as pathBasename, dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { watch, type FSWatcher } from 'node:fs';
 import { engineVersion, pdfHealth } from './engine.js';
@@ -11,6 +11,7 @@ import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
 import { registerAgentPaneIpc, rebindMainWindow, shutdownAgentPane } from './agent-pane-ipc.js';
 import { runSidecarMigration, findSidecarByFingerprint, buildFingerprint } from './sidecar-migration.js';
 import { migrateDraftsToV2 } from './drafts-migration.js';
+import { atomicWrite, atomicWriteJson } from './atomic-write.js';
 import {
   promoteDraft,
   slingViaGtMail,
@@ -455,8 +456,7 @@ void app.whenReady().then(async () => {
               ...fp,
               last_known_path: resolve(pdfPath),
             };
-            await mkdir(dirname(filePath), { recursive: true });
-            await writeFile(filePath, JSON.stringify(migrated, null, 2), 'utf8');
+            await atomicWriteJson(filePath, migrated);
             try { await rename(match.sidecarPath, `${match.sidecarPath}.relinked`); } catch { /* best-effort */ }
             return { ok: true, file: migrated, filePath };
           }
@@ -489,6 +489,9 @@ void app.whenReady().then(async () => {
     'drafts:write',
     async (_event, pdfPath: string, _sha256: string, file: DraftsFile): Promise<DraftsWriteResult> => {
       const filePath = draftsPathFor(pdfPath);
+      // mkdir up front so a missing parent dir surfaces as the distinct
+      // `mkdir_failed` reason; atomicWriteJson re-runs mkdir (idempotent) and
+      // owns the crash-safe tmp + rename.
       try {
         await mkdir(dirname(filePath), { recursive: true });
       } catch (err) {
@@ -499,14 +502,10 @@ void app.whenReady().then(async () => {
           error: err instanceof Error ? err.message : String(err),
         };
       }
-      const tmpPath = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
       try {
-        await writeFile(tmpPath, JSON.stringify(file, null, 2), 'utf8');
-        await rename(tmpPath, filePath);
+        await atomicWriteJson(filePath, file);
         return { ok: true, filePath };
       } catch (err) {
-        // Best-effort cleanup of the orphan tmp file; don't surface its error.
-        await unlink(tmpPath).catch(() => {});
         return {
           ok: false,
           reason: 'write_failed',
@@ -600,6 +599,8 @@ void app.whenReady().then(async () => {
     'fs:writeFileText',
     async (_event, filePath: string, content: string): Promise<WriteFileTextResult> => {
       const resolvedPath = resolve(filePath);
+      // Explicit mkdir keeps the distinct `mkdir_failed` reason; atomicWrite
+      // (text, not JSON) owns the crash-safe tmp + rename.
       try {
         await mkdir(dirname(resolvedPath), { recursive: true });
       } catch (err) {
@@ -608,13 +609,10 @@ void app.whenReady().then(async () => {
           error: err instanceof Error ? err.message : String(err),
         };
       }
-      const tmpPath = `${resolvedPath}.${randomBytes(6).toString('hex')}.tmp`;
       try {
-        await writeFile(tmpPath, content, 'utf8');
-        await rename(tmpPath, resolvedPath);
+        await atomicWrite(resolvedPath, content);
         return { ok: true, filePath: resolvedPath };
       } catch (err) {
-        await unlink(tmpPath).catch(() => {});
         return {
           ok: false, reason: 'write_failed', filePath: resolvedPath,
           error: err instanceof Error ? err.message : String(err),
@@ -686,6 +684,8 @@ void app.whenReady().then(async () => {
 
   ipcMain.handle('appState:write', async (_event, state: AppStateFile): Promise<AppStateWriteResult> => {
     const filePath = appStatePath();
+    // Explicit mkdir keeps the distinct `mkdir_failed` reason; atomicWriteJson
+    // owns the crash-safe tmp + rename.
     try {
       await mkdir(dirname(filePath), { recursive: true });
     } catch (err) {
@@ -694,13 +694,10 @@ void app.whenReady().then(async () => {
         error: err instanceof Error ? err.message : String(err),
       };
     }
-    const tmpPath = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
     try {
-      await writeFile(tmpPath, JSON.stringify(state, null, 2), 'utf8');
-      await rename(tmpPath, filePath);
+      await atomicWriteJson(filePath, state);
       return { ok: true, filePath };
     } catch (err) {
-      await unlink(tmpPath).catch(() => {});
       return {
         ok: false, reason: 'write_failed', filePath,
         error: err instanceof Error ? err.message : String(err),

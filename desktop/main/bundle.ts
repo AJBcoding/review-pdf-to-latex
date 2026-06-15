@@ -11,9 +11,10 @@
 // v1 emits Highlight only. Strikethrough + sticky-note paths are deferred
 // to v2 (tracking spec §5.1's tool deferral; see bd rev-6nr).
 
-import { readFile, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { createHash, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
+import { atomicWrite, atomicWriteJson } from './atomic-write.js';
 import {
   PDFDocument,
   PDFName,
@@ -124,20 +125,6 @@ function appendAnnotsToPage(
     for (const r of annotRefs) existing.push(r);
   } else {
     page.node.set(PDFName.of('Annots'), ctx.obj(annotRefs));
-  }
-}
-
-/** Atomic write: temp file in the same dir, then rename. Mirrors the
- *  drafts/app-state pattern in main/index.ts. */
-async function atomicWrite(filePath: string, data: Uint8Array | string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    await writeFile(tmpPath, data);
-    await rename(tmpPath, filePath);
-  } catch (err) {
-    await unlink(tmpPath).catch(() => {});
-    throw err;
   }
 }
 
@@ -307,7 +294,7 @@ export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteR
   };
 
   try {
-    await atomicWrite(bundleJsonPath, JSON.stringify(json, null, 2));
+    await atomicWriteJson(bundleJsonPath, json);
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     return {

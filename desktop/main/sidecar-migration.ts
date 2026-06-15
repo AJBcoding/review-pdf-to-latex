@@ -1,7 +1,8 @@
 import { basename, dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rename } from 'node:fs/promises';
 import type { DraftsFile, DocFingerprint } from '@shared/types';
+import { atomicWriteJson } from './atomic-write.js';
 
 /** Run at app startup before any document is opened. Walks known project
  *  roots (from AppState) and migrates sha256-keyed sidecars to path-based
@@ -88,8 +89,7 @@ async function migrateSingleSidecar(
   const fingerprint = await buildFingerprint(matchingDocPath);
   drafts.doc_fingerprint = fingerprint;
 
-  await mkdir(dirname(newSidecarPath), { recursive: true });
-  await writeFile(newSidecarPath, JSON.stringify(drafts, null, 2), 'utf8');
+  await atomicWriteJson(newSidecarPath, drafts);
 
   if (newSidecarPath !== sidecarPath) {
     try {
