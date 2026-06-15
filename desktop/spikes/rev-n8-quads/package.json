@@ -1,0 +1,13 @@
+{
+  "name": "spike-rev-n8-quads",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Spike rev-n8 / S-2: per-line /QuadPoints write-back surviving an Acrobat-cycle re-save (see docs/research/2026-06-13-per-line-quads-writeback/).",
+  "type": "module",
+  "scripts": {
+    "spike": "node spike-n8.mjs"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}

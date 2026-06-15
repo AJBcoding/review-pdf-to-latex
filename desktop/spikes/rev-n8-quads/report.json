@@ -1,0 +1,193 @@
+{
+  "spike": "rev-n8",
+  "title": "per-line /QuadPoints write-back surviving Acrobat-cycle re-save",
+  "fixture": "tests/fixtures/sample-annotated.pdf",
+  "regions": [
+    {
+      "x": 72,
+      "y": 699.516,
+      "w": 310.812,
+      "h": 11.1
+    },
+    {
+      "x": 72,
+      "y": 681.516,
+      "w": 204.12,
+      "h": 11.1
+    }
+  ],
+  "proxies": {
+    "qpdf --object-streams=generate": "structure-preserving Acrobat-like re-save",
+    "gs -sDEVICE=pdfwrite -dPrinted=false": "reinterpreting restored/degraded re-save (domain trap #8 proxy)"
+  },
+  "cases": [
+    {
+      "label": "clean",
+      "expectedQuadCount": 2,
+      "written": {
+        "quadCount": 2,
+        "rect": {
+          "x": 72,
+          "y": 681.516,
+          "w": 310.812,
+          "h": 29.1
+        },
+        "quads": [
+          {
+            "ul": [
+              72,
+              710.616
+            ],
+            "ur": [
+              382.812,
+              710.616
+            ],
+            "ll": [
+              72,
+              699.516
+            ],
+            "lr": [
+              382.812,
+              699.516
+            ]
+          },
+          {
+            "ul": [
+              72,
+              692.616
+            ],
+            "ur": [
+              276.12,
+              692.616
+            ],
+            "ll": [
+              72,
+              681.516
+            ],
+            "lr": [
+              276.12,
+              681.516
+            ]
+          }
+        ]
+      },
+      "afterQpdfResave": {
+        "found": true,
+        "quadCount": 2,
+        "rect": {
+          "x": 72,
+          "y": 681.516,
+          "w": 310.812,
+          "h": 29.1
+        }
+      },
+      "afterGhostscriptResave": {
+        "found": true,
+        "quadCount": 2,
+        "error": null
+      },
+      "qdf": {
+        "written": [
+          1,
+          1,
+          2
+        ],
+        "afterQpdf": [
+          1,
+          1,
+          2
+        ]
+      },
+      "verdict": {
+        "qpdfSurvives": true,
+        "ghostscriptSurvives": true
+      }
+    },
+    {
+      "label": "degraded",
+      "expectedQuadCount": 2,
+      "written": {
+        "quadCount": 2,
+        "rect": {
+          "x": 72,
+          "y": 681.516,
+          "w": 310.812,
+          "h": 29.1
+        },
+        "quads": [
+          {
+            "ul": [
+              72,
+              710.616
+            ],
+            "ur": [
+              382.812,
+              710.616
+            ],
+            "ll": [
+              72,
+              699.516
+            ],
+            "lr": [
+              382.812,
+              699.516
+            ]
+          },
+          {
+            "ul": [
+              72,
+              692.616
+            ],
+            "ur": [
+              276.12,
+              692.616
+            ],
+            "ll": [
+              72,
+              681.516
+            ],
+            "lr": [
+              276.12,
+              681.516
+            ]
+          }
+        ]
+      },
+      "afterQpdfResave": {
+        "found": true,
+        "quadCount": 2,
+        "rect": {
+          "x": 72,
+          "y": 681.516,
+          "w": 310.812,
+          "h": 29.1
+        }
+      },
+      "afterGhostscriptResave": {
+        "found": true,
+        "quadCount": 2,
+        "error": null
+      },
+      "qdf": {
+        "written": [
+          1,
+          1,
+          2
+        ],
+        "afterQpdf": [
+          1,
+          1,
+          2
+        ]
+      },
+      "verdict": {
+        "qpdfSurvives": true,
+        "ghostscriptSurvives": true
+      }
+    }
+  ],
+  "summary": {
+    "allQpdfSurvive": true,
+    "allGhostscriptSurvive": true
+  }
+}
