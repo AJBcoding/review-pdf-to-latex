@@ -99,26 +99,6 @@ const workerHandles = new Map<string, WorkerPtyHandle>();
 
 // ─── Binary discovery ─────────────────────────────────────────────────────
 
-/** Resolve a binary name via PATH. Returns absolute path or null. Mirrors
- *  `which` semantics — checks each PATH entry for an executable file. */
-function whichSync(bin: string): string | null {
-  const PATH = process.env.PATH ?? '';
-  const sep = process.platform === 'win32' ? ';' : ':';
-  const exts = process.platform === 'win32'
-    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')
-    : [''];
-  for (const dir of PATH.split(sep)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = `${dir}/${bin}${ext.toLowerCase()}`;
-      try {
-        if (existsSync(candidate)) return candidate;
-      } catch { /* PATH entry unreadable */ }
-    }
-  }
-  return null;
-}
-
 let claudeBinaryCache: string | null | undefined = undefined;
 function findClaude(): string | null {
   if (claudeBinaryCache !== undefined) return claudeBinaryCache;
@@ -126,36 +106,8 @@ function findClaude(): string | null {
   return claudeBinaryCache;
 }
 
-// ─── Reviewer rig probe ───────────────────────────────────────────────────
-
-/** Run `gt --version` (the canonical presence check per §9.2.5). Fast, no
- *  Dolt touch. Identity comes from `gt whoami` only when probing shows
- *  enabled — we don't pre-emptively touch it. */
-function probeReviewer(): ReviewerProbe {
-  if (reviewerProbeCache) return reviewerProbeCache;
-  const gtPath = whichSync('gt');
-  if (!gtPath) {
-    reviewerProbeCache = { enabled: false, reason: 'no_gt' };
-    return reviewerProbeCache;
-  }
-  // 2s timeout — `gt --version` should be sub-second; anything slower means
-  // gt is wedged and we'd rather degrade than block app startup.
-  const r = spawnSyncBlocking(gtPath, ['--version'], { timeout: 2000, encoding: 'utf8' });
-  if (r.status !== 0) {
-    reviewerProbeCache = { enabled: false, reason: 'gt_failed', gtPath, exitCode: r.status };
-    return reviewerProbeCache;
-  }
-  const version = (r.stdout || '').trim();
-  // Identity probe — `gt whoami` is reserved for *display*, not gating. We
-  // run it here so the Settings UI can show it without a second round-trip.
-  // If it fails, the pane still gets a Reviewer rig — the identity label is
-  // best-effort.
-  let identity: string | null = null;
-  const w = spawnSyncBlocking(gtPath, ['whoami'], { timeout: 2000, encoding: 'utf8' });
-  if (w.status === 0) identity = (w.stdout || '').trim() || null;
-  reviewerProbeCache = { enabled: true, gtPath, version, identity };
-  return reviewerProbeCache;
-}
+// Reviewer-rig gating (probeReviewer / reviewerEnvOverlay) lives in the shared
+// reviewer-probe module so the SDK/agent-pane route applies the same gate.
 
 // ─── Spawn the conversational pty ─────────────────────────────────────────
 
@@ -235,14 +187,13 @@ function primeWhenReady(
 }
 
 function buildPtyEnv(reviewer: ReviewerProbe): Record<string, string> {
-  const env: Record<string, string> = {
+  return {
     ...Object.fromEntries(
       Object.entries(process.env).filter(([, v]) => v !== undefined) as [string, string][]
     ),
     TERM: 'xterm-256color',
+    ...reviewerEnvOverlay(reviewer),
   };
-  if (reviewer.enabled) env.GT_RIG = 'reviewer';
-  return env;
 }
 
 function spawnConversational(
@@ -258,7 +209,7 @@ function spawnConversational(
       ok: true,
       already_running: true,
       cwd: convHandle.cwd,
-      reviewer: reviewerProbeCache ?? probeReviewer(),
+      reviewer: probeReviewer(),
     };
   }
 
@@ -675,5 +626,5 @@ export function shutdownClaudePty(): void {
  *  tests; no production caller. */
 export function _resetCachesForTests(): void {
   claudeBinaryCache = undefined;
-  reviewerProbeCache = null;
+  _resetReviewerProbeCacheForTests();
 }

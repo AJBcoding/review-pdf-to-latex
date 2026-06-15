@@ -52,7 +52,12 @@ type FakeSessionSpy = {
 };
 
 const createdSessions: Array<{
-  options: { resume?: string; model?: string; skipPermissions?: boolean };
+  options: {
+    resume?: string;
+    model?: string;
+    skipPermissions?: boolean;
+    env?: Record<string, string>;
+  };
   emit: (event: BackendEvent) => void;
   onSessionId?: (id: string) => void;
   onClosed?: () => void;
@@ -68,6 +73,7 @@ vi.mock('./claude-backend.js', () => ({
       onClosed?: () => void;
       model?: string;
       skipPermissions?: boolean;
+      env?: Record<string, string>;
     }) => {
       const spy: FakeSessionSpy = {
         send: vi.fn(),
@@ -82,6 +88,7 @@ vi.mock('./claude-backend.js', () => ({
           resume: opts.resume,
           model: opts.model,
           skipPermissions: opts.skipPermissions,
+          env: opts.env,
         },
         emit: opts.emit,
         onSessionId: opts.onSessionId,
@@ -90,6 +97,21 @@ vi.mock('./claude-backend.js', () => ({
       });
       return spy;
     },
+  ),
+}));
+
+// Reviewer-rig probe — mocked so the env-parity tests don't depend on whether
+// gt is actually installed in the test environment. `reviewerProbe.current`
+// drives the gate per test; reviewerEnvOverlay mirrors the real module.
+const reviewerProbe = {
+  current: { enabled: false, reason: 'no_gt' } as
+    | { enabled: true; gtPath: string; version: string; identity: string | null }
+    | { enabled: false; reason: 'no_gt' | 'gt_failed' },
+};
+vi.mock('./reviewer-probe.js', () => ({
+  probeReviewer: vi.fn(() => reviewerProbe.current),
+  reviewerEnvOverlay: vi.fn((r: { enabled: boolean }) =>
+    r.enabled ? { GT_RIG: 'reviewer' } : {},
   ),
 }));
 
@@ -130,6 +152,8 @@ function resetAll(): void {
   emittedEvents.length = 0;
   createdSessions.length = 0;
   savedSessionStore.current = null;
+  // Default: gas-town absent, so most tests see no reviewer env overlay.
+  reviewerProbe.current = { enabled: false, reason: 'no_gt' };
 }
 
 describe('agent-pane-ipc', () => {
@@ -370,6 +394,50 @@ describe('agent-pane-ipc', () => {
       call('agent:spawnSession', { sessionId: 'wk-0', prompt: 'again' });
       expect(createdSessions).toHaveLength(16);
       expect(createdSessions[0]!.spy.send).toHaveBeenNthCalledWith(2, 'again');
+    });
+  });
+
+  // X8 Stage 3.5 — reviewer-rig gating parity with the pty route. When gas-town
+  // is present the SDK session must join the Reviewer rig via GT_RIG=reviewer,
+  // exactly as the pty route's buildPtyEnv does; when absent (no_gt/gt_failed)
+  // no env override is passed so the subprocess inherits process.env.
+  describe('reviewer-rig env parity', () => {
+    it('passes GT_RIG=reviewer to a worker session when gas-town is present', () => {
+      reviewerProbe.current = {
+        enabled: true,
+        gtPath: '/usr/local/bin/gt',
+        version: 'gt 1.2.3',
+        identity: 'reviewer/anthony',
+      };
+      call('agent:spawnSession', { sessionId: 'wk-rev', prompt: 'go' });
+      const env = createdSessions[0]!.options.env;
+      expect(env?.GT_RIG).toBe('reviewer');
+      // The SDK replaces the subprocess env entirely, so process.env must be
+      // spread in — assert an inherited var survived alongside the overlay.
+      expect(env?.PATH).toBe(process.env.PATH);
+    });
+
+    it('passes GT_RIG=reviewer to the conv session when gas-town is present', () => {
+      reviewerProbe.current = {
+        enabled: true,
+        gtPath: '/usr/local/bin/gt',
+        version: 'gt 1.2.3',
+        identity: null,
+      };
+      call('agent:send', { text: 'hi' });
+      expect(createdSessions[0]!.options.env?.GT_RIG).toBe('reviewer');
+    });
+
+    it('omits env entirely on the no_gt degrade path', () => {
+      reviewerProbe.current = { enabled: false, reason: 'no_gt' };
+      call('agent:spawnSession', { sessionId: 'wk-nogt', prompt: 'go' });
+      expect(createdSessions[0]!.options.env).toBeUndefined();
+    });
+
+    it('omits env entirely on the gt_failed degrade path', () => {
+      reviewerProbe.current = { enabled: false, reason: 'gt_failed' };
+      call('agent:spawnSession', { sessionId: 'wk-fail', prompt: 'go' });
+      expect(createdSessions[0]!.options.env).toBeUndefined();
     });
   });
 

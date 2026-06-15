@@ -111,10 +111,17 @@ export interface StartSessionOptions {
    * Default false: keep `permissionMode: "default"` + canUseTool so the
    * permission UI stays active (OD-3's structural advantage). */
   skipPermissions?: boolean;
+  /** Environment for the SDK subprocess. X8 parity with the pty route's
+   * buildPtyEnv — the agent-pane host passes process.env plus the reviewer-rig
+   * overlay (GT_RIG=reviewer when gas-town is present) so SDK-route sessions
+   * join the Reviewer rig identically to pty-route sessions. The SDK REPLACES
+   * the subprocess env entirely when this is set, so the caller must spread
+   * process.env itself. Omitted → the subprocess inherits process.env. */
+  env?: Record<string, string>;
 }
 
 export function startSession(opts: StartSessionOptions): ClaudeSession {
-  const { emit, resume, onSessionId, onClosed, model, cwd, skipPermissions } =
+  const { emit, resume, onSessionId, onClosed, model, cwd, skipPermissions, env } =
     opts;
   const queue = new UserMessageQueue();
   const pending = new Map<string, PendingApproval>();
@@ -199,6 +206,7 @@ export function startSession(opts: StartSessionOptions): ClaudeSession {
           ...(permOpts.permissionMode === "default" ? { canUseTool } : {}),
           includePartialMessages: true,
           ...(cwd ? { cwd } : {}),
+          ...(env ? { env } : {}),
           ...(resume ? { resume } : {}),
           ...(model ? { model } : {}),
         },
