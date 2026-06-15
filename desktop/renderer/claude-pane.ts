@@ -36,8 +36,8 @@ import type {
   WorkerProgressEvent,
   WorkerProgressMarker,
   WorkerStartResult,
-} from '@shared/types';
-import { MAX_WORKER_TABS } from '@shared/types';
+} from '@shared/pty';
+import { MAX_WORKER_TABS } from '@shared/pty';
 
 // CSS for xterm.js — must be imported so the styling rules are bundled. The
 // xterm package ships its CSS alongside its dist; without this import the

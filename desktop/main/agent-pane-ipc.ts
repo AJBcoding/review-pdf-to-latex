@@ -19,7 +19,7 @@ import {
   CONV_SESSION_ID,
   type BackendEvent,
 } from '@shared/agent-pane/types.js';
-import { MAX_WORKER_PTYS } from '@shared/types';
+import { MAX_WORKER_PTYS } from '@shared/pty';
 
 const sessions = new Map<string, ClaudeSession>();
 let mainWindowRef: BrowserWindow | null = null;

@@ -5,15 +5,15 @@
 // read-before-write idempotency guard (N2) can be tested rig-free: the live
 // renderer only injects `window.electronAPI` + crypto + the clock here.
 
+import type { ReadPdfBytesResult } from '@shared/engine';
 import type {
   CommentPayload,
   DocFormat,
   DraftsFile,
   DraftsReadResult,
   DraftsWriteResult,
-  ReadPdfBytesResult,
   ResultsEvent,
-} from '@shared/types';
+} from '@shared/comments';
 
 /** Path-derived format for the seeded v2 DraftsFile (§3.3). v1.1 seeding is a
  *  PDF-round notion today; the next write corrects `format` from the doc path

@@ -51,7 +51,7 @@ import {
   type WorkerProgressMarker,
   type WorkerStartParams,
   type WorkerStartResult,
-} from '@shared/types';
+} from '@shared/pty';
 
 // ─── State ────────────────────────────────────────────────────────────────
 

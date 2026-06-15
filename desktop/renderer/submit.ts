@@ -23,8 +23,8 @@
 // flip is deferred to a successful sling so a failed delivery never strands
 // comments in a permanently-submitted state.
 
-import { REVIEWER_LOCAL_ID } from '@shared/types';
-import type { CommentPayload } from '@shared/types';
+import { REVIEWER_LOCAL_ID } from '@shared/comments';
+import type { CommentPayload } from '@shared/comments';
 import { SubmitMachine } from './submit-machine.js';
 import type { SubmitState, StatusUpdate } from './submit-machine.js';
 

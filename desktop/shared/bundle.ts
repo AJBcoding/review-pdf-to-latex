@@ -5,7 +5,7 @@
 // L1/L2/L3 engagement-level palette decided in bd rev-pya. One source of
 // truth so PDF annotation /C and the right-drawer card CSS can't drift.
 
-import type { EngagementLevel } from './types';
+import type { EngagementLevel } from './comments';
 
 /** §10.6 source-filename parse. Matches `<base>-<major>.<minor>.<ext>`.
  *  Captures `<base>` and `<major>.<minor>` as `source_version`. Returns

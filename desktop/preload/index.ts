@@ -1,24 +1,27 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { IPC_INVOKE } from '@shared/ipc';
 import type {
-  AppStateFile,
   BundleWriteRequest,
   DraftsFile,
-  ElectronAPI,
-  FreshStartParams,
-  PtyDataEvent,
-  PtyExitEvent,
-  PtyStartParams,
   ResultsEvent,
   SubmitAbandonRequest,
   SubmitPromoteRequest,
   SubmitSlingRequest,
+} from '@shared/comments';
+import type {
+  AppStateFile,
+  FileChangeEvent,
+} from '@shared/files';
+import type {
+  FreshStartParams,
+  PtyDataEvent,
+  PtyExitEvent,
+  PtyStartParams,
   WorkerDataEvent,
   WorkerExitEvent,
   WorkerProgressEvent,
   WorkerStartParams,
-  FileChangeEvent,
-} from '@shared/types';
+} from '@shared/pty';
 
 // Expose a minimal, typed IPC surface to the renderer.
 // Anything the renderer can call must be declared here — this is the security boundary.

@@ -14,12 +14,12 @@
 // popover). Create Context / Fresh Start require an alive conv pty (which
 // requires an open PDF) so they're also conditionally disabled.
 
+import type { CommentPayload } from '@shared/comments';
 import type {
-  CommentPayload,
   CreateContextMode,
   PdfQuadAnchor,
   ToolbarContextBundle,
-} from '@shared/types';
+} from '@shared/pty';
 import {
   getReviewerProbe,
   isSpawned,
