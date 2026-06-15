@@ -37,7 +37,9 @@ vi.mock('electron', () => {
       handlers.set(channel, fn);
     }),
   };
-  return { ipcMain, BrowserWindow: vi.fn() };
+  // app.getPath backs the session cwd fallback (dirname(userData)).
+  const app = { getPath: vi.fn(() => '/tmp/userData') };
+  return { ipcMain, BrowserWindow: vi.fn(), app };
 });
 
 type FakeSessionSpy = {

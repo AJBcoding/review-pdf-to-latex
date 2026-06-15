@@ -7,7 +7,8 @@
 // (CONV_SESSION_ID). Workers (Create Context, Sling) take their own
 // sessionId. Events emit with sessionId attached so the renderer can
 // route per session.
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, app, ipcMain } from 'electron';
+import { dirname } from 'node:path';
 
 import {
   clearSavedSessionId,
@@ -16,6 +17,10 @@ import {
 } from './session-store.js';
 import { startSession, type ClaudeSession } from './claude-backend.js';
 import {
+  resolveSessionCwd,
+  resolveSkipPermissions,
+} from './session-policy.js';
+import {
   CONV_SESSION_ID,
   type BackendEvent,
 } from '@shared/agent-pane/types.js';
@@ -23,6 +28,19 @@ import { MAX_WORKER_PTYS } from '@shared/pty';
 
 const sessions = new Map<string, ClaudeSession>();
 let mainWindowRef: BrowserWindow | null = null;
+
+// Latest known doc source dir, used to anchor a session's cwd (X8 parity with
+// the pty route's §9.2.9 spawn-time anchoring). Updated whenever the renderer
+// hands us a doc context — a doc switch, a worker spawn, or a Fresh Start.
+// The conv session is created lazily on the first send, so we remember the
+// last dir rather than requiring it on every call.
+let currentDocSourceDir: string | undefined;
+
+/** Fallback cwd when no doc source dir is known — the parent of Electron's
+ *  userData dir, matching the pty route's fallback (claude-pty.ts). */
+function fallbackCwd(): string {
+  return dirname(app.getPath('userData'));
+}
 
 function emitToRenderer(sessionId: string, event: BackendEvent): void {
   if (!mainWindowRef || mainWindowRef.isDestroyed()) return;
@@ -37,6 +55,7 @@ function ensureSession(options?: {
   sessionId?: string;
   resume?: string | null;
   model?: string;
+  docSourceDir?: string;
 }): ClaudeSession {
   const sessionId = options?.sessionId ?? CONV_SESSION_ID;
   const existing = sessions.get(sessionId);
@@ -54,9 +73,21 @@ function ensureSession(options?: {
         : (explicitResume ?? loadSavedSessionId() ?? undefined);
   }
 
+  // X8 parity: anchor cwd to the doc source dir (this call's, else the last
+  // known) and resolve skip-permissions. The conv session keeps canUseTool
+  // (skip=false) so the ApprovalBanner permission UI stays live — OD-3's
+  // structural advantage. Worker sessions skip permissions: they have no
+  // approval surface yet (Stage 3), so a canUseTool prompt would hang
+  // unanswered — matching the pty route's default-skip workers.
+  const docSourceDir = options?.docSourceDir ?? currentDocSourceDir;
+  const cwd = resolveSessionCwd(docSourceDir, fallbackCwd());
+  const skipPermissions = isConv ? false : resolveSkipPermissions(undefined);
+
   const session = startSession({
     emit: makeEmit(sessionId),
     resume,
+    cwd,
+    skipPermissions,
     onSessionId: isConv ? saveSessionId : () => undefined,
     // When the session dies on its own (SDK stream end or error), drop it
     // from the registry so the next send lazily creates a FRESH one instead
@@ -233,7 +264,9 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
     'agent:notifyDocSwitch',
     (
       _e,
-      payload: { path: string; pages: number; comments: number } | null,
+      payload:
+        | { path: string; pages: number; comments: number; sourceDir?: string }
+        | null,
     ) => {
       if (
         !payload ||
@@ -243,6 +276,14 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
       ) {
         return;
       }
+      // Track the doc's source dir so a lazily-created conv session anchors its
+      // cwd there (X8 parity). Prefer an explicit sourceDir; else derive it
+      // from the path's parent.
+      if (typeof payload.sourceDir === 'string' && payload.sourceDir) {
+        currentDocSourceDir = payload.sourceDir;
+      } else {
+        currentDocSourceDir = dirname(payload.path);
+      }
       pendingDocSwitch = payload;
       if (docSwitchTimer !== null) clearTimeout(docSwitchTimer);
       docSwitchTimer = setTimeout(flushDocSwitch, DOC_SWITCH_DEBOUNCE_MS);
@@ -251,13 +292,23 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(
     'agent:freshStart',
-    async (_e, payload: { handoffText: string; model?: string }) => {
+    async (
+      _e,
+      payload: { handoffText: string; model?: string; docSourceDir?: string },
+    ) => {
       if (!payload || typeof payload.handoffText !== 'string') return;
+      if (typeof payload.docSourceDir === 'string' && payload.docSourceDir) {
+        currentDocSourceDir = payload.docSourceDir;
+      }
       await endSession(CONV_SESSION_ID);
       clearSavedSessionId();
       const s = ensureSession({
         resume: null,
         model: typeof payload.model === 'string' ? payload.model : undefined,
+        docSourceDir:
+          typeof payload.docSourceDir === 'string'
+            ? payload.docSourceDir
+            : undefined,
       });
       s.send(payload.handoffText);
     },
@@ -271,7 +322,12 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
     'agent:spawnSession',
     (
       _e,
-      payload: { sessionId: string; prompt: string; model?: string },
+      payload: {
+        sessionId: string;
+        prompt: string;
+        model?: string;
+        docSourceDir?: string;
+      },
     ) => {
       if (
         !payload ||
@@ -281,6 +337,9 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
         typeof payload.prompt !== 'string'
       ) {
         return;
+      }
+      if (typeof payload.docSourceDir === 'string' && payload.docSourceDir) {
+        currentDocSourceDir = payload.docSourceDir;
       }
       // Cap simultaneous worker sessions, mirroring the pty route's
       // MAX_WORKER_PTYS guard. Without this, spawnSession had no limit while
@@ -299,6 +358,10 @@ export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
       const s = ensureSession({
         sessionId: payload.sessionId,
         model: typeof payload.model === 'string' ? payload.model : undefined,
+        docSourceDir:
+          typeof payload.docSourceDir === 'string'
+            ? payload.docSourceDir
+            : undefined,
       });
       s.send(payload.prompt);
     },

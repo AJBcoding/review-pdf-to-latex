@@ -17,6 +17,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { mapSdkMessage, createAdapterState } from "@shared/agent-pane/adapter.js";
 import type { BackendEvent } from "@shared/agent-pane/types.js";
+import { sdkPermissionOptions } from "./session-policy.js";
 
 type EventSink = (event: BackendEvent) => void;
 
@@ -99,10 +100,22 @@ export interface StartSessionOptions {
    * through here so the fresh query() starts with the right model rather
    * than the SDK default. */
   model?: string;
+  /** Working directory for the session (X8 parity with the pty route's cwd
+   * anchoring). Resolved by the host via resolveSessionCwd; when omitted the
+   * SDK defaults to process.cwd(). The SDK freezes cwd for the session's
+   * lifetime, so later doc switches don't move it — same semantics as
+   * §9.2.9's spawn-time anchoring. */
+  cwd?: string;
+  /** When true, run the session under `bypassPermissions` (no canUseTool
+   * prompts) — parity with the pty route's `--dangerously-skip-permissions`.
+   * Default false: keep `permissionMode: "default"` + canUseTool so the
+   * permission UI stays active (OD-3's structural advantage). */
+  skipPermissions?: boolean;
 }
 
 export function startSession(opts: StartSessionOptions): ClaudeSession {
-  const { emit, resume, onSessionId, onClosed, model } = opts;
+  const { emit, resume, onSessionId, onClosed, model, cwd, skipPermissions } =
+    opts;
   const queue = new UserMessageQueue();
   const pending = new Map<string, PendingApproval>();
   let q: Query | null = null;
@@ -173,14 +186,19 @@ export function startSession(opts: StartSessionOptions): ClaudeSession {
   const run = async (): Promise<void> => {
     try {
       console.log(
-        `[claude-backend] starting session${resume ? ` (resume=${resume.slice(0, 8)})` : ""}`,
+        `[claude-backend] starting session${resume ? ` (resume=${resume.slice(0, 8)})` : ""}${skipPermissions ? " (skip-permissions)" : ""}`,
       );
+      const permOpts = sdkPermissionOptions(skipPermissions === true);
       q = query({
         prompt: queue,
         options: {
-          permissionMode: "default",
-          canUseTool,
+          ...permOpts,
+          // canUseTool only matters under "default" mode; under
+          // bypassPermissions the SDK never calls it, so omit it to avoid
+          // implying a permission UI that won't fire.
+          ...(permOpts.permissionMode === "default" ? { canUseTool } : {}),
           includePartialMessages: true,
+          ...(cwd ? { cwd } : {}),
           ...(resume ? { resume } : {}),
           ...(model ? { model } : {}),
         },

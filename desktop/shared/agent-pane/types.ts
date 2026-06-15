@@ -156,19 +156,30 @@ export interface AgentViewerApi {
   newSession: (sessionId?: string) => Promise<void>;
   close: (sessionId?: string) => Promise<void>;
   getSavedSessionId: () => Promise<string | null>;
-  /** M-int-3 — notify the agent the user pivoted to a new document. */
+  /** M-int-3 — notify the agent the user pivoted to a new document.
+   *  `sourceDir` (X8) anchors a lazily-created conv session's cwd; when
+   *  omitted, main derives it from the path's parent. */
   notifyDocSwitch: (payload: {
     path: string;
     pages: number;
     comments: number;
+    sourceDir?: string;
   }) => Promise<void>;
-  /** M-int-5 — Fresh Start handoff for the conv session. */
-  freshStart: (payload: { handoffText: string; model?: string }) => Promise<void>;
-  /** M-int-4a — spawn a worker session keyed by an arbitrary sessionId. */
+  /** M-int-5 — Fresh Start handoff for the conv session. `docSourceDir` (X8)
+   *  anchors the new session's cwd. */
+  freshStart: (payload: {
+    handoffText: string;
+    model?: string;
+    docSourceDir?: string;
+  }) => Promise<void>;
+  /** M-int-4a — spawn a worker session keyed by an arbitrary sessionId.
+   *  `docSourceDir` (X8) anchors the worker's cwd, parity with the pty
+   *  route's worker spawn. */
   spawnSession: (payload: {
     sessionId: string;
     prompt: string;
     model?: string;
+    docSourceDir?: string;
   }) => Promise<void>;
   listSessions: () => Promise<string[]>;
   onEvent: (handler: (event: BackendEvent) => void) => () => void;
