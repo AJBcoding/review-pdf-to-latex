@@ -16,10 +16,7 @@ import {
   saveSessionId,
 } from './session-store.js';
 import { startSession, type ClaudeSession } from './claude-backend.js';
-import {
-  resolveSessionCwd,
-  resolveSkipPermissions,
-} from './session-policy.js';
+import { resolveSessionCwd } from './session-policy.js';
 import { buildDocPrimingLine } from '@shared/priming';
 import {
   CONV_SESSION_ID,
@@ -75,14 +72,18 @@ function ensureSession(options?: {
   }
 
   // X8 parity: anchor cwd to the doc source dir (this call's, else the last
-  // known) and resolve skip-permissions. The conv session keeps canUseTool
-  // (skip=false) so the ApprovalBanner permission UI stays live — OD-3's
-  // structural advantage. Worker sessions skip permissions: they have no
-  // approval surface yet (Stage 3), so a canUseTool prompt would hang
-  // unanswered — matching the pty route's default-skip workers.
+  // known) and resolve skip-permissions. Both conv AND worker sessions now
+  // keep canUseTool (skip=false) so the permission UI stays live — OD-3's
+  // structural advantage over the pty route's default-skip workers.
+  //
+  // X8 Stage 3 flipped workers to skip=false: stage 1 had forced workers to
+  // skip permissions precisely because no worker approval surface existed
+  // (a canUseTool prompt would hang unanswered). The WorkerPanel built in
+  // stage 3 surfaces worker approvals (routed back via agent:approveTool with
+  // the worker's sessionId), so workers can now answer canUseTool prompts.
   const docSourceDir = options?.docSourceDir ?? currentDocSourceDir;
   const cwd = resolveSessionCwd(docSourceDir, fallbackCwd());
-  const skipPermissions = isConv ? false : resolveSkipPermissions(undefined);
+  const skipPermissions = false;
 
   const session = startSession({
     emit: makeEmit(sessionId),
