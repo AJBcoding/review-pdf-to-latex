@@ -207,3 +207,51 @@ declare global {
     electronAPI: ElectronAPI;
   }
 }
+
+/**
+ * Single source of truth mapping each invoke-style `ElectronAPI` method to its
+ * `ipcRenderer.invoke` / `ipcMain.handle` channel string. Both bridges import
+ * this — the preload to invoke, the main to register via `typedHandle` — so the
+ * channel name can't drift between the two sides (it previously lived as bare
+ * string literals duplicated across preload + main).
+ *
+ * Only the request/response (invoke) methods appear here. One-way `send`
+ * methods (sendPtyInput, …) and main→renderer event subscriptions (onPtyData,
+ * …) keep their own literal channels; they carry no result to type-check.
+ *
+ * `satisfies Partial<Record<keyof ElectronAPI, …>>` enforces that every key is
+ * a real `ElectronAPI` method name — a typo'd key fails to compile.
+ */
+export const IPC_INVOKE = {
+  ping: 'ping',
+  engineVersion: 'engine:version',
+  pdfHealth: 'engine:pdfHealth',
+  readPdfBytes: 'fs:readPdfBytes',
+  openPdfDialog: 'dialog:openPdf',
+  readDrafts: 'drafts:read',
+  writeDrafts: 'drafts:write',
+  openFolderDialog: 'dialog:openFolder',
+  listDir: 'fs:listDir',
+  pathExists: 'fs:pathExists',
+  readAppState: 'appState:read',
+  writeAppState: 'appState:write',
+  indexPdfs: 'fs:indexPdfs',
+  writeFileText: 'fs:writeFileText',
+  watchFile: 'fs:watchFile',
+  unwatchFile: 'fs:unwatchFile',
+  watchResultsStart: 'results:watchStart',
+  watchResultsStop: 'results:watchStop',
+  writeBundle: 'bundle:write',
+  submitPromote: 'submit:promote',
+  submitSling: 'submit:sling',
+  submitAbandonRound: 'submit:abandonRound',
+  probeReviewer: 'pty:probeReviewer',
+  startPty: 'pty:start',
+  killPty: 'pty:kill',
+  startWorkerPty: 'pty:startWorker',
+  killWorkerPty: 'pty:killWorker',
+  freshStartPty: 'pty:freshStart',
+} as const satisfies Partial<Record<keyof ElectronAPI, string>>;
+
+/** Invoke-style `ElectronAPI` method names — the keys of {@link IPC_INVOKE}. */
+export type InvokeMethod = keyof typeof IPC_INVOKE;

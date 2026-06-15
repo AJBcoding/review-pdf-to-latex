@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { IPC_INVOKE } from '@shared/ipc';
 import type {
   AppStateFile,
   BundleWriteRequest,
@@ -22,15 +23,15 @@ import type {
 // Expose a minimal, typed IPC surface to the renderer.
 // Anything the renderer can call must be declared here — this is the security boundary.
 const electronAPI: ElectronAPI = {
-  ping: (message: string) => ipcRenderer.invoke('ping', message),
-  engineVersion: () => ipcRenderer.invoke('engine:version'),
-  pdfHealth: (pdfPath: string) => ipcRenderer.invoke('engine:pdfHealth', pdfPath),
-  readPdfBytes: (pdfPath: string) => ipcRenderer.invoke('fs:readPdfBytes', pdfPath),
-  openPdfDialog: () => ipcRenderer.invoke('dialog:openPdf'),
+  ping: (message: string) => ipcRenderer.invoke(IPC_INVOKE.ping, message),
+  engineVersion: () => ipcRenderer.invoke(IPC_INVOKE.engineVersion),
+  pdfHealth: (pdfPath: string) => ipcRenderer.invoke(IPC_INVOKE.pdfHealth, pdfPath),
+  readPdfBytes: (pdfPath: string) => ipcRenderer.invoke(IPC_INVOKE.readPdfBytes, pdfPath),
+  openPdfDialog: () => ipcRenderer.invoke(IPC_INVOKE.openPdfDialog),
   readDrafts: (pdfPath: string, sha256: string) =>
-    ipcRenderer.invoke('drafts:read', pdfPath, sha256),
+    ipcRenderer.invoke(IPC_INVOKE.readDrafts, pdfPath, sha256),
   writeDrafts: (pdfPath: string, sha256: string, file: DraftsFile) =>
-    ipcRenderer.invoke('drafts:write', pdfPath, sha256, file),
+    ipcRenderer.invoke(IPC_INVOKE.writeDrafts, pdfPath, sha256, file),
   onDraftsFlushRequest: (cb) => {
     const listener = (_e: IpcRendererEvent, id: string) => cb(id);
     ipcRenderer.on('drafts:flushRequest', listener);
@@ -38,17 +39,17 @@ const electronAPI: ElectronAPI = {
   },
   sendDraftsFlushAck: (id: string) => { ipcRenderer.send('drafts:flushAck', id); },
 
-  openFolderDialog: () => ipcRenderer.invoke('dialog:openFolder'),
-  listDir: (path: string) => ipcRenderer.invoke('fs:listDir', path),
-  pathExists: (path: string) => ipcRenderer.invoke('fs:pathExists', path),
-  readAppState: () => ipcRenderer.invoke('appState:read'),
-  writeAppState: (state: AppStateFile) => ipcRenderer.invoke('appState:write', state),
-  indexPdfs: (root: string) => ipcRenderer.invoke('fs:indexPdfs', root),
+  openFolderDialog: () => ipcRenderer.invoke(IPC_INVOKE.openFolderDialog),
+  listDir: (path: string) => ipcRenderer.invoke(IPC_INVOKE.listDir, path),
+  pathExists: (path: string) => ipcRenderer.invoke(IPC_INVOKE.pathExists, path),
+  readAppState: () => ipcRenderer.invoke(IPC_INVOKE.readAppState),
+  writeAppState: (state: AppStateFile) => ipcRenderer.invoke(IPC_INVOKE.writeAppState, state),
+  indexPdfs: (root: string) => ipcRenderer.invoke(IPC_INVOKE.indexPdfs, root),
 
   writeFileText: (filePath: string, content: string) =>
-    ipcRenderer.invoke('fs:writeFileText', filePath, content),
-  watchFile: (filePath: string) => ipcRenderer.invoke('fs:watchFile', filePath),
-  unwatchFile: () => ipcRenderer.invoke('fs:unwatchFile'),
+    ipcRenderer.invoke(IPC_INVOKE.writeFileText, filePath, content),
+  watchFile: (filePath: string) => ipcRenderer.invoke(IPC_INVOKE.watchFile, filePath),
+  unwatchFile: () => ipcRenderer.invoke(IPC_INVOKE.unwatchFile),
   onFileChange: (cb) => {
     const listener = (_e: IpcRendererEvent, event: FileChangeEvent) => cb(event);
     ipcRenderer.on('file:change', listener);
@@ -65,30 +66,30 @@ const electronAPI: ElectronAPI = {
   },
 
   watchResultsStart: (pdfPath: string, sha256: string) =>
-    ipcRenderer.invoke('results:watchStart', pdfPath, sha256),
-  watchResultsStop: () => ipcRenderer.invoke('results:watchStop'),
+    ipcRenderer.invoke(IPC_INVOKE.watchResultsStart, pdfPath, sha256),
+  watchResultsStop: () => ipcRenderer.invoke(IPC_INVOKE.watchResultsStop),
   onResultsEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: ResultsEvent) => cb(event);
     ipcRenderer.on('results:event', listener);
     return () => { ipcRenderer.off('results:event', listener); };
   },
 
-  writeBundle: (request: BundleWriteRequest) => ipcRenderer.invoke('bundle:write', request),
+  writeBundle: (request: BundleWriteRequest) => ipcRenderer.invoke(IPC_INVOKE.writeBundle, request),
 
   // §10.1 Submit flow (rev-1md.4)
   submitPromote: (request: SubmitPromoteRequest) =>
-    ipcRenderer.invoke('submit:promote', request),
+    ipcRenderer.invoke(IPC_INVOKE.submitPromote, request),
   submitSling: (request: SubmitSlingRequest) =>
-    ipcRenderer.invoke('submit:sling', request),
+    ipcRenderer.invoke(IPC_INVOKE.submitSling, request),
   submitAbandonRound: (request: SubmitAbandonRequest) =>
-    ipcRenderer.invoke('submit:abandonRound', request),
+    ipcRenderer.invoke(IPC_INVOKE.submitAbandonRound, request),
 
   // ─── §9.2 embedded Claude pane (rev-1md.2) ─────────────────────────────
-  probeReviewer: () => ipcRenderer.invoke('pty:probeReviewer'),
-  startPty: (params: PtyStartParams) => ipcRenderer.invoke('pty:start', params),
+  probeReviewer: () => ipcRenderer.invoke(IPC_INVOKE.probeReviewer),
+  startPty: (params: PtyStartParams) => ipcRenderer.invoke(IPC_INVOKE.startPty, params),
   sendPtyInput: (data: string) => { ipcRenderer.send('pty:input', data); },
   resizePty: (cols: number, rows: number) => { ipcRenderer.send('pty:resize', cols, rows); },
-  killPty: () => ipcRenderer.invoke('pty:kill'),
+  killPty: () => ipcRenderer.invoke(IPC_INVOKE.killPty),
   onPtyData: (cb) => {
     const listener = (_e: IpcRendererEvent, event: PtyDataEvent) => cb(event);
     ipcRenderer.on('pty:onData', listener);
@@ -101,14 +102,14 @@ const electronAPI: ElectronAPI = {
   },
 
   // ─── §9.2.6 toolbar / worker ptys (rev-1md.3) ─────────────────────────
-  startWorkerPty: (params: WorkerStartParams) => ipcRenderer.invoke('pty:startWorker', params),
+  startWorkerPty: (params: WorkerStartParams) => ipcRenderer.invoke(IPC_INVOKE.startWorkerPty, params),
   workerPtyInput: (workerId: string, data: string) => {
     ipcRenderer.send('pty:workerInput', workerId, data);
   },
   resizeWorkerPty: (workerId: string, cols: number, rows: number) => {
     ipcRenderer.send('pty:workerResize', workerId, cols, rows);
   },
-  killWorkerPty: (workerId: string) => ipcRenderer.invoke('pty:killWorker', workerId),
+  killWorkerPty: (workerId: string) => ipcRenderer.invoke(IPC_INVOKE.killWorkerPty, workerId),
   onWorkerPtyData: (cb) => {
     const listener = (_e: IpcRendererEvent, event: WorkerDataEvent) => cb(event);
     ipcRenderer.on('pty:onWorkerData', listener);
@@ -124,7 +125,7 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('pty:onWorkerProgress', listener);
     return () => { ipcRenderer.off('pty:onWorkerProgress', listener); };
   },
-  freshStartPty: (params: FreshStartParams) => ipcRenderer.invoke('pty:freshStart', params),
+  freshStartPty: (params: FreshStartParams) => ipcRenderer.invoke(IPC_INVOKE.freshStartPty, params),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
@@ -133,9 +134,9 @@ contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 // preload surface (window.agentViewer). The renderer's ipc-client.ts under
 // renderer/agent-pane/ calls into this. Untouched by the legacy claude-pty
 // flow; only used when the localStorage feature flag is on.
-import type { BackendEvent } from '@shared/agent-pane/types';
+import type { AgentViewerApi, BackendEvent } from '@shared/agent-pane/types';
 
-const agentViewerApi = {
+const agentViewerApi: AgentViewerApi = {
   // All session-scoped methods accept an optional sessionId. Omit it (or
   // pass undefined) to target the canonical conversational session.
   send: (text: string, model?: string, sessionId?: string): Promise<void> =>
@@ -205,5 +206,3 @@ const agentViewerApi = {
 };
 
 contextBridge.exposeInMainWorld('agentViewer', agentViewerApi);
-
-export type AgentViewerApi = typeof agentViewerApi;

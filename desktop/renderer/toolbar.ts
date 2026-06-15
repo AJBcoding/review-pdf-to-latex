@@ -346,7 +346,7 @@ async function commitCtx(): Promise<void> {
     if (isNewAgentPaneActive()) {
       const sessionId = `worker-ctx-${Date.now()}`;
       const agentPrompt = bundleToPrompt(bundle, 'create-context', mode);
-      await (window as any).agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
+      await window.agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
       closeModal(refsRef.ctxModal);
       return;
     }
@@ -395,7 +395,7 @@ async function commitSling(): Promise<void> {
     if (isNewAgentPaneActive()) {
       const sessionId = `worker-sling-${Date.now()}`;
       const agentPrompt = bundleToPrompt(bundle, 'sling', undefined, destination);
-      await (window as any).agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
+      await window.agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
       closeModal(refsRef.slingModal);
       return;
     }
@@ -435,16 +435,11 @@ async function commitFresh(): Promise<void> {
     // it's the active surface. Same handoff text becomes the first user
     // message of a brand-new agent session.
     if (isNewAgentPaneActive()) {
-      const w = window as unknown as {
-        agentViewer?: {
-          freshStart: (payload: { handoffText: string }) => Promise<void>;
-        };
-      };
-      if (!w.agentViewer) {
+      if (!window.agentViewer) {
         flashErr(refsRef.freshModal, 'Fresh start failed: agent bridge missing');
         return;
       }
-      await w.agentViewer.freshStart({
+      await window.agentViewer.freshStart({
         handoffText: handoffNotes || '(no handoff notes)',
       });
       closeModal(refsRef.freshModal);

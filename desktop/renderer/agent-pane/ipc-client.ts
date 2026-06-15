@@ -2,22 +2,7 @@
 // here, not from `window.agentViewer` directly — keeps types and call sites
 // centralised so we can swap to a different transport later.
 
-import type { BackendEvent } from "@shared/agent-pane/types";
-
-interface AgentViewerApi {
-  send: (text: string, model?: string) => Promise<void>;
-  interrupt: () => Promise<void>;
-  setModel: (modelId: string) => Promise<void>;
-  approveTool: (
-    toolUseId: string,
-    allow: boolean,
-    denyReason?: string,
-  ) => Promise<void>;
-  newSession: () => Promise<void>;
-  close: () => Promise<void>;
-  getSavedSessionId: () => Promise<string | null>;
-  onEvent: (handler: (event: BackendEvent) => void) => () => void;
-}
+import type { AgentViewerApi } from "@shared/agent-pane/types";
 
 declare global {
   interface Window {
@@ -44,6 +29,13 @@ const stub: AgentViewerApi = {
   newSession: async () => warnMissing("newSession"),
   close: async () => {},
   getSavedSessionId: async () => null,
+  notifyDocSwitch: async () => warnMissing("notifyDocSwitch"),
+  freshStart: async () => warnMissing("freshStart"),
+  spawnSession: async () => warnMissing("spawnSession"),
+  listSessions: async () => {
+    warnMissing("listSessions");
+    return [];
+  },
   onEvent: () => {
     warnMissing("onEvent");
     return () => {};

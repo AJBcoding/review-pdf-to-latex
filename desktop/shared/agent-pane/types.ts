@@ -131,3 +131,45 @@ export type BackendEvent = BackendEventInner & { sessionId?: string };
 
 /** Canonical sessionId for the user's conversational session. */
 export const CONV_SESSION_ID = "conv";
+
+/**
+ * The `window.agentViewer` bridge surface (Project 4 / M-int-*). Single source
+ * of truth shared by the preload (which implements it) and the renderer (which
+ * consumes it via ipc-client + the `Window` augmentation). Defining it here
+ * keeps the two bridges from drifting — previously the renderer carried a
+ * narrower hand-written copy that omitted spawnSession/freshStart/etc., forcing
+ * `(window as any).agentViewer` casts at the toolbar call sites.
+ *
+ * Session-scoped methods accept an optional `sessionId`; omit it (or pass
+ * undefined) to target the canonical conversational session (CONV_SESSION_ID).
+ */
+export interface AgentViewerApi {
+  send: (text: string, model?: string, sessionId?: string) => Promise<void>;
+  interrupt: (sessionId?: string) => Promise<void>;
+  setModel: (modelId: string, sessionId?: string) => Promise<void>;
+  approveTool: (
+    toolUseId: string,
+    allow: boolean,
+    denyReason?: string,
+    sessionId?: string,
+  ) => Promise<void>;
+  newSession: (sessionId?: string) => Promise<void>;
+  close: (sessionId?: string) => Promise<void>;
+  getSavedSessionId: () => Promise<string | null>;
+  /** M-int-3 — notify the agent the user pivoted to a new document. */
+  notifyDocSwitch: (payload: {
+    path: string;
+    pages: number;
+    comments: number;
+  }) => Promise<void>;
+  /** M-int-5 — Fresh Start handoff for the conv session. */
+  freshStart: (payload: { handoffText: string; model?: string }) => Promise<void>;
+  /** M-int-4a — spawn a worker session keyed by an arbitrary sessionId. */
+  spawnSession: (payload: {
+    sessionId: string;
+    prompt: string;
+    model?: string;
+  }) => Promise<void>;
+  listSessions: () => Promise<string[]>;
+  onEvent: (handler: (event: BackendEvent) => void) => () => void;
+}

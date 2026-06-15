@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { basename as pathBasename, dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
 import { mkdir, readFile, readdir, rename, stat } from 'node:fs/promises';
@@ -17,15 +17,15 @@ import {
   slingViaGtMail,
   abandonRound,
 } from './submit.js';
+import { typedHandle } from './typed-ipc.js';
+import { assertObjectArg, assertPathArg, assertStringArg } from './ipc-validators.js';
 import type { DocFormat } from '@shared/comments';
 import type {
   AppStateFile,
   AppStateReadResult,
   AppStateWriteResult,
-  BundleWriteRequest,
   BundleWriteResult,
   DirEntry,
-  DraftsFile,
   DraftsReadResult,
   DraftsWriteResult,
   FileKind,
@@ -37,9 +37,6 @@ import type {
   PathExistsResult,
   ReadPdfBytesResult,
   ResultsWatchStartResult,
-  SubmitAbandonRequest,
-  SubmitPromoteRequest,
-  SubmitSlingRequest,
   WriteFileTextResult,
 } from '@shared/types';
 
@@ -196,6 +193,14 @@ function extractPathFromArgv(argv: readonly string[]): { path: string; from: str
     if (a.toLowerCase().endsWith('.pdf') && !a.startsWith('-')) return { path: a, from };
   }
   return null;
+}
+
+/** `dialog.showOpenDialog`'s parented overload wants a non-null BrowserWindow;
+ *  the unparented overload takes options only. Branch on the resolved sender
+ *  window so a missing window falls through to the unparented form instead of
+ *  smuggling `null` past the types with `as any`. */
+function showOpenDialog(win: BrowserWindow | null, opts: OpenDialogOptions) {
+  return win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts);
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -355,9 +360,9 @@ void app.whenReady().then(async () => {
   await runSidecarMigration(app.getPath('userData'));
 
   // Smoke-test IPC retained from the empty-shell milestone.
-  ipcMain.handle('ping', (_event, message: string) => {
+  typedHandle('ping', (_event, message) => {
     return `pong: ${message}`;
-  });
+  }, ([message]) => assertStringArg('ping', message));
 
   // Renderer signals readiness for external-open events once it has wired
   // its handler. Anything we queued during cold launch flushes here.
@@ -371,20 +376,21 @@ void app.whenReady().then(async () => {
   // Engine version probe — walks the §13.1 resolution chain and spawns
   // `review-pdf --version`. Returns a structured EngineResult; the renderer
   // never sees a thrown error, just a discriminated union to branch on.
-  ipcMain.handle('engine:version', async () => engineVersion());
+  typedHandle('engineVersion', async () => engineVersion());
 
   // PDF pre-flight health check — runs `review-pdf pdf-health --pdf <path>`
   // and parses the JSON report. Drives the §5.2 load-time banner. Exits 0/2/21
   // all carry a usable report; only true engine failures (binary missing,
   // spawn error, non-JSON stdout) come through as ok:false.
-  ipcMain.handle('engine:pdfHealth', async (_event, pdfPath: string) => pdfHealth(pdfPath));
+  typedHandle('pdfHealth', async (_event, pdfPath) => pdfHealth(pdfPath),
+    ([pdfPath]) => assertPathArg('engine:pdfHealth', pdfPath));
 
   // Native open-file dialog for picking a PDF. Returns the picked path,
   // or `path: null` if the user canceled. The renderer follows up with
   // pdfHealth() + readPdfBytes() to actually load the document.
-  ipcMain.handle('dialog:openPdf', async (event): Promise<OpenPdfDialogResult> => {
+  typedHandle('openPdfDialog', async (event): Promise<OpenPdfDialogResult> => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    const result = await dialog.showOpenDialog(win ?? undefined as any, {
+    const result = await showOpenDialog(win, {
       title: 'Open PDF',
       properties: ['openFile'],
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
@@ -398,7 +404,7 @@ void app.whenReady().then(async () => {
   // Read a PDF off disk for the renderer. Sandboxed renderer can't open
   // file:// URLs; we ship bytes across the IPC boundary instead. Path is
   // resolved relative to main's cwd (desktop/ during dev).
-  ipcMain.handle('fs:readPdfBytes', async (_event, pdfPath: string): Promise<ReadPdfBytesResult> => {
+  typedHandle('readPdfBytes', async (_event, pdfPath): Promise<ReadPdfBytesResult> => {
     const resolvedPath = resolve(pdfPath);
     try {
       const s = await stat(resolvedPath);
@@ -425,13 +431,13 @@ void app.whenReady().then(async () => {
         error: err instanceof Error ? err.message : String(err),
       };
     }
-  });
+  }, ([pdfPath]) => assertPathArg('fs:readPdfBytes', pdfPath));
 
   // Read the drafts snapshot for this PDF. Missing file is the common
   // first-open case — surfaced as ok:true with file:null so the renderer
   // can `?? []` cleanly. Parse errors are a different story (corrupted
   // file) and come through as ok:false.
-  ipcMain.handle('drafts:read', async (_event, pdfPath: string, _sha256: string): Promise<DraftsReadResult> => {
+  typedHandle('readDrafts', async (_event, pdfPath, _sha256): Promise<DraftsReadResult> => {
     const filePath = draftsPathFor(pdfPath);
     let raw: string;
     try {
@@ -480,14 +486,14 @@ void app.whenReady().then(async () => {
         error: err instanceof Error ? err.message : String(err),
       };
     }
-  });
+  }, ([pdfPath]) => assertPathArg('drafts:read', pdfPath));
 
   // Snapshot write — atomic via tmp + rename so a crash mid-write can't
   // leave a half-written drafts file. Renderer debounces, so we don't
   // also debounce here.
-  ipcMain.handle(
-    'drafts:write',
-    async (_event, pdfPath: string, _sha256: string, file: DraftsFile): Promise<DraftsWriteResult> => {
+  typedHandle(
+    'writeDrafts',
+    async (_event, pdfPath, _sha256, file): Promise<DraftsWriteResult> => {
       const filePath = draftsPathFor(pdfPath);
       // mkdir up front so a missing parent dir surfaces as the distinct
       // `mkdir_failed` reason; atomicWriteJson re-runs mkdir (idempotent) and
@@ -513,13 +519,17 @@ void app.whenReady().then(async () => {
           error: err instanceof Error ? err.message : String(err),
         };
       }
-    }
+    },
+    ([pdfPath, , file]) => {
+      assertPathArg('drafts:write', pdfPath);
+      assertObjectArg('drafts:write file', file);
+    },
   );
 
   // §3.1 — native folder picker for the left-drawer root.
-  ipcMain.handle('dialog:openFolder', async (event): Promise<OpenFolderDialogResult> => {
+  typedHandle('openFolderDialog', async (event): Promise<OpenFolderDialogResult> => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    const result = await dialog.showOpenDialog(win ?? undefined as any, {
+    const result = await showOpenDialog(win, {
       title: 'Open Folder',
       properties: ['openDirectory'],
     });
@@ -531,7 +541,7 @@ void app.whenReady().then(async () => {
   // then alphabetic (stable, matches what users expect from finders/IDEs).
   // The `isHidden` flag rides along so the renderer can filter without a
   // second pass over the list.
-  ipcMain.handle('fs:listDir', async (_event, path: string): Promise<ListDirResult> => {
+  typedHandle('listDir', async (_event, path): Promise<ListDirResult> => {
     const resolvedPath = resolve(path);
     try {
       const s = await stat(resolvedPath);
@@ -572,11 +582,11 @@ void app.whenReady().then(async () => {
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
     return { ok: true, entries, path: resolvedPath };
-  });
+  }, ([path]) => assertPathArg('fs:listDir', path));
 
   // §3.3 launch boot — check the remembered root still exists before we try
   // to list it. Renderer falls back to the empty state if not.
-  ipcMain.handle('fs:pathExists', async (_event, path: string): Promise<PathExistsResult> => {
+  typedHandle('pathExists', async (_event, path): Promise<PathExistsResult> => {
     const resolvedPath = resolve(path);
     try {
       const s = await stat(resolvedPath);
@@ -592,12 +602,12 @@ void app.whenReady().then(async () => {
       }
       return { ok: false, reason: 'stat_failed', path: resolvedPath, error: e.message };
     }
-  });
+  }, ([path]) => assertPathArg('fs:pathExists', path));
 
   // M-md-3 — write text to disk (for .md save). Atomic via tmp+rename.
-  ipcMain.handle(
-    'fs:writeFileText',
-    async (_event, filePath: string, content: string): Promise<WriteFileTextResult> => {
+  typedHandle(
+    'writeFileText',
+    async (_event, filePath, content): Promise<WriteFileTextResult> => {
       const resolvedPath = resolve(filePath);
       // Explicit mkdir keeps the distinct `mkdir_failed` reason; atomicWrite
       // (text, not JSON) owns the crash-safe tmp + rename.
@@ -618,18 +628,20 @@ void app.whenReady().then(async () => {
           error: err instanceof Error ? err.message : String(err),
         };
       }
-    }
+    },
+    ([filePath, content]) => {
+      assertPathArg('fs:writeFileText', filePath);
+      assertStringArg('fs:writeFileText content', content);
+    },
   );
 
   // M-md-3 — file watcher for external modification detection.
   let fileWatcher: FSWatcher | null = null;
-  let fileWatchPath: string | null = null;
   let fileWatchSuppressUntil = 0;
 
-  ipcMain.handle('fs:watchFile', async (event, filePath: string) => {
+  typedHandle('watchFile', async (event, filePath) => {
     if (fileWatcher) { fileWatcher.close(); fileWatcher = null; }
     const resolvedPath = resolve(filePath);
-    fileWatchPath = resolvedPath;
     try {
       fileWatcher = watch(resolvedPath, (eventType) => {
         if (Date.now() < fileWatchSuppressUntil) return;
@@ -639,11 +651,10 @@ void app.whenReady().then(async () => {
         }
       });
     } catch { /* file may not exist yet — non-fatal */ }
-  });
+  }, ([filePath]) => assertPathArg('fs:watchFile', filePath));
 
-  ipcMain.handle('fs:unwatchFile', async () => {
+  typedHandle('unwatchFile', async () => {
     if (fileWatcher) { fileWatcher.close(); fileWatcher = null; }
-    fileWatchPath = null;
   });
 
   // Suppress file-change events for 1s after we write — avoids triggering
@@ -654,7 +665,7 @@ void app.whenReady().then(async () => {
 
   // §3.3 persisted state. Same atomic-write pattern as drafts (temp + rename)
   // so a crash mid-write can't corrupt the boot record.
-  ipcMain.handle('appState:read', async (): Promise<AppStateReadResult> => {
+  typedHandle('readAppState', async (): Promise<AppStateReadResult> => {
     const filePath = appStatePath();
     let raw: string;
     try {
@@ -682,7 +693,7 @@ void app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('appState:write', async (_event, state: AppStateFile): Promise<AppStateWriteResult> => {
+  typedHandle('writeAppState', async (_event, state): Promise<AppStateWriteResult> => {
     const filePath = appStatePath();
     // Explicit mkdir keeps the distinct `mkdir_failed` reason; atomicWriteJson
     // owns the crash-safe tmp + rename.
@@ -703,13 +714,13 @@ void app.whenReady().then(async () => {
         error: err instanceof Error ? err.message : String(err),
       };
     }
-  });
+  }, ([state]) => assertObjectArg('appState:write', state));
 
   // §3.5 — recursive PDF index for the Cmd+P palette. Walks under `root`,
   // skipping the hidden-by-default dir list (no override; the user doesn't
   // Cmd+P search for files inside node_modules). Soft cap at 20 000 hits to
   // bound the walk on accidentally-pointed-at home dirs.
-  ipcMain.handle('fs:indexPdfs', async (_event, root: string): Promise<IndexPdfsResult> => {
+  typedHandle('indexPdfs', async (_event, root): Promise<IndexPdfsResult> => {
     const resolvedRoot = resolve(root);
     try {
       const s = await stat(resolvedRoot);
@@ -752,15 +763,15 @@ void app.whenReady().then(async () => {
     }
     pdfs.sort((a, b) => a.relPath.localeCompare(b.relPath, undefined, { sensitivity: 'base' }));
     return { ok: true, root: resolvedRoot, pdfs };
-  });
+  }, ([root]) => assertPathArg('fs:indexPdfs', root));
 
   // §10.1 step 6 + §10.3 — results-file watcher lifecycle. Renderer calls
   // start right after loadPdf resolves a sha256; stop fires on doc switch
   // or app teardown. Main pushes parsed events to the renderer via
   // `results:event`. See results-watcher.ts for the full contract.
-  ipcMain.handle(
-    'results:watchStart',
-    async (event, pdfPath: string, sha256: string): Promise<ResultsWatchStartResult> => {
+  typedHandle(
+    'watchResultsStart',
+    async (event, pdfPath, sha256): Promise<ResultsWatchStartResult> => {
       const win = BrowserWindow.fromWebContents(event.sender);
       if (!win) {
         return {
@@ -771,9 +782,13 @@ void app.whenReady().then(async () => {
         };
       }
       return startResultsWatch(win, resolve(pdfPath), sha256);
-    }
+    },
+    ([pdfPath, sha256]) => {
+      assertPathArg('results:watchStart', pdfPath);
+      assertStringArg('results:watchStart sha256', sha256);
+    },
   );
-  ipcMain.handle('results:watchStop', () => {
+  typedHandle('watchResultsStop', () => {
     stopResultsWatch();
   });
 
@@ -782,28 +797,32 @@ void app.whenReady().then(async () => {
   // Stateless: every write is a fresh render of the source PDF with the
   // current draft comments as annotations. Filename collisions on the
   // same date overwrite by design (audit trail is per-day).
-  ipcMain.handle(
-    'bundle:write',
-    async (_event, request: BundleWriteRequest): Promise<BundleWriteResult> => {
+  typedHandle(
+    'writeBundle',
+    async (_event, request): Promise<BundleWriteResult> => {
       return writeBundleImpl(request);
-    }
+    },
+    ([request]) => assertObjectArg('bundle:write', request),
   );
 
   // §10.1 Submit flow (rev-1md.4) — three operations:
   //   submit:promote        write `.review-state/submit-<ts>.json`
   //   submit:sling          spawn `gt mail send` with the rev-2k7 payload
   //   submit:abandonRound   soft-tombstone an in-progress results file
-  ipcMain.handle(
-    'submit:promote',
-    async (_event, request: SubmitPromoteRequest) => promoteDraft(request),
+  typedHandle(
+    'submitPromote',
+    async (_event, request) => promoteDraft(request),
+    ([request]) => assertObjectArg('submit:promote', request),
   );
-  ipcMain.handle(
-    'submit:sling',
-    async (_event, request: SubmitSlingRequest) => slingViaGtMail(request),
+  typedHandle(
+    'submitSling',
+    async (_event, request) => slingViaGtMail(request),
+    ([request]) => assertObjectArg('submit:sling', request),
   );
-  ipcMain.handle(
-    'submit:abandonRound',
-    async (_event, request: SubmitAbandonRequest) => abandonRound(request),
+  typedHandle(
+    'submitAbandonRound',
+    async (_event, request) => abandonRound(request),
+    ([request]) => assertObjectArg('submit:abandonRound', request),
   );
 
   // §9.2 embedded Claude pane — pty manager (rev-1md.2).

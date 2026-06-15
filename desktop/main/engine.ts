@@ -17,57 +17,22 @@ import { access, constants } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { delimiter } from 'node:path';
+// The IPC-facing shapes (EngineResult, PdfHealth*, Resolution*) live in
+// shared/ so preload + renderer see the exact same contract. Main owns only
+// the spawn behavior and the internal EngineResolution helper type below.
+import type {
+  ResolutionStep,
+  ResolutionAttempt,
+  EngineResult,
+  PdfHealthReport,
+  PdfHealthResult,
+} from '@shared/engine';
 
 import { PDF_HEALTH_REPORTING_EXITS } from '@shared/exit-codes.js';
 
 export type EngineResolution =
   | { ok: true; resolvedPath: string; via: ResolutionStep }
   | { ok: false; triedPaths: ResolutionAttempt[] };
-
-export type ResolutionStep =
-  | 'env_override'
-  | 'path'
-  | 'repo_venv'
-  | 'home_venv';
-
-export interface ResolutionAttempt {
-  step: ResolutionStep;
-  path: string;
-}
-
-export type EngineResult =
-  | {
-      ok: true;
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-      resolvedPath: string;
-    }
-  | {
-      ok: false;
-      reason: 'not_found';
-      triedPaths: ResolutionAttempt[];
-    }
-  | {
-      ok: false;
-      reason: 'spawn_failed';
-      error: string;
-      resolvedPath: string;
-    }
-  | {
-      ok: false;
-      reason: 'failed';
-      stdout: string;
-      stderr: string;
-      exitCode: number | null;
-      resolvedPath: string;
-    }
-  | {
-      ok: false;
-      reason: 'timeout';
-      resolvedPath: string;
-      timeoutMs: number;
-    };
 
 const ENGINE_BIN = 'review-pdf';
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -231,28 +196,6 @@ export async function runEngine(args: string[], opts: RunOptions = {}): Promise<
 export async function engineVersion(): Promise<EngineResult> {
   return runEngine(['--version']);
 }
-
-/**
- * Strongly-typed view of the `review-pdf pdf-health --json` report.
- * Re-exported from shared/types so callers in main can import from one place.
- */
-export interface PdfHealthReport {
-  schema_version: 1;
-  pdf_path: string | null;
-  total_pages: number | null;
-  readable_pages: number[];
-  unreadable_pages: number[];
-  ligature_loss_detected: boolean;
-  encrypted: boolean;
-  producer: string | null;
-  creator: string | null;
-  page_errors: { page: number; error: string }[];
-  error: string | null;
-}
-
-export type PdfHealthResult =
-  | { ok: true; report: PdfHealthReport; exitCode: number; resolvedPath: string }
-  | { ok: false; reason: 'engine_failed'; engine: EngineResult };
 
 /**
  * Run `review-pdf pdf-health --pdf <path> --json` and parse the JSON report.

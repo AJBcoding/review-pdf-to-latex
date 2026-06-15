@@ -31,6 +31,8 @@
 //   - pty:onWorkerProgress → §9.2.7 β/γ structured progress markers
 
 import { BrowserWindow, ipcMain, app } from 'electron';
+import { typedHandle } from './typed-ipc.js';
+import { assertObjectArg, assertStringArg } from './ipc-validators.js';
 import { spawnSync as spawnSyncBlocking } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -614,13 +616,13 @@ function killWorker(workerId: string): void {
 // ─── IPC wiring ───────────────────────────────────────────────────────────
 
 export function registerClaudePtyIpc(): void {
-  ipcMain.handle('pty:probeReviewer', (): ReviewerProbe => probeReviewer());
+  typedHandle('probeReviewer', (): ReviewerProbe => probeReviewer());
 
-  ipcMain.handle('pty:start', (event, params: PtyStartParams): PtyStartResult => {
+  typedHandle('startPty', (event, params): PtyStartResult => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { ok: false, reason: 'no_window' };
     return spawnConversational(event.sender, params);
-  });
+  }, ([params]) => assertObjectArg('pty:start', params));
 
   ipcMain.on('pty:input', (event, data: string) => {
     if (!convHandle) return;
@@ -636,24 +638,24 @@ export function registerClaudePtyIpc(): void {
     try { convHandle.pty.resize(c, r); } catch { /* pty closed */ }
   });
 
-  ipcMain.handle('pty:kill', () => {
+  typedHandle('killPty', () => {
     killConversational();
     return { ok: true } as const;
   });
 
   // §9.2.6 Fresh Start — kill + respawn with handoff priming.
-  ipcMain.handle('pty:freshStart', (event, params: FreshStartParams): FreshStartResult => {
+  typedHandle('freshStartPty', (event, params): FreshStartResult => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { ok: false, reason: 'no_window' };
     return freshStart(event.sender, params);
-  });
+  }, ([params]) => assertObjectArg('pty:freshStart', params));
 
   // §9.2.6 worker spawn.
-  ipcMain.handle('pty:startWorker', (event, params: WorkerStartParams): WorkerStartResult => {
+  typedHandle('startWorkerPty', (event, params): WorkerStartResult => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { ok: false, reason: 'no_window' };
     return spawnWorker(event.sender, params);
-  });
+  }, ([params]) => assertObjectArg('pty:startWorker', params));
 
   ipcMain.on('pty:workerInput', (event, workerId: string, data: string) => {
     const h = workerHandles.get(workerId);
@@ -669,12 +671,12 @@ export function registerClaudePtyIpc(): void {
     try { h.pty.resize(c, r); } catch { /* pty closed */ }
   });
 
-  ipcMain.handle('pty:killWorker', (event, workerId: string) => {
+  typedHandle('killWorkerPty', (event, workerId) => {
     const h = workerHandles.get(workerId);
     if (!h || event.sender !== h.webContents) return { ok: true } as const;
     killWorker(workerId);
     return { ok: true } as const;
-  });
+  }, ([workerId]) => assertStringArg('pty:killWorker', workerId));
 }
 
 /** Tear down on app quit. Safe to call repeatedly. */
