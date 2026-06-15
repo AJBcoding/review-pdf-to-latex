@@ -319,7 +319,7 @@ export class PdfViewer implements FileViewer {
   get totalPages(): number { return this.doc?.numPages ?? 0; }
   get currentPage(): number { return this.currentPageNum; }
   get currentZoom(): number { return this.zoom; }
-  get anchorKind(): AnchorKind { return 'pdf-glyph-rect'; }
+  get anchorKind(): AnchorKind { return 'pdf-quad'; }
 
   /** §13.6 spike: toggle dark-mode rendering (CSS filter on the canvas
    * element only; text layer is unaffected so selection stays accurate). */

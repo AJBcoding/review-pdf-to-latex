@@ -29,6 +29,7 @@ import type {
   BundleWriteRequest,
   BundleWriteResult,
   CommentPayload,
+  PdfQuadAnchor,
 } from '@shared/types';
 import {
   ENGAGEMENT_PALETTE,
@@ -53,18 +54,20 @@ function pdfDateUtc(d: Date): string {
  *
  *  /Contents carries the comment text, with an appended `\n[redraft] …`
  *  block when the comment has a user-supplied redraft. /T (author) is
- *  the bundle author. /NM is the annotation name, set to the
- *  `pdf_annotation_id` so the JSON sidecar's per-comment link is
- *  resolvable from inside the PDF too (round-trip safety). */
+ *  the bundle author. /NM is the annotation name, set to the minted
+ *  annotation id (stamped into the sidecar comment's `native.comment_id`)
+ *  so the JSON sidecar's per-comment link is resolvable from inside the PDF
+ *  too (round-trip safety). */
 function buildHighlight(
   doc: PDFDocument,
   pageRef: PDFRef,
   comment: CommentPayload,
+  anchor: PdfQuadAnchor,
   annotationId: string,
   date: Date,
 ): PDFDict {
   const ctx = doc.context;
-  const r = comment.anchor.region;
+  const r = anchor.region;
   const palette = ENGAGEMENT_PALETTE[comment.engagement_level];
 
   // /Rect = bbox of the highlight in PDF user space.
@@ -155,15 +158,17 @@ async function atomicWrite(filePath: string, data: Uint8Array | string): Promise
  *       the IDs onto its in-memory drafts (saves a draft round-trip).
  */
 export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteResult> {
-  // Pre-v2 C5 guard (§4.4 step 0): bundle writer is PDF-only. Reject any
-  // comment carrying md_anchor — those belong to the md-fuzzy-snippet path
-  // and would produce garbage PDF annotations if passed through blind.
-  const mdComment = req.comments.find((c) => c.md_anchor);
-  if (mdComment) {
+  // C5 guard (§4.4 step 0): bundle writer is PDF-only. Under the anchor union
+  // this is now keyed on the per-comment anchor KIND (the truthful
+  // discriminator) rather than the legacy md_anchor sniff — reject any comment
+  // whose anchor is not `pdf-quad`, since text-quote / html-selector-hint
+  // anchors carry no PDF region and would produce garbage annotations.
+  const nonPdfComment = req.comments.find((c) => c.anchor.kind !== 'pdf-quad');
+  if (nonPdfComment) {
     return {
       ok: false,
       reason: 'render_failed',
-      error: `comment '${mdComment.id}' carries md_anchor — writeBundle is PDF-only (C5 guard)`,
+      error: `comment '${nonPdfComment.id}' has a non-pdf-quad anchor (${nonPdfComment.anchor.kind}) — writeBundle is PDF-only (C5 guard)`,
       bundlePdfPath: null,
       bundleJsonPath: null,
     };
@@ -212,11 +217,17 @@ export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteR
     // once per page. Pages outside [1, pageCount] are skipped with a soft
     // warning — happens when a draft references a deleted page. Don't
     // fail the whole write for one stale anchor.
-    const byPage = new Map<number, CommentPayload[]>();
+    // Every comment is pdf-quad by the C5 guard above; narrow once here.
+    const pdfComments: { comment: CommentPayload; anchor: PdfQuadAnchor }[] = [];
     for (const c of req.comments) {
-      const p = c.anchor.page;
+      if (c.anchor.kind !== 'pdf-quad') continue; // unreachable post-guard; satisfies TS
+      pdfComments.push({ comment: c, anchor: c.anchor });
+    }
+    const byPage = new Map<number, { comment: CommentPayload; anchor: PdfQuadAnchor }[]>();
+    for (const pc of pdfComments) {
+      const p = pc.anchor.page;
       if (!byPage.has(p)) byPage.set(p, []);
-      byPage.get(p)!.push(c);
+      byPage.get(p)!.push(pc);
     }
     const totalPages = doc.getPageCount();
     let annotCounter = 0;
@@ -227,10 +238,10 @@ export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteR
       }
       const page = doc.getPage(pageNum - 1);
       const annots: PDFDict[] = [];
-      for (const comment of group) {
+      for (const { comment, anchor } of group) {
         annotCounter += 1;
         const annotationId = `annot-${annotCounter}`;
-        annots.push(buildHighlight(doc, page.ref, comment, annotationId, date));
+        annots.push(buildHighlight(doc, page.ref, comment, anchor, annotationId, date));
         annotationIds.push({ commentId: comment.id, pdfAnnotationId: annotationId });
       }
       appendAnnotsToPage(doc, page, annots);
@@ -264,12 +275,15 @@ export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteR
   // Stamp the freshly-minted annotation IDs onto a copy of the comments
   // before writing the JSON sidecar. The map covers everything we just
   // rendered; comments whose anchor was out-of-range get null (no annot
-  // exists in the bundle PDF for them, so they have no pdf_annotation_id).
+  // exists in the bundle PDF for them). Under v2 the id lands in
+  // `native.comment_id` (folds in the old `pdf_annotation_id`); the comment is
+  // app-written so origin stays `app-draft`.
   const idMap = new Map(annotationIds.map((x) => [x.commentId, x.pdfAnnotationId]));
-  const stampedComments: CommentPayload[] = req.comments.map((c) => ({
-    ...c,
-    pdf_annotation_id: idMap.get(c.id) ?? null,
-  }));
+  const stampedComments: CommentPayload[] = req.comments.map((c) => {
+    const annotId = idMap.get(c.id) ?? null;
+    if (!annotId) return { ...c, native: c.native ?? null };
+    return { ...c, native: { ...(c.native ?? {}), comment_id: annotId } };
+  });
 
   const bundleId = mintBundleId(date);
   const json: BundleJsonFile = {

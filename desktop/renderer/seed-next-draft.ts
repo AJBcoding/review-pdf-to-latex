@@ -7,12 +7,24 @@
 
 import type {
   CommentPayload,
+  DocFormat,
   DraftsFile,
   DraftsReadResult,
   DraftsWriteResult,
   ReadPdfBytesResult,
   ResultsEvent,
 } from '@shared/types';
+
+/** Path-derived format for the seeded v2 DraftsFile (§3.3). v1.1 seeding is a
+ *  PDF-round notion today; the next write corrects `format` from the doc path
+ *  if it ever differs. */
+function formatForPath(p: string): DocFormat {
+  const lower = p.toLowerCase();
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+  if (lower.endsWith('.docx')) return 'docx';
+  return 'pdf';
+}
 
 /** I/O + entropy the seed needs, injected so tests can supply in-memory fakes.
  *  Method shapes match the corresponding `window.electronAPI` methods. */
@@ -100,12 +112,14 @@ export async function seedNextVersionDraft(
       created_at: io.nowIso(),
       derived_from: original.id,
       agent_note: r.agent_note ?? null,
+      origin: 'app-draft',
     });
   }
 
   const file: DraftsFile = {
-    schema_version: 1,
+    schema_version: 2,
     doc_version: newSha,
+    format: formatForPath(newDocId),
     comments: reraised,
   };
   const res = await io.writeDrafts(newDocId, newSha, file);

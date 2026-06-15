@@ -55,7 +55,7 @@ function makeComment(overrides: Partial<CommentPayload> = {}): CommentPayload {
     id: `c${idCounter}`,
     doc_id: sourcePath,
     doc_version: 'sha-abc',
-    anchor: { page: 1, region: { x: 100, y: 200, w: 50, h: 20 } },
+    anchor: { kind: 'pdf-quad', page: 1, region: { x: 100, y: 200, w: 50, h: 20 } },
     highlighted_text: 'text',
     comment: 'a comment',
     redraft: null,
@@ -65,6 +65,7 @@ function makeComment(overrides: Partial<CommentPayload> = {}): CommentPayload {
     kind: 'comment',
     status: 'open',
     created_at: '2026-06-14T00:00:00.000Z',
+    origin: 'app-draft',
     ...overrides,
   };
 }
@@ -104,7 +105,7 @@ describe('writeBundle — QuadPoints geometry', () => {
     await writeSourcePdf(1);
     const region = { x: 100, y: 200, w: 50, h: 20 };
     const res = await writeBundle(
-      bundleReq([makeComment({ id: 'q1', anchor: { page: 1, region } })], 1),
+      bundleReq([makeComment({ id: 'q1', anchor: { kind: 'pdf-quad', page: 1, region } })], 1),
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -169,8 +170,8 @@ describe('writeBundle — out-of-range page skip', () => {
     const res = await writeBundle(
       bundleReq(
         [
-          makeComment({ id: 'on-page-1', anchor: { page: 1, region: { x: 1, y: 1, w: 2, h: 2 } } }),
-          makeComment({ id: 'out-of-range', anchor: { page: 5, region: { x: 1, y: 1, w: 2, h: 2 } } }),
+          makeComment({ id: 'on-page-1', anchor: { kind: 'pdf-quad', page: 1, region: { x: 1, y: 1, w: 2, h: 2 } } }),
+          makeComment({ id: 'out-of-range', anchor: { kind: 'pdf-quad', page: 5, region: { x: 1, y: 1, w: 2, h: 2 } } }),
         ],
         1,
       ),
@@ -189,7 +190,7 @@ describe('writeBundle — out-of-range page skip', () => {
     // The JSON sidecar freezes both comments but leaves the skipped one's
     // pdf_annotation_id null (no annotation exists for it).
     const json: BundleJsonFile = JSON.parse(await readFile(res.bundleJsonPath, 'utf8'));
-    const byId = new Map(json.comments.map((c) => [c.id, c.pdf_annotation_id]));
+    const byId = new Map(json.comments.map((c) => [c.id, c.native?.comment_id ?? null]));
     expect(byId.get('on-page-1')).toBeTruthy();
     expect(byId.get('out-of-range')).toBeNull();
   });
@@ -200,9 +201,9 @@ describe('writeBundle — out-of-range page skip', () => {
     const res = await writeBundle(
       bundleReq(
         [
-          makeComment({ id: 'page-0', anchor: { page: 0, region: { x: 1, y: 1, w: 2, h: 2 } } }),
-          makeComment({ id: 'page-neg', anchor: { page: -1, region: { x: 1, y: 1, w: 2, h: 2 } } }),
-          makeComment({ id: 'page-2', anchor: { page: 2, region: { x: 1, y: 1, w: 2, h: 2 } } }),
+          makeComment({ id: 'page-0', anchor: { kind: 'pdf-quad', page: 0, region: { x: 1, y: 1, w: 2, h: 2 } } }),
+          makeComment({ id: 'page-neg', anchor: { kind: 'pdf-quad', page: -1, region: { x: 1, y: 1, w: 2, h: 2 } } }),
+          makeComment({ id: 'page-2', anchor: { kind: 'pdf-quad', page: 2, region: { x: 1, y: 1, w: 2, h: 2 } } }),
         ],
         2,
       ),
@@ -214,14 +215,22 @@ describe('writeBundle — out-of-range page skip', () => {
 });
 
 describe('writeBundle — guards', () => {
-  it('rejects comments carrying md_anchor (C5 PDF-only guard)', async () => {
+  it('rejects comments with a non-pdf-quad anchor (C5 PDF-only guard)', async () => {
     await writeSourcePdf(1);
     const res = await writeBundle(
       bundleReq(
         [
           makeComment({
             id: 'md',
-            md_anchor: { char_start: 0, char_end: 1, prefix: '', suffix: '', quoted_text: 'x' },
+            anchor: {
+              kind: 'text-quote',
+              char_start: 0,
+              char_end: 1,
+              prefix: '',
+              suffix: '',
+              quoted_text: 'x',
+              relocated: null,
+            },
           }),
         ],
         1,
@@ -230,7 +239,7 @@ describe('writeBundle — guards', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toBe('render_failed');
-    expect(res.error).toContain('md_anchor');
+    expect(res.error).toContain('non-pdf-quad');
   });
 
   it('returns source_not_found when the source PDF is missing', async () => {

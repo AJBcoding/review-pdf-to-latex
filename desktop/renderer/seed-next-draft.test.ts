@@ -9,7 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { seedNextVersionDraft, type SeedDraftIO } from './seed-next-draft';
 import type {
-  AnchorRegion,
+  Anchor,
   CommentPayload,
   DraftsFile,
   DraftsReadResult,
@@ -23,7 +23,7 @@ import type {
 const V11_PATH = '/proj/paper.v1.1.md';
 const V11_SHA = 'sha-of-v1.1';
 
-const ANCHOR: AnchorRegion = { page: 1, region: { x: 0, y: 0, w: 10, h: 10 } };
+const ANCHOR: Anchor = { kind: 'pdf-quad', page: 1, region: { x: 0, y: 0, w: 10, h: 10 } };
 
 function comment(id: string, overrides: Partial<CommentPayload> = {}): CommentPayload {
   return {
@@ -40,6 +40,7 @@ function comment(id: string, overrides: Partial<CommentPayload> = {}): CommentPa
     kind: 'comment',
     status: 'open',
     created_at: '2026-01-01T00:00:00.000Z',
+    origin: 'app-draft',
     ...overrides,
   };
 }

@@ -10,11 +10,13 @@ import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
 import { registerAgentPaneIpc, rebindMainWindow, shutdownAgentPane } from './agent-pane-ipc.js';
 import { runSidecarMigration, findSidecarByFingerprint, buildFingerprint } from './sidecar-migration.js';
+import { migrateDraftsToV2 } from './drafts-migration.js';
 import {
   promoteDraft,
   slingViaGtMail,
   abandonRound,
 } from './submit.js';
+import type { DocFormat } from '@shared/comments';
 import type {
   AppStateFile,
   AppStateReadResult,
@@ -47,6 +49,17 @@ import type {
 function draftsPathFor(docPath: string): string {
   const base = pathBasename(resolve(docPath));
   return join(dirname(resolve(docPath)), '.review-state', 'drafts', `${base}.json`);
+}
+
+/** Path-derived document format for DraftsFile v2 (§3.3). The drafts migration
+ *  takes this as a hint so the migrated `format` field is accurate without
+ *  inferring from comment shapes. */
+function draftFormatForPath(docPath: string): DocFormat {
+  const lower = resolve(docPath).toLowerCase();
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+  if (lower.endsWith('.docx')) return 'docx';
+  return 'pdf';
 }
 
 /** Legacy sha256-based sidecar path — used only during migration to find
@@ -434,15 +447,18 @@ void app.whenReady().then(async () => {
           const fp = await buildFingerprint(resolve(pdfPath));
           const match = await findSidecarByFingerprint(draftsDir, fp);
           if (match) {
-            // Relink: move the sidecar to the new path and update its fingerprint.
-            match.drafts.doc_fingerprint = {
+            // Relink: move the sidecar to the new path and update its
+            // fingerprint. Migrate v1 → v2 lazily (§3.3) before writing so the
+            // relinked file lands as v2.
+            const migrated = migrateDraftsToV2(match.drafts, draftFormatForPath(pdfPath));
+            migrated.doc_fingerprint = {
               ...fp,
               last_known_path: resolve(pdfPath),
             };
             await mkdir(dirname(filePath), { recursive: true });
-            await writeFile(filePath, JSON.stringify(match.drafts, null, 2), 'utf8');
+            await writeFile(filePath, JSON.stringify(migrated, null, 2), 'utf8');
             try { await rename(match.sidecarPath, `${match.sidecarPath}.relinked`); } catch { /* best-effort */ }
-            return { ok: true, file: match.drafts, filePath };
+            return { ok: true, file: migrated, filePath };
           }
         } catch { /* fingerprint scan failure is non-fatal */ }
         return { ok: true, file: null, filePath, reason: 'not_found' };
@@ -450,8 +466,12 @@ void app.whenReady().then(async () => {
       return { ok: false, reason: 'read_failed', filePath, error: e.message };
     }
     try {
-      const parsed = JSON.parse(raw) as DraftsFile;
-      return { ok: true, file: parsed, filePath };
+      const parsed = JSON.parse(raw) as unknown;
+      // §3.3 LAZY read-time migration: v1 sidecars are migrated to v2 in
+      // memory here; the file is rewritten as v2 only on the next drafts:write
+      // (no startup sweep). Already-v2 files pass through normalized.
+      const file = migrateDraftsToV2(parsed, draftFormatForPath(pdfPath));
+      return { ok: true, file, filePath };
     } catch (err) {
       return {
         ok: false,

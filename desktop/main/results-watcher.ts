@@ -40,6 +40,7 @@ import type {
   ResultsWatchStartResult,
   SubmitFile,
 } from '@shared/types';
+import { normalizeResultsFile, normalizeSubmitFile } from '@shared/comments';
 
 const RESULTS_RE = /^results-.+\.json$/;
 const SUBMIT_RE = /^submit-.+\.json$/;
@@ -102,8 +103,11 @@ async function loadSubmit(
   for (const d of dirents) {
     if (!d.isFile() || !isSubmitName(d.name)) continue;
     const submitPath = join(state.reviewStateDir, d.name);
-    const parsed = await readJsonFile<SubmitFile>(submitPath);
-    if (!parsed) continue;
+    const raw = await readJsonFile<SubmitFile>(submitPath);
+    if (!raw) continue;
+    // v2-results tolerance: a v1 submit file read off disk presents as
+    // union-shaped (bare anchors → pdf-quad; pdf_annotation_id → native).
+    const parsed = normalizeSubmitFile(raw);
     state.submitCache.set(parsed.submit_id, parsed);
     state.submitPathToId.set(submitPath, parsed.submit_id);
     if (parsed.submit_id === submitId) return parsed;
@@ -120,11 +124,15 @@ async function emitResultsFile(
   if (win.isDestroyed() || win.webContents.isDestroyed()) return;
   const parsed = await readJsonFile<ResultsFile>(resultsPath);
   if (!parsed) return;
-  const submit = await loadSubmit(state, parsed.submit_id);
+  // v2-results tolerance (§4.4 step 1): normalize so every new_anchor is the
+  // union shape regardless of whether the rig wrote v1 (bare {page,region}) or
+  // v2 ({kind:...}). The renderer only ever sees union anchors.
+  const results = normalizeResultsFile(parsed);
+  const submit = await loadSubmit(state, results.submit_id);
   const matchesDoc = submit !== null && submit.doc_version === state.sha256;
   const event: ResultsEvent = {
     filePath: resultsPath,
-    results: parsed,
+    results,
     submit,
     matchesDoc,
     source,
@@ -208,8 +216,9 @@ async function processFsEvent(
     if (!exists) return;
     // Pre-warm the cache so the subsequent results re-emit doesn't have to
     // re-scan the whole dir.
-    const parsed = await readJsonFile<SubmitFile>(fullPath);
-    if (parsed) {
+    const raw = await readJsonFile<SubmitFile>(fullPath);
+    if (raw) {
+      const parsed = normalizeSubmitFile(raw);
       state.submitCache.set(parsed.submit_id, parsed);
       state.submitPathToId.set(fullPath, parsed.submit_id);
       // Re-emit any results files that reference this submit_id. The

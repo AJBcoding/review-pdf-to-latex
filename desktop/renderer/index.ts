@@ -1,7 +1,9 @@
 import type {
+  Anchor,
   AppStateFile,
   CommentPayload,
   CommentStatus,
+  DocFormat,
   DraftsFile,
   EngagementLevel,
   EngineResult,
@@ -255,12 +257,11 @@ function scheduleDraftsWrite(): void {
 
 async function flushDraftsWrite(): Promise<void> {
   if (!docState.path || !docState.sha256) return;
-  const isMd = classifyPath(docState.path) === 'md';
   const file: DraftsFile = {
-    schema_version: 1,
+    schema_version: 2,
     doc_version: docState.sha256,
+    format: draftFormat(docState.path),
     comments: docState.comments,
-    anchor_kind: isMd ? 'md-fuzzy-snippet' : 'pdf-glyph-rect',
   };
   draftsCache.set(draftsCacheKey(docState.path, docState.sha256), file);
   const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
@@ -577,6 +578,13 @@ function classifyPath(p: string): 'pdf' | 'md' | 'html' | 'docx' | 'other' {
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
   if (lower.endsWith('.docx')) return 'docx';
   return 'other';
+}
+
+/** DraftsFile v2 file-level `format` (§3.3). `other` collapses to `pdf` — the
+ *  same safe default the v1 `anchor_kind` carried. */
+function draftFormat(p: string): DocFormat {
+  const k = classifyPath(p);
+  return k === 'other' ? 'pdf' : k;
 }
 
 // ─── §3 left drawer + §3.5 palette ────────────────────────────────────────
@@ -1217,14 +1225,14 @@ let lastBundleSnapshot: BundleSnapshot | null = null;
  *  debounce first so the JSON sidecar contains the freshest comments. */
 async function writeBundle(): Promise<boolean> {
   if (!docState.path || !docState.sha256 || !viewerRef) return false;
-  // Pre-v2 C5 guard (§4.4 step 0): bundle/submit pipeline is PDF-only.
-  // Reject if the open file is not a PDF (file-level anchor_kind guard)
-  // or if any live comment carries md_anchor (per-comment guard).
+  // C5 guard (§4.4 step 0): bundle/submit pipeline is PDF-only. Reject if the
+  // open file is not a PDF, or if any live comment carries a non-`pdf-quad`
+  // anchor (the per-comment guard, now keyed on the truthful union kind).
   if (classifyPath(docState.path) !== 'pdf') {
     flashAnchorMeta('Bundle export is only available for PDF documents.');
     return false;
   }
-  if (docState.comments.some((c) => c.md_anchor)) {
+  if (docState.comments.some((c) => c.anchor.kind !== 'pdf-quad')) {
     flashAnchorMeta('Cannot export bundle: one or more comments carry non-PDF anchors.');
     return false;
   }
@@ -1255,17 +1263,17 @@ async function writeBundle(): Promise<boolean> {
     setSavedIndicator({ kind: 'error', detail: `${res.reason}: ${res.error}` });
     return false;
   }
-  // Mirror the freshly-minted pdf_annotation_id values back onto the
-  // in-memory drafts so the next bundle write can preserve them (and
-  // so the JSON sidecar's IDs stay aligned with the live draft). Persist
-  // via the debounced writer rather than directly — same code path as a
-  // normal edit, keeps the "Saved" semantics consistent.
+  // Mirror the freshly-minted annotation ids back onto the in-memory drafts
+  // so the next bundle write can preserve them (and so the JSON sidecar's IDs
+  // stay aligned with the live draft). Under v2 the id lives in
+  // `native.comment_id`. Persist via the debounced writer — same code path as
+  // a normal edit, keeps the "Saved" semantics consistent.
   const idMap = new Map(res.annotationIds.map((x) => [x.commentId, x.pdfAnnotationId]));
   let changed = false;
   for (const c of docState.comments) {
     const next = idMap.get(c.id) ?? null;
-    if ((c.pdf_annotation_id ?? null) !== next) {
-      c.pdf_annotation_id = next;
+    if ((c.native?.comment_id ?? null) !== next) {
+      c.native = next ? { ...(c.native ?? {}), comment_id: next } : null;
       changed = true;
     }
   }
@@ -1769,36 +1777,32 @@ async function loadDocx(h: ViewerHandles, path: string): Promise<void> {
   window.dispatchEvent(new CustomEvent('toolbar:doc-state-changed'));
 }
 
+/** Collect the html-selector-hint anchors from the live comments as the
+ *  iframe viewers' `HtmlAnchor` shape. The v1 `as any` md_anchor smuggle (C6)
+ *  is gone — selector anchors are now a declared union kind. */
+function htmlSelectorAnchors(): HtmlAnchor[] {
+  const anchors: HtmlAnchor[] = [];
+  for (const c of docState.comments) {
+    if (c.anchor.kind !== 'html-selector-hint') continue;
+    const a = c.anchor;
+    anchors.push({
+      selector: a.selector,
+      text_content: a.quoted_text,
+      char_offset: a.char_offset,
+      char_length: a.char_length || a.quoted_text.length,
+    });
+  }
+  return anchors;
+}
+
 function applyDocxCommentHighlights(): void {
   if (!docxViewerRef) return;
-  const anchors: HtmlAnchor[] = docState.comments
-    .filter((c) => c.md_anchor && (c.md_anchor as any).selector)
-    .map((c) => {
-      const a = c.md_anchor as any;
-      return {
-        selector: a.selector as string,
-        text_content: a.quoted_text as string,
-        char_offset: a.char_offset as number ?? 0,
-        char_length: a.char_length as number ?? a.quoted_text?.length ?? 0,
-      };
-    });
-  docxViewerRef.setHighlightedAnchors(anchors);
+  docxViewerRef.setHighlightedAnchors(htmlSelectorAnchors());
 }
 
 function applyHtmlCommentHighlights(): void {
   if (!htmlViewerRef) return;
-  const anchors: HtmlAnchor[] = docState.comments
-    .filter((c) => c.md_anchor && (c.md_anchor as any).selector)
-    .map((c) => {
-      const a = c.md_anchor as any;
-      return {
-        selector: a.selector as string,
-        text_content: a.quoted_text as string,
-        char_offset: a.char_offset as number ?? 0,
-        char_length: a.char_length as number ?? a.quoted_text?.length ?? 0,
-      };
-    });
-  htmlViewerRef.setHighlightedAnchors(anchors);
+  htmlViewerRef.setHighlightedAnchors(htmlSelectorAnchors());
 }
 
 function showExternalModificationModal(h: ViewerHandles, path: string): void {
@@ -1836,16 +1840,18 @@ function reanchorMdComments(): void {
   const doc = mdViewerRef.getContent();
   const tracked: Array<{ commentId: string; from: number; to: number; orphaned: boolean }> = [];
   for (const c of docState.comments) {
-    if (!c.md_anchor) continue;
-    const match = fuzzyMatchAnchor(doc, c.md_anchor);
+    if (c.anchor.kind !== 'text-quote') continue;
+    const a = c.anchor;
+    // TextQuoteAnchor is structurally a superset of MdAnchor.
+    const match = fuzzyMatchAnchor(doc, a);
     tracked.push({
       commentId: c.id,
       from: match.from,
       to: match.to,
       orphaned: match.confidence === 'orphaned',
     });
-    c.md_anchor.char_start = match.from;
-    c.md_anchor.char_end = match.to;
+    a.char_start = match.from;
+    a.char_end = match.to;
   }
   mdViewerRef.setTrackedAnchors(tracked);
 }
@@ -1856,18 +1862,22 @@ function syncMdAnchorsToComments(): void {
   const byId = new Map(docState.comments.map((c) => [c.id, c]));
   for (const a of anchors) {
     const c = byId.get(a.commentId);
-    if (!c || !c.md_anchor) continue;
+    if (!c || c.anchor.kind !== 'text-quote') continue;
+    const tq = c.anchor;
     if (a.orphaned) {
-      c.md_anchor.char_start = -1;
-      c.md_anchor.char_end = -1;
+      tq.char_start = -1;
+      tq.char_end = -1;
     } else {
-      c.md_anchor.char_start = a.from;
-      c.md_anchor.char_end = a.to;
+      tq.char_start = a.from;
+      tq.char_end = a.to;
       const doc = mdViewerRef.getContent();
       if (a.from >= 0 && a.to <= doc.length) {
-        c.md_anchor.quoted_text = doc.slice(a.from, a.to);
-        c.md_anchor.prefix = doc.slice(Math.max(0, a.from - 40), a.from);
-        c.md_anchor.suffix = doc.slice(a.to, Math.min(doc.length, a.to + 40));
+        // NOTE: provenance-immutable re-anchoring (relocations → anchor.relocated,
+        // originals write-once) is roadmap X12; v2 introduces the field but the
+        // live md tracking keeps the v1 in-place update until X12 rewires it.
+        tq.quoted_text = doc.slice(a.from, a.to);
+        tq.prefix = doc.slice(Math.max(0, a.from - 40), a.from);
+        tq.suffix = doc.slice(a.to, Math.min(doc.length, a.to + 40));
       }
     }
   }
@@ -2290,7 +2300,15 @@ function buildHtmlCommentPayload(buf: string, sel: HtmlSelection): CommentPayloa
     id: crypto.randomUUID(),
     doc_id: docState.path,
     doc_version: docState.sha256,
-    anchor: { page: 1, region: { x: 0, y: 0, w: 0, h: 0 } },
+    // html/docx anchor by the declared html-selector-hint kind — the v1 `as any`
+    // smuggle through md_anchor (C6) is gone.
+    anchor: {
+      kind: 'html-selector-hint',
+      selector: sel.selector,
+      char_offset: sel.charOffset,
+      char_length: sel.charLength,
+      quoted_text: sel.text,
+    },
     highlighted_text: sel.text,
     comment: isRedraft ? '' : buf,
     redraft: isRedraft ? buf : null,
@@ -2300,16 +2318,7 @@ function buildHtmlCommentPayload(buf: string, sel: HtmlSelection): CommentPayloa
     kind: 'comment',
     status: 'open',
     created_at: new Date().toISOString(),
-    md_anchor: {
-      char_start: sel.charOffset,
-      char_end: sel.charOffset + sel.charLength,
-      prefix: '',
-      suffix: '',
-      quoted_text: sel.text,
-      selector: sel.selector,
-      char_offset: sel.charOffset,
-      char_length: sel.charLength,
-    } as any,
+    origin: 'app-draft',
   };
 }
 
@@ -2323,7 +2332,8 @@ function buildMdCommentPayload(
     id: crypto.randomUUID(),
     doc_id: docState.path,
     doc_version: docState.sha256,
-    anchor: { page: 1, region: { x: 0, y: 0, w: 0, h: 0 } },
+    // md anchors fold into the text-quote union kind verbatim (§3.1 rule 3).
+    anchor: { kind: 'text-quote', ...mdAnchor, relocated: null },
     highlighted_text: sel.text,
     comment: isRedraft ? '' : buf,
     redraft: isRedraft ? buf : null,
@@ -2333,7 +2343,7 @@ function buildMdCommentPayload(
     kind: 'comment',
     status: 'open',
     created_at: new Date().toISOString(),
-    md_anchor: mdAnchor,
+    origin: 'app-draft',
   };
 }
 
@@ -2346,7 +2356,7 @@ function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload
     id: crypto.randomUUID(),
     doc_id: docState.path,
     doc_version: docState.sha256,
-    anchor: { page: sel.page, region: sel.region },
+    anchor: { kind: 'pdf-quad', page: sel.page, region: sel.region },
     highlighted_text: sel.highlighted_text,
     comment: isRedraft ? '' : buf,
     redraft: isRedraft ? buf : null,
@@ -2356,6 +2366,7 @@ function buildCommentPayload(buf: string, sel: SelectionPayload): CommentPayload
     kind: 'comment',
     status: 'open',
     created_at: new Date().toISOString(),
+    origin: 'app-draft',
   };
 }
 
@@ -2439,9 +2450,36 @@ function bindCommentStreamKeyboard(): void {
       const c = id ? docState.comments.find((x) => x.id === id) : null;
       if (!c || !viewerRef) return;
       e.preventDefault();
-      void viewerRef.revealAnchor(c.anchor.page, c.anchor.region);
+      revealCommentAnchor(c.new_anchor ?? c.anchor);
     }
   });
+}
+
+/** Reveal a comment's anchor in the active viewer. PDF anchors navigate to the
+ *  page + region; text-quote / selector anchors are tracked by their own
+ *  viewers (md/html/docx). Full polymorphic reveal across formats is roadmap
+ *  X6 — this keeps the PDF path working and is a no-op for the others. */
+function revealCommentAnchor(a: Anchor): void {
+  if (!viewerRef) return;
+  if (a.kind === 'pdf-quad') void viewerRef.revealAnchor(a.page, a.region);
+}
+
+/** Short, kind-aware card location label. Replaces the v1 "p.1 · 0,0 0×0" that
+ *  rendered for 3 of 4 formats (C5/C6); honest cards are roadmap X6. */
+function anchorLabel(a: Anchor): string {
+  if (a.kind === 'pdf-quad') {
+    const r = a.region;
+    return `· p.${a.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)}`;
+  }
+  if (a.kind === 'text-quote') return `· chars ${a.char_start}–${a.char_end}`;
+  return `· ${a.selector.slice(-30)}`;
+}
+
+/** ARIA location phrase for a comment card. */
+function anchorAriaLocation(a: Anchor): string {
+  if (a.kind === 'pdf-quad') return `page ${a.page}`;
+  if (a.kind === 'text-quote') return `chars ${a.char_start}–${a.char_end}`;
+  return a.selector.slice(-30);
 }
 
 function moveCardFocus(stream: HTMLElement, dir: 1 | -1): void {
@@ -2485,11 +2523,10 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   // reveal points at the new location — that's where the resulting text
   // actually lives. Original anchor is kept on the comment for audit only.
   const revealAnchor = c.new_anchor ?? c.anchor;
-  card.setAttribute('aria-label', `${labelFor(c.engagement_level)} on page ${revealAnchor.page}`);
+  card.setAttribute('aria-label', `${labelFor(c.engagement_level)} on ${anchorAriaLocation(revealAnchor)}`);
   card.addEventListener('focus', () => { focusedCommentId = c.id; });
   card.addEventListener('click', () => {
-    if (!viewerRef) return;
-    void viewerRef.revealAnchor(revealAnchor.page, revealAnchor.region);
+    revealCommentAnchor(revealAnchor);
   });
 
   const head = document.createElement('div');
@@ -2513,8 +2550,7 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   }
   const anchor = document.createElement('span');
   anchor.className = 'comment-card-anchor';
-  const r = revealAnchor.region;
-  anchor.textContent = `· p.${revealAnchor.page} · ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}×${Math.round(r.h)}`;
+  anchor.textContent = anchorLabel(revealAnchor);
   head.append(level, status);
   if (derived) head.append(derived);
   head.append(anchor, buildCardActions(c));

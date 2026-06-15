@@ -36,7 +36,7 @@ function makeComment(overrides: Partial<CommentPayload> = {}): CommentPayload {
     id: `c${idCounter}`,
     doc_id: sourcePath,
     doc_version: 'sha-abc',
-    anchor: { page: 1, region: { x: 1, y: 2, w: 3, h: 4 } },
+    anchor: { kind: 'pdf-quad', page: 1, region: { x: 1, y: 2, w: 3, h: 4 } },
     highlighted_text: 'text',
     comment: 'a comment',
     redraft: null,
@@ -46,6 +46,7 @@ function makeComment(overrides: Partial<CommentPayload> = {}): CommentPayload {
     kind: 'comment',
     status: 'open',
     created_at: '2026-06-14T00:00:00.000Z',
+    origin: 'app-draft',
     ...overrides,
   };
 }

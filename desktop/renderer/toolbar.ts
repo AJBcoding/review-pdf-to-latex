@@ -17,6 +17,7 @@
 import type {
   CommentPayload,
   CreateContextMode,
+  PdfQuadAnchor,
   ToolbarContextBundle,
 } from '@shared/types';
 import {
@@ -239,8 +240,12 @@ function buildBundle(userPrompt: string): ToolbarContextBundle {
   const docPath = ctxRef.docPath();
   const page = ctxRef.currentPage();
   const all = ctxRef.comments();
+  // "Nearby comments on this page" is a PDF-only notion — only pdf-quad anchors
+  // carry a page. Narrow on the truthful union kind.
   const onPage = page !== null
-    ? all.filter((c) => c.anchor.page === page).slice(0, NEARBY_COMMENT_CAP)
+    ? all
+        .filter((c): c is typeof c & { anchor: PdfQuadAnchor } => c.anchor.kind === 'pdf-quad' && c.anchor.page === page)
+        .slice(0, NEARBY_COMMENT_CAP)
     : [];
   return {
     docPath,

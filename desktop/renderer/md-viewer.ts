@@ -114,7 +114,7 @@ export class MarkdownViewer implements FileViewer {
 
   get totalPages(): number { return 1; }
   get currentPage(): number { return 1; }
-  get anchorKind(): AnchorKind { return 'md-fuzzy-snippet'; }
+  get anchorKind(): AnchorKind { return 'text-quote'; }
 
   async loadBytes(bytes: Uint8Array): Promise<void> {
     const text = new TextDecoder('utf-8').decode(bytes);

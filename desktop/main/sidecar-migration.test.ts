@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { runSidecarMigration, findSidecarByFingerprint } from './sidecar-migration.js';
-import type { DraftsFile, DocFingerprint } from '@shared/types.js';
+import type { DraftsFileV1, DocFingerprint } from '@shared/types.js';
 
 let testDir: string;
 let userDataDir: string;
@@ -34,7 +34,7 @@ async function writeDoc(name: string, content: string): Promise<string> {
   return docPath;
 }
 
-async function writeLegacySidecar(hash: string, drafts: DraftsFile): Promise<string> {
+async function writeLegacySidecar(hash: string, drafts: DraftsFileV1): Promise<string> {
   const path = join(draftsDir, `${hash}.json`);
   await writeFile(path, JSON.stringify(drafts, null, 2), 'utf8');
   return path;
@@ -57,7 +57,7 @@ describe('runSidecarMigration', () => {
     const docPath = await writeDoc('test.pdf', content);
     const hash = sha256(content);
 
-    const drafts: DraftsFile = {
+    const drafts: DraftsFileV1 = {
       schema_version: 1,
       doc_version: hash,
       comments: [],
@@ -69,7 +69,7 @@ describe('runSidecarMigration', () => {
 
     const newPath = join(draftsDir, 'test.pdf.json');
     const raw = await readFile(newPath, 'utf8');
-    const migrated: DraftsFile = JSON.parse(raw);
+    const migrated: DraftsFileV1 = JSON.parse(raw);
 
     expect(migrated.doc_fingerprint).toBeDefined();
     expect(migrated.doc_fingerprint!.last_known_path).toBe(docPath);
@@ -84,7 +84,7 @@ describe('runSidecarMigration', () => {
     const docPath = await writeDoc('already.pdf', content);
     const hash = sha256(content);
 
-    const drafts: DraftsFile = {
+    const drafts: DraftsFileV1 = {
       schema_version: 1,
       doc_version: hash,
       comments: [],
@@ -103,7 +103,7 @@ describe('runSidecarMigration', () => {
     // The original file should still be there, untouched.
     const originalPath = join(draftsDir, `${hash}.json`);
     const raw = await readFile(originalPath, 'utf8');
-    const parsed: DraftsFile = JSON.parse(raw);
+    const parsed: DraftsFileV1 = JSON.parse(raw);
     expect(parsed.doc_fingerprint).toBeDefined();
   });
 
@@ -130,7 +130,7 @@ describe('findSidecarByFingerprint', () => {
       last_known_path: '/old/path/test.md',
     };
 
-    const drafts: DraftsFile = {
+    const drafts: DraftsFileV1 = {
       schema_version: 1,
       doc_version: 'abc123',
       comments: [],
@@ -176,7 +176,7 @@ describe('findSidecarByFingerprint', () => {
       last_known_path: '/old/path',
     };
 
-    const drafts: DraftsFile = {
+    const drafts: DraftsFileV1 = {
       schema_version: 1,
       doc_version: 'abc',
       comments: [],

@@ -20,18 +20,111 @@ export type CommentStatus =
   | 'rejected'
   | 'build_failed';
 
-/** Anchor region — shared by `CommentPayload.anchor` and the optional
- *  `new_anchor` written by the rig when a redraft moved text. */
+/** Legacy v1 anchor region. No longer the live anchor shape (replaced by the
+ *  `Anchor` union below) but retained because it is exactly the bare
+ *  `{ page, region }` object that still appears on disk in v1 sidecars and on
+ *  the wire in v1 `new_anchor` payloads. The migration (§3.3) and the §4.3
+ *  tolerant-parse rule both read it; the v2→v1 down-converter writes it. */
 export interface AnchorRegion {
   page: number;
   region: { x: number; y: number; w: number; h: number };
 }
 
+// ─── §3.1 the discriminated anchor union (M-2) ─────────────────────────────
+//
+// Replaces the v1 "required PDF AnchorRegion on every comment + optional
+// bolted-on md_anchor + the html/docx `as any` smuggle" (C5/C6). Field names
+// are normative for the v2 schema (spec §3.1). One kind per comment; each kind
+// is named truthfully so the misreporting `anchorKind` getters (C6) become
+// impossible by construction.
+
+/** One highlight quad in Acrobat point order (UL, UR, LL, LR), matching the
+ *  bundle.ts /QuadPoints precedent. PLURAL on the PDF kind: native annotations
+ *  read back with per-line quads even though the shipped writer is single-bbox
+ *  (spike S-2, §8) — the model must not be lossier than the data. */
+export interface Quad {
+  x1: number; y1: number;
+  x2: number; y2: number;
+  x3: number; y3: number;
+  x4: number; y4: number;
+}
+
+/** PDF anchor: a page + bounding region, optionally per-line quads. `region`
+ *  is verbatim today's v1 `AnchorRegion.region`. */
+export interface PdfQuadAnchor {
+  kind: 'pdf-quad';
+  page: number;
+  region: { x: number; y: number; w: number; h: number };
+  quads?: Quad[];
+}
+
+/** Text-quote anchor: ONE kind shared by MD, HTML, and DOCX body text
+ *  (§3.1 rule 3). Field-for-field today's `MdAnchor` (shared/md/anchors.ts).
+ *  Originals are immutable (§3.1 rule 2): fuzzy relocations land in
+ *  `relocated`; `quoted_text/prefix/suffix/char_*` are write-once. */
+export interface TextQuoteAnchor {
+  kind: 'text-quote';
+  char_start: number;
+  char_end: number;
+  prefix: string;
+  suffix: string;
+  quoted_text: string;
+  relocated?: { char_start: number; char_end: number } | null;
+}
+
+/** HTML selector hint: legitimizes the v1 smuggled selector/charOffset hybrid
+ *  as a declared kind. HINT only — resolution truth is meant to be a sibling
+ *  text-quote (Pass-4B); the hint gives locality for the iframe viewers. */
+export interface HtmlSelectorHint {
+  kind: 'html-selector-hint';
+  selector: string;
+  char_offset: number;
+  char_length: number;
+  quoted_text: string;
+}
+
+/** The per-comment discriminated anchor union (D1). */
+export type Anchor = PdfQuadAnchor | TextQuoteAnchor | HtmlSelectorHint;
+
+/** Truthful kind discriminator = the union's own `kind` field. Replaces the
+ *  v1 two-value file-level `AnchorKind` ('pdf-glyph-rect' | 'md-fuzzy-snippet').
+ *  `FileViewer.anchorKind` now returns one of these per-format, honestly. */
+export type AnchorKind = Anchor['kind'];
+
+/** §3.2 comment provenance. REQUIRED on v2 comments (migration writes
+ *  `'app-draft'` for all v1 rows). Drives the bundle writer's
+ *  duplicate-prevention rule: only `app-draft` comments are emitted as NEW
+ *  PDF annotations; native rows round-trip through `native`. */
+export type CommentOrigin = 'app-draft' | 'native-pdf' | 'native-docx' | 'engine-extract';
+
+/** §3.2 native-annotation block. Generalizes the v1 `pdf_annotation_id`.
+ *  Field set adopted from the rev-cvr spike's readback records. */
+export interface NativeAnnotationRef {
+  /** PDF /NM or DOCX w:id. */
+  comment_id: string;
+  subtype?: 'Highlight' | 'StrikeOut' | 'Underline' | 'Squiggly' | 'Text' | string;
+  author?: string;
+  color?: string;
+  created?: string;
+  /** Reply parent — populated only once spike S-1's READ half passes (§8). */
+  in_reply_to?: string;
+  /** Read-time fallback handle for foreign annots lacking /NM (5A rec (i)). */
+  page_index?: number;
+  annot_index?: number;
+}
+
+/** §3.2 unified comment record (v2). The `anchor` union replaces the v1
+ *  `AnchorRegion` + bolted-on `md_anchor` + the `as any` smuggle; `origin` and
+ *  `native` are new; `md_anchor` / `pdf_annotation_id` are deleted (folded into
+ *  the union and `native` respectively — migration-shimmed, never breaking
+ *  read, §3.3). The interface keeps its historical name `CommentPayload` so the
+ *  ~14 importers don't churn; the SHAPE is v2. */
 export interface CommentPayload {
   id: string;
   doc_id: string;
   doc_version: string;
-  anchor: AnchorRegion;
+  /** REQUIRED discriminated union (§3.1) — replaces AnchorRegion + md_anchor. */
+  anchor: Anchor;
   highlighted_text: string;
   comment: string;
   redraft: string | null;
@@ -49,17 +142,43 @@ export interface CommentPayload {
    *  disposition (build error excerpt, why it's a thesis problem, etc.). */
   agent_note?: string | null;
   /** Set by the rig when an `applied` redraft moved the underlying text and
-   *  the comment's logical anchor changed. The original `anchor` is kept
-   *  alongside this so re-raised v1.1 comments can point to the new location. */
-  new_anchor?: AnchorRegion | null;
+   *  the comment's logical anchor changed (§4.3). Re-typed from AnchorRegion
+   *  to the union: the rig echoes the kind it received. The original `anchor`
+   *  is kept alongside so re-raised v1.1 comments can point to the new place. */
+  new_anchor?: Anchor | null;
   /** When a v1.1 comment is seeded from a v1.0 `deferred` / `needs-followup`
    *  result, this is the original comment's id (§8.5 round-trip re-raise). */
   derived_from?: string | null;
-  /** PDF-only: links this comment to the corresponding annotation in the
-   *  rendered bundle PDF (§10.4). Written by Submit; not used by the watcher. */
+  /** §3.2 REQUIRED provenance. Migration writes `'app-draft'` for all v1 rows. */
+  origin: CommentOrigin;
+  /** §3.2 native-annotation block. Present for `native-*` / `engine-extract`
+   *  origins and for app-written PDF annotations once a bundle stamps the /NM
+   *  (folds in the v1 `pdf_annotation_id`). Null/absent otherwise. */
+  native?: NativeAnnotationRef | null;
+}
+
+/** v1 comment shape — the on-disk / on-the-wire record BEFORE the union.
+ *  Read by the migration (§3.3) and written by the v2→v1 down-converter during
+ *  the rollout window (§4.4 step 1). Not used by live code paths. */
+export interface CommentPayloadV1 {
+  id: string;
+  doc_id: string;
+  doc_version: string;
+  anchor: AnchorRegion;
+  highlighted_text: string;
+  comment: string;
+  redraft: string | null;
+  redraft_suggestion: string | null;
+  engagement_level: EngagementLevel;
+  author: string;
+  kind: 'comment';
+  status: CommentStatus;
+  created_at: string;
+  submitted_at?: string | null;
+  agent_note?: string | null;
+  new_anchor?: AnchorRegion | null;
+  derived_from?: string | null;
   pdf_annotation_id?: string | null;
-  /** M-md-4: fuzzy-snippet anchor for .md comments. Present when
-   *  `anchor_kind === 'md-fuzzy-snippet'` on the parent DraftsFile. */
   md_anchor?: {
     char_start: number;
     char_end: number;
@@ -69,9 +188,45 @@ export interface CommentPayload {
   } | null;
 }
 
-/** Anchor kind discriminator — determines which anchor strategy the sidecar's
- *  comments use. Existing sidecars without `anchor_kind` default to `'pdf-glyph-rect'`. */
-export type AnchorKind = 'pdf-glyph-rect' | 'md-fuzzy-snippet';
+/** Tolerantly coerce an on-disk / on-the-wire anchor value into the union
+ *  (§4.3). A value already carrying a `kind` is trusted as-is. A bare
+ *  `{ page, region }` (v1 — no `kind`) is structurally unambiguous and reads
+ *  as `pdf-quad`. Anything else (incl. null/undefined) yields `null`. This
+ *  single rule lets v1 sidecars, v1 results files, and a not-yet-updated rig
+ *  emitting v1-shaped relocations all keep working without a flag day. */
+export function normalizeAnchor(raw: unknown): Anchor | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.kind === 'string') {
+    // Already discriminated — trust the producer (first-party); inner-shape
+    // validation is intentionally light.
+    return o as unknown as Anchor;
+  }
+  // Bare v1 AnchorRegion: { page, region: { x, y, w, h } }.
+  if (typeof o.page === 'number' && o.region && typeof o.region === 'object') {
+    const r = o.region as Record<string, unknown>;
+    return {
+      kind: 'pdf-quad',
+      page: o.page,
+      region: {
+        x: Number(r.x) || 0,
+        y: Number(r.y) || 0,
+        w: Number(r.w) || 0,
+        h: Number(r.h) || 0,
+      },
+    };
+  }
+  return null;
+}
+
+/** v2→v1 down-convert one anchor for the rollout window (§4.4 step 1):
+ *  `pdf-quad` → required `{ page, region }`, quads dropped. Non-PDF kinds have
+ *  no PDF region so they collapse to the v1 placeholder (`page:1, 0×0`) — moot
+ *  in practice because only PDF rounds promote during the window. */
+export function downConvertAnchorToV1(a: Anchor): AnchorRegion {
+  if (a.kind === 'pdf-quad') return { page: a.page, region: { ...a.region } };
+  return { page: 1, region: { x: 0, y: 0, w: 0, h: 0 } };
+}
 
 /** Content fingerprint stored in the sidecar for rename-recovery. When a file
  *  is moved or renamed, the path-based sidecar lookup misses; the migration
@@ -83,15 +238,35 @@ export interface DocFingerprint {
   last_known_path: string;
 }
 
+/** Document format — the genuinely file-level fact (§3.3) that replaces the
+ *  v1 file-level `anchor_kind` discriminator (which lied for html/docx and is
+ *  derivable per-comment under the union). Drives adapter selection. */
+export type DocFormat = 'pdf' | 'md' | 'docx' | 'html';
+
 /**
- * On-disk drafts schema. Snapshot (not append-only): main rewrites the full
- * file on every save. Renderer debounces writes 250ms per spec §10.3.
+ * On-disk drafts schema (v2). Snapshot (not append-only): main rewrites the
+ * full file on every save. Renderer debounces writes 250ms per spec §10.3.
+ *
+ * v2 (§3.3): `schema_version` bumps to 2; `anchor_kind` is dropped in favor of
+ * the file-level `format`; comments carry the anchor union. v1 sidecars are
+ * read tolerantly and migrated LAZILY at read time (main/drafts-migration.ts).
  */
 export interface DraftsFile {
+  schema_version: 2;
+  doc_version: string;
+  format: DocFormat;
+  comments: CommentPayload[];
+  doc_fingerprint?: DocFingerprint;
+}
+
+/** v1 drafts schema — read-only legacy shape consumed by the migration. */
+export interface DraftsFileV1 {
   schema_version: 1;
   doc_version: string;
-  comments: CommentPayload[];
-  anchor_kind?: AnchorKind;
+  comments: CommentPayloadV1[];
+  /** v1 file-level discriminator: 'pdf-glyph-rect' | 'md-fuzzy-snippet'.
+   *  Absent → defaults to 'pdf-glyph-rect' (the documented v1 default). */
+  anchor_kind?: 'pdf-glyph-rect' | 'md-fuzzy-snippet';
   doc_fingerprint?: DocFingerprint;
 }
 
@@ -113,7 +288,11 @@ export type DraftsWriteResult =
 // disambiguate which doc a results file belongs to — sha256 lives here, not
 // in the results file).
 export interface SubmitFile {
-  schema_version?: 1;
+  /** Additive bump (§4.2): both v1 and v2 are valid on disk. The desktop
+   *  WRITER stays on v1 (down-converted) until the §4.4 step-3 flip, gated on
+   *  an OBSERVED rig-written `schema_version: 2` results file. Readers tolerate
+   *  both. */
+  schema_version?: 1 | 2;
   submit_id: string;
   doc_id: string;
   /** sha256 of the source-file bytes at submit time. The watcher matches this
@@ -123,9 +302,73 @@ export interface SubmitFile {
   source_file_version: string;
   submitted_at: string;
   origin_rig: string | null;
+  /** Deprecated PDF-round aliases, kept populated through the transition
+   *  window (D11), dropped at v3. v2 generalizes these to
+   *  `native_artifact_path` / `sidecar_json_path` + `format` for non-PDF
+   *  rounds (§4.2) — added when step 4 lands; not written yet. */
   bundle_pdf?: string;
   bundle_json?: string;
   comments: CommentPayload[];
+}
+
+/** Frozen v1 SubmitFile shape — what the desktop WRITES to disk during the
+ *  rollout window (the writer flip to v2 is gated, §4.4 step 3). Built from a
+ *  v2 SubmitFile by `downConvertSubmitFileToV1`. */
+export interface SubmitFileV1 {
+  schema_version?: 1;
+  submit_id: string;
+  doc_id: string;
+  doc_version: string;
+  source_file_version: string;
+  submitted_at: string;
+  origin_rig: string | null;
+  bundle_pdf?: string;
+  bundle_json?: string;
+  comments: CommentPayloadV1[];
+}
+
+/** v2→v1 down-convert one comment (§4.4 step 1). Anchor → bare `{page,region}`;
+ *  `native.comment_id` → `pdf_annotation_id`; union/origin/native dropped.
+ *  Sufficient for the window because only PDF rounds promote (anchors are all
+ *  `pdf-quad`). */
+export function downConvertCommentToV1(c: CommentPayload): CommentPayloadV1 {
+  return {
+    id: c.id,
+    doc_id: c.doc_id,
+    doc_version: c.doc_version,
+    anchor: downConvertAnchorToV1(c.anchor),
+    highlighted_text: c.highlighted_text,
+    comment: c.comment,
+    redraft: c.redraft,
+    redraft_suggestion: c.redraft_suggestion,
+    engagement_level: c.engagement_level,
+    author: c.author,
+    kind: 'comment',
+    status: c.status,
+    created_at: c.created_at,
+    submitted_at: c.submitted_at ?? null,
+    agent_note: c.agent_note ?? null,
+    new_anchor: c.new_anchor ? downConvertAnchorToV1(c.new_anchor) : null,
+    derived_from: c.derived_from ?? null,
+    pdf_annotation_id: c.native?.comment_id ?? null,
+  };
+}
+
+/** v2→v1 down-convert a whole SubmitFile for the rollout window (§4.4 step 1,
+ *  acceptance criterion 6). Emits `schema_version: 1` with v1-shaped comments. */
+export function downConvertSubmitFileToV1(sf: SubmitFile): SubmitFileV1 {
+  return {
+    schema_version: 1,
+    submit_id: sf.submit_id,
+    doc_id: sf.doc_id,
+    doc_version: sf.doc_version,
+    source_file_version: sf.source_file_version,
+    submitted_at: sf.submitted_at,
+    origin_rig: sf.origin_rig,
+    bundle_pdf: sf.bundle_pdf,
+    bundle_json: sf.bundle_json,
+    comments: sf.comments.map(downConvertCommentToV1),
+  };
 }
 
 /** Per-comment terminal status the rig writes into `results-<ts>.json`.
@@ -145,8 +388,11 @@ export interface ResultEntry {
    *  apply. Spec §10.3. */
   reason?: string;
   /** Set when an `applied` redraft moved text and the comment's anchor
-   *  position changed. Carried into the comment via `new_anchor`. */
-  new_anchor?: AnchorRegion | null;
+   *  position changed. Carried into the comment via `new_anchor`. Union-typed
+   *  (§4.3): the rig echoes the kind it received. A bare `{page,region}` from a
+   *  not-yet-updated rig is read as `pdf-quad` (the §4.3 tolerant-parse rule —
+   *  see `normalizeResultsFile`). */
+  new_anchor?: Anchor | null;
   /** Free-text agent commentary: build-error excerpt for `build_failed`,
    *  redirect-to-L3 advice for `needs-followup`, terse confirmation for
    *  `applied`, etc. */
@@ -157,9 +403,10 @@ export type RoundStatus = 'in_progress' | 'complete' | 'failed';
 
 /** Results file written by the rig in `.review-state/results-<ts>.json`.
  *  Mutates as the rig processes (per-comment atomic append); `round_status`
- *  flips `in_progress` → `complete` / `failed` at round end. */
+ *  flips `in_progress` → `complete` / `failed` at round end. Additive bump
+ *  (§4.2): the reader tolerates BOTH v1 and v2 from rollout step 1 onward. */
 export interface ResultsFile {
-  schema_version?: 1;
+  schema_version?: 1 | 2;
   submit_id: string;
   results_id: string;
   round_status: RoundStatus;
@@ -171,6 +418,44 @@ export interface ResultsFile {
   /** Human-facing version label (e.g., `"1.1"`). Informational. */
   version_chosen: string | null;
   results: ResultEntry[];
+}
+
+/** v2-results tolerance (§4.4 step 1): normalize a just-parsed results file so
+ *  every `new_anchor` is the union shape regardless of whether it came from a
+ *  v1 rig (bare `{page,region}`) or a v2 rig (`{kind:...}`). Idempotent. The
+ *  results watcher runs this before emitting to the renderer so downstream code
+ *  only ever sees union anchors. */
+export function normalizeResultsFile(rf: ResultsFile): ResultsFile {
+  return {
+    ...rf,
+    results: rf.results.map((r) =>
+      r.new_anchor == null ? r : { ...r, new_anchor: normalizeAnchor(r.new_anchor) }
+    ),
+  };
+}
+
+/** v2-results tolerance companion: normalize a submit file's comment anchors so
+ *  a v1 submit file (bare anchors) read back off disk presents as union-shaped.
+ *  Idempotent. */
+export function normalizeSubmitFile(sf: SubmitFile): SubmitFile {
+  return {
+    ...sf,
+    comments: sf.comments.map((c) => {
+      const anchor = normalizeAnchor(c.anchor);
+      const newAnchor = c.new_anchor == null ? c.new_anchor : normalizeAnchor(c.new_anchor);
+      // A v1 comment read off disk may also carry `pdf_annotation_id` instead
+      // of `native`; fold it so downstream sees the v2 shape.
+      const v1 = c as unknown as CommentPayloadV1;
+      const native = c.native ?? (v1.pdf_annotation_id ? { comment_id: v1.pdf_annotation_id } : c.native);
+      return {
+        ...c,
+        anchor: anchor ?? c.anchor,
+        new_anchor: newAnchor,
+        origin: c.origin ?? 'app-draft',
+        native: native ?? null,
+      };
+    }),
+  };
 }
 
 /** Event main pushes to renderer when a results file is created / modified.

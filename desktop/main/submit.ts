@@ -28,6 +28,7 @@ import type {
   SubmitSlingResult,
   CommentPayload,
 } from '@shared/types';
+import { downConvertSubmitFileToV1 } from '@shared/comments';
 
 const GT_MAIL_TIMEOUT_MS = 30_000;
 const DEFAULT_SUBJECT_PREFIX = 'review-pdf submit';
@@ -117,8 +118,14 @@ export async function promoteDraft(
     return { ...c };
   });
 
+  // In-memory submit file is v2 (its comments carry the anchor union). What we
+  // WRITE to disk during the rollout window (§4.4 step 1) is the v2→v1
+  // down-conversion: `pdf-quad` → `{page, region}`, native.comment_id →
+  // pdf_annotation_id. The submit-WRITER flip to v2 is gated on an OBSERVED
+  // rig-written schema_version:2 results file (§4.4 step 3) and is NOT done
+  // here — sufficient because only PDF rounds promote during the window.
   const submitFile: SubmitFile = {
-    schema_version: 1,
+    schema_version: 2,
     submit_id: submitId,
     doc_id: sourcePath,
     doc_version: req.sourceSha256,
@@ -131,7 +138,7 @@ export async function promoteDraft(
   };
 
   try {
-    await atomicWriteJson(submitFilePath, submitFile);
+    await atomicWriteJson(submitFilePath, downConvertSubmitFileToV1(submitFile));
   } catch (err) {
     return {
       ok: false,
