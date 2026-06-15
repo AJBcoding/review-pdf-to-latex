@@ -39,6 +39,12 @@ import {
   ptySkipPermissionArgs,
 } from './session-policy.js';
 import {
+  whichSync,
+  probeReviewer,
+  reviewerEnvOverlay,
+  _resetReviewerProbeCacheForTests,
+} from './reviewer-probe.js';
+import {
   PRIMING_SLASH_COMMAND,
   PRIMING_CONV_FALLBACK_MS,
   PRIMING_WORKER_FALLBACK_MS,
@@ -47,8 +53,6 @@ import {
   buildCreateContextPriming,
   buildSlingPriming,
 } from '@shared/priming';
-import { spawnSync as spawnSyncBlocking } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as pty from 'node-pty';
@@ -77,10 +81,6 @@ interface ConvPtyHandle {
 }
 
 let convHandle: ConvPtyHandle | null = null;
-
-/** Cached reviewer probe; only re-run if forced (no real path to gt install
- *  during a session, so caching is safe). */
-let reviewerProbeCache: ReviewerProbe | null = null;
 
 // Throwaway-ID for crash detection — bumped each spawn so a late onExit from
 // the previous pty doesn't fire restart UI on the new one.
