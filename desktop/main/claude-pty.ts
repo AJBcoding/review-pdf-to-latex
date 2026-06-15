@@ -33,6 +33,11 @@
 import { BrowserWindow, ipcMain, app } from 'electron';
 import { typedHandle } from './typed-ipc.js';
 import { assertObjectArg, assertStringArg } from './ipc-validators.js';
+import {
+  resolveSessionCwd,
+  resolveSkipPermissions,
+  ptySkipPermissionArgs,
+} from './session-policy.js';
 import { spawnSync as spawnSyncBlocking } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -206,20 +211,17 @@ function spawnConversational(
 
   const reviewer = probeReviewer();
 
-  // Working dir: §9.2.9 — source dir of the PDF the user just opened. Falls
-  // back to userData if the source path doesn't resolve.
-  let cwd = params.docSourceDir;
-  if (!cwd || !existsSync(cwd)) cwd = dirname(app.getPath('userData'));
+  // Working dir + skip-permissions: §9.2.9 source-dir anchoring and the AJB
+  // default-skip ask, both via the shared session-policy module (X8 parity
+  // with the SDK route).
+  const cwd = resolveSessionCwd(params.docSourceDir, dirname(app.getPath('userData')));
 
   const env = buildPtyEnv(reviewer);
   const cols = Math.max(20, params.cols ?? 80);
   const rows = Math.max(5, params.rows ?? 24);
 
-  // AJB ask: default to --dangerously-skip-permissions so a fresh source dir
-  // doesn't stall the pane on the trust prompt. Toggle in Settings to opt
-  // back into per-directory prompts (params.dangerouslySkipPermissions = false).
-  const skipPerms = params.dangerouslySkipPermissions !== false;
-  const claudeArgs: string[] = skipPerms ? ['--dangerously-skip-permissions'] : [];
+  const skipPerms = resolveSkipPermissions(params.dangerouslySkipPermissions);
+  const claudeArgs: string[] = ptySkipPermissionArgs(skipPerms);
 
   let p: IPty;
   try {
@@ -515,18 +517,14 @@ function spawnWorker(
   if (!claudeBin) return { ok: false, reason: 'claude_not_found' };
 
   const reviewer = probeReviewer();
-  let cwd = params.docSourceDir;
-  if (!cwd || !existsSync(cwd)) cwd = dirname(app.getPath('userData'));
+  const cwd = resolveSessionCwd(params.docSourceDir, dirname(app.getPath('userData')));
 
   const env = buildPtyEnv(reviewer);
   const cols = Math.max(20, params.cols ?? 100);
   const rows = Math.max(5, params.rows ?? 24);
 
-  // AJB ask: default to --dangerously-skip-permissions so a fresh source dir
-  // doesn't stall the pane on the trust prompt. Toggle in Settings to opt
-  // back into per-directory prompts (params.dangerouslySkipPermissions = false).
-  const skipPerms = params.dangerouslySkipPermissions !== false;
-  const claudeArgs: string[] = skipPerms ? ['--dangerously-skip-permissions'] : [];
+  const skipPerms = resolveSkipPermissions(params.dangerouslySkipPermissions);
+  const claudeArgs: string[] = ptySkipPermissionArgs(skipPerms);
 
   let p: IPty;
   try {

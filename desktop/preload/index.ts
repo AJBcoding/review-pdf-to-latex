@@ -179,13 +179,17 @@ const agentViewerApi: AgentViewerApi = {
     path: string;
     pages: number;
     comments: number;
+    sourceDir?: string;
   }): Promise<void> => ipcRenderer.invoke('agent:notifyDocSwitch', payload),
 
   /** Project 4 / M-int-5 — Fresh Start handoff for the conv session.
    *  Closes the current conv session, clears the saved resume id, starts
    *  a new conv session seeded with handoffText. */
-  freshStart: (payload: { handoffText: string; model?: string }): Promise<void> =>
-    ipcRenderer.invoke('agent:freshStart', payload),
+  freshStart: (payload: {
+    handoffText: string;
+    model?: string;
+    docSourceDir?: string;
+  }): Promise<void> => ipcRenderer.invoke('agent:freshStart', payload),
 
   /** Project 4 / M-int-4a — spawn a worker session (Create Context /
    *  Sling) keyed by an arbitrary sessionId. Send the first prompt at
@@ -195,6 +199,7 @@ const agentViewerApi: AgentViewerApi = {
     sessionId: string;
     prompt: string;
     model?: string;
+    docSourceDir?: string;
   }): Promise<void> => ipcRenderer.invoke('agent:spawnSession', payload),
 
   listSessions: (): Promise<string[]> =>

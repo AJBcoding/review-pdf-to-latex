@@ -346,7 +346,11 @@ async function commitCtx(): Promise<void> {
     if (isNewAgentPaneActive()) {
       const sessionId = `worker-ctx-${Date.now()}`;
       const agentPrompt = bundleToPrompt(bundle, 'create-context', mode);
-      await window.agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
+      await window.agentViewer?.spawnSession({
+        sessionId,
+        prompt: agentPrompt,
+        docSourceDir: ctxRef.docSourceDir(),
+      });
       closeModal(refsRef.ctxModal);
       return;
     }
@@ -395,7 +399,11 @@ async function commitSling(): Promise<void> {
     if (isNewAgentPaneActive()) {
       const sessionId = `worker-sling-${Date.now()}`;
       const agentPrompt = bundleToPrompt(bundle, 'sling', undefined, destination);
-      await window.agentViewer?.spawnSession({ sessionId, prompt: agentPrompt });
+      await window.agentViewer?.spawnSession({
+        sessionId,
+        prompt: agentPrompt,
+        docSourceDir: ctxRef.docSourceDir(),
+      });
       closeModal(refsRef.slingModal);
       return;
     }
@@ -441,6 +449,7 @@ async function commitFresh(): Promise<void> {
       }
       await window.agentViewer.freshStart({
         handoffText: handoffNotes || '(no handoff notes)',
+        docSourceDir,
       });
       closeModal(refsRef.freshModal);
       return;
