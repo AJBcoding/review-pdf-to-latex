@@ -14,12 +14,13 @@ import type {
 } from '@shared/types';
 import { REVIEWER_LOCAL_ID } from '@shared/types';
 import { parseSourceName } from '@shared/bundle';
-import { PdfViewer, type SelectionPayload } from './pdf-viewer';
-import { MarkdownViewer, type MdSelection } from './md-viewer';
-import { HtmlViewer, type HtmlSelection, type HtmlAnchor } from './html-viewer';
+import { PdfViewer } from './pdf-viewer';
+import { MarkdownViewer } from './md-viewer';
+import { HtmlViewer } from './html-viewer';
 import { DocxViewer } from './docx-viewer';
-import { createMdAnchor, fuzzyMatchAnchor } from '@shared/md/anchors';
+import { createMdAnchor } from '@shared/md/anchors';
 import { classifyPath, docFormatForPath } from '@shared/file-kinds';
+import type { FileViewer, ViewerSelection } from '@shared/file-viewer';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
 import {
@@ -82,8 +83,10 @@ function basename(p: string): string {
 // distinct messages for encrypted / all-unreadable / partial / ligature-loss /
 // open-error, and no banner at all when the PDF is clean.
 
+/** DOM surface the document pane owns. The viewer instance itself is no longer
+ *  a handle — X7 makes it per-open module state (`activeViewer`) constructed via
+ *  the format registry, so every format shares one mount + chrome. */
 interface ViewerHandles {
-  viewer: PdfViewer;
   mount: HTMLElement;
   empty: HTMLElement;
   title: HTMLElement;
@@ -93,6 +96,7 @@ interface ViewerHandles {
   fitPageBtn: HTMLButtonElement;
   fitWidthBtn: HTMLButtonElement;
   darkBtn: HTMLButtonElement;
+  pageLabel: HTMLElement;
 }
 
 /** Active comment-tool state (§4.2). Maps 1:1 to `engagement_level` (§11.1). */
@@ -106,9 +110,11 @@ interface DocState {
    *  filename so renames/copies of the PDF don't lose the drafts. Empty
    *  string until a PDF is loaded. */
   sha256: string;
-  /** Last non-empty selection the viewer reported. Persists across submits
-   *  so the user can stack Comment + Redraft against the same highlight. */
-  lastSelection: SelectionPayload | null;
+  /** Last selection the active viewer reported, as the unified
+   *  `ViewerSelection` (X7) — one field for all formats, replacing the v1 trio
+   *  of pdf/md/html `lastSelection` lets. Persists across submits so the user
+   *  can stack Comment + Redraft against the same highlight. */
+  lastSelection: ViewerSelection | null;
   /** In-memory mirror of the drafts file. The render-the-stream code reads
    *  this — main only sees it on debounced writes. */
   comments: CommentPayload[];

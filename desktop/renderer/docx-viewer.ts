@@ -1,11 +1,16 @@
 import mammoth from 'mammoth';
-import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
-import type { HtmlAnchor } from './html-viewer';
+import type {
+  FileViewer,
+  ViewerCapabilities,
+  ViewerLoadContext,
+  ViewerSelection,
+} from '@shared/file-viewer';
+import type { Anchor, AnchorKind, CommentPayload } from '@shared/types';
+import { htmlAnchorsFromComments, type HtmlAnchor } from './html-viewer';
 
 export interface DocxViewerOptions {
   container: HTMLElement;
-  onSelection?: (sel: { selector: string; text: string; charOffset: number; charLength: number } | null) => void;
+  onSelection?: (sel: ViewerSelection | null) => void;
 }
 
 export class DocxViewer implements FileViewer {
@@ -39,8 +44,17 @@ export class DocxViewer implements FileViewer {
   get totalPages(): number { return 1; }
   get currentPage(): number { return 1; }
   get anchorKind(): AnchorKind { return 'html-selector-hint'; }
+  get capabilities(): ViewerCapabilities {
+    return { paged: false, editableText: false, submit: false };
+  }
 
-  async loadBytes(bytes: Uint8Array): Promise<void> {
+  applyAnchors(comments: CommentPayload[]): void {
+    this.setHighlightedAnchors(htmlAnchorsFromComments(comments));
+  }
+
+  reveal(_anchor: Anchor): void {}
+
+  async loadBytes(bytes: Uint8Array, _ctx?: ViewerLoadContext): Promise<void> {
     const result = await mammoth.convertToHtml(
       { arrayBuffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) },
       { styleMap: ['u => em'] },
@@ -131,8 +145,9 @@ export class DocxViewer implements FileViewer {
         const nodeText = container?.textContent ?? '';
         const charOffset = nodeText.indexOf(text);
         this.opts.onSelection?.({
-          selector,
+          kind: 'html-selector-hint',
           text,
+          selector,
           charOffset: Math.max(0, charOffset),
           charLength: text.length,
         });

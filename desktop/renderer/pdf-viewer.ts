@@ -24,8 +24,13 @@
 // toggle, endOfContent sentinel placement, selectionchange repositioning of
 // the sentinel, pointerup/blur/keyup global resets, abort-signal teardown.
 
-import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
+import type {
+  FileViewer,
+  ViewerCapabilities,
+  ViewerLoadContext,
+  ViewerSelection,
+} from '@shared/file-viewer';
+import type { Anchor, AnchorKind, CommentPayload } from '@shared/types';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import {
@@ -68,8 +73,10 @@ export interface PdfViewerOptions {
   /** Initial zoom; 1 = 100% of PDF points to CSS pixels. */
   initialZoom?: number;
   /** Called every time the user makes a non-empty selection inside the
-   * text layer. The host decides whether to keep, display, or submit it. */
-  onSelection?(payload: SelectionPayload): void;
+   * text layer. The host decides whether to keep, display, or submit it.
+   * Emits the unified `ViewerSelection` (X7); PDF never emits `null` (an
+   * empty/collapsed selection is simply ignored, preserving v1 behavior). */
+  onSelection?(sel: ViewerSelection | null): void;
   /** Called when the loaded document's page count is known (and on every
    * page change), so the host can update navigation chrome. */
   onPageInfo?(info: { page: number; totalPages: number }): void;
@@ -146,8 +153,9 @@ export class PdfViewer implements FileViewer {
     this.highlightLayerEl.replaceChildren();
   }
 
-  /** Load a PDF from raw bytes (what main returns over IPC). */
-  async loadBytes(bytes: Uint8Array): Promise<void> {
+  /** Load a PDF from raw bytes (what main returns over IPC). The X7 `ctx` is
+   * unused by the PDF path (no base-href resolution needed). */
+  async loadBytes(bytes: Uint8Array, _ctx?: ViewerLoadContext): Promise<void> {
     // Clean up any previous document.
     if (this.doc) {
       try { await this.doc.destroy(); } catch { /* ignore */ }
@@ -320,6 +328,20 @@ export class PdfViewer implements FileViewer {
   get currentPage(): number { return this.currentPageNum; }
   get currentZoom(): number { return this.zoom; }
   get anchorKind(): AnchorKind { return 'pdf-quad'; }
+  get capabilities(): ViewerCapabilities {
+    // The only paged format; the only one wired to the §10.1 Submit pipeline.
+    return { paged: true, editableText: false, submit: true };
+  }
+
+  /** PDF comment anchors are revealed on demand (`reveal`) rather than painted
+   *  as persistent highlights, so projecting the live comment set is a no-op. */
+  applyAnchors(_comments: CommentPayload[]): void {}
+
+  /** Jump to a pdf-quad anchor's page + region. Foreign anchor kinds (md/html)
+   *  can't occur on a PDF doc; ignored defensively. */
+  reveal(anchor: Anchor): void {
+    if (anchor.kind === 'pdf-quad') void this.revealAnchor(anchor.page, anchor.region);
+  }
 
   /** §13.6 spike: toggle dark-mode rendering (CSS filter on the canvas
    * element only; text layer is unaffected so selection stays accurate). */
@@ -437,10 +459,10 @@ export class PdfViewer implements FileViewer {
     const region = this.screenBboxToPdf(screenBbox);
 
     this.opts.onSelection?.({
+      kind: 'pdf-quad',
+      text,
       page: this.currentPageNum,
       region,
-      screenRects: rects,
-      highlighted_text: text,
     });
   }
 

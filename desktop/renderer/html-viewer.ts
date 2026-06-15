@@ -1,5 +1,10 @@
-import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
+import type {
+  FileViewer,
+  ViewerCapabilities,
+  ViewerLoadContext,
+  ViewerSelection,
+} from '@shared/file-viewer';
+import type { Anchor, AnchorKind, CommentPayload } from '@shared/types';
 
 export interface HtmlAnchor {
   selector: string;
@@ -17,8 +22,29 @@ export interface HtmlSelection {
 
 export interface HtmlViewerOptions {
   container: HTMLElement;
-  basePath: string;
-  onSelection?: (sel: HtmlSelection | null) => void;
+  /** Base directory for resolving relative resource URLs. Optional now that
+   *  X7 threads the document path through `loadBytes(bytes, ctx)`; the ctx
+   *  path wins when both are present. */
+  basePath?: string;
+  onSelection?: (sel: ViewerSelection | null) => void;
+}
+
+/** Project the live comment set down to the iframe-viewer `HtmlAnchor` shape:
+ *  the `html-selector-hint` comments only. Shared by the HTML and DOCX viewers'
+ *  `applyAnchors` (X7) — the host no longer owns this derivation. */
+export function htmlAnchorsFromComments(comments: CommentPayload[]): HtmlAnchor[] {
+  const anchors: HtmlAnchor[] = [];
+  for (const c of comments) {
+    if (c.anchor.kind !== 'html-selector-hint') continue;
+    const a = c.anchor;
+    anchors.push({
+      selector: a.selector,
+      text_content: a.quoted_text,
+      char_offset: a.char_offset,
+      char_length: a.char_length || a.quoted_text.length,
+    });
+  }
+  return anchors;
 }
 
 export class HtmlViewer implements FileViewer {
@@ -53,10 +79,22 @@ export class HtmlViewer implements FileViewer {
   get totalPages(): number { return 1; }
   get currentPage(): number { return 1; }
   get anchorKind(): AnchorKind { return 'html-selector-hint'; }
+  get capabilities(): ViewerCapabilities {
+    return { paged: false, editableText: false, submit: false };
+  }
 
-  async loadBytes(bytes: Uint8Array): Promise<void> {
+  applyAnchors(comments: CommentPayload[]): void {
+    this.setHighlightedAnchors(htmlAnchorsFromComments(comments));
+  }
+
+  /** No jump-to-anchor for the iframe viewers in v1 (matches the host's prior
+   *  pdf-only `revealCommentAnchor`). */
+  reveal(_anchor: Anchor): void {}
+
+  async loadBytes(bytes: Uint8Array, ctx?: ViewerLoadContext): Promise<void> {
     this.htmlContent = new TextDecoder('utf-8').decode(bytes);
-    const baseDir = this.opts.basePath.replace(/[^/\\]*$/, '');
+    const base = ctx?.path ?? this.opts.basePath ?? '';
+    const baseDir = base.replace(/[^/\\]*$/, '');
     const baseTag = `<base href="file://${baseDir}">`;
     const injected = this.htmlContent.replace(
       /(<head[^>]*>)/i,
@@ -128,8 +166,9 @@ export class HtmlViewer implements FileViewer {
         const charOffset = nodeText.indexOf(text);
 
         this.opts.onSelection?.({
-          selector,
+          kind: 'html-selector-hint',
           text,
+          selector,
           charOffset: Math.max(0, charOffset),
           charLength: text.length,
         });

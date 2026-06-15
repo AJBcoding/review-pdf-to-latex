@@ -10,9 +10,14 @@ import {
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { syntaxTree, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
-import type { FileViewer } from '@shared/file-viewer';
-import type { AnchorKind } from '@shared/types';
-import type { MdAnchor } from '@shared/md/anchors';
+import type {
+  FileViewer,
+  ViewerCapabilities,
+  ViewerLoadContext,
+  ViewerSelection,
+} from '@shared/file-viewer';
+import type { Anchor, AnchorKind, CommentPayload } from '@shared/types';
+import { fuzzyMatchAnchor } from '@shared/md/anchors';
 
 export interface MdSelection {
   from: number;
@@ -24,7 +29,7 @@ export interface MarkdownViewerOptions {
   container: HTMLElement;
   onWikilinkClick?: (target: string) => void;
   onContentChange?: (content: string) => void;
-  onSelection?: (sel: MdSelection | null) => void;
+  onSelection?: (sel: ViewerSelection | null) => void;
   onBlur?: () => void;
 }
 
@@ -115,8 +120,42 @@ export class MarkdownViewer implements FileViewer {
   get totalPages(): number { return 1; }
   get currentPage(): number { return 1; }
   get anchorKind(): AnchorKind { return 'text-quote'; }
+  get capabilities(): ViewerCapabilities {
+    // The only editable-text format: drives the .md save debounce + the
+    // external-modification watch in the host.
+    return { paged: false, editableText: true, submit: false };
+  }
 
-  async loadBytes(bytes: Uint8Array): Promise<void> {
+  /** Fuzzy-track each text-quote comment against the current document and push
+   *  the resolved ranges into the editor's anchor decorations. Mutates the
+   *  comments' resolved `char_start/char_end` in place — the v1 behavior the
+   *  host's `reanchorMdComments` used to own (provenance-immutable re-anchoring
+   *  is roadmap X12). */
+  applyAnchors(comments: CommentPayload[]): void {
+    const doc = this.getContent();
+    const tracked: TrackedAnchor[] = [];
+    for (const c of comments) {
+      if (c.anchor.kind !== 'text-quote') continue;
+      const a = c.anchor;
+      // TextQuoteAnchor is structurally a superset of MdAnchor.
+      const match = fuzzyMatchAnchor(doc, a);
+      tracked.push({
+        commentId: c.id,
+        from: match.from,
+        to: match.to,
+        orphaned: match.confidence === 'orphaned',
+      });
+      a.char_start = match.from;
+      a.char_end = match.to;
+    }
+    this.setTrackedAnchors(tracked);
+  }
+
+  /** Markdown has no jump-to-anchor affordance in v1 (matches the host's prior
+   *  pdf-only `revealCommentAnchor`). */
+  reveal(_anchor: Anchor): void {}
+
+  async loadBytes(bytes: Uint8Array, _ctx?: ViewerLoadContext): Promise<void> {
     const text = new TextDecoder('utf-8').decode(bytes);
     const { frontmatter, body, bodyOffset } = parseFrontmatter(text);
     this.bodyOffset = bodyOffset;
@@ -208,9 +247,10 @@ export class MarkdownViewer implements FileViewer {
               onSel(null);
             } else {
               onSel({
+                kind: 'text-quote',
+                text: update.state.sliceDoc(sel.from, sel.to),
                 from: sel.from,
                 to: sel.to,
-                text: update.state.sliceDoc(sel.from, sel.to),
               });
             }
           }
