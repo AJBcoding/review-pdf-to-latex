@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { basename as pathBasename, dirname, extname, isAbsolute, join, resolve, relative, sep } from 'node:path';
+import { basename as pathBasename, dirname, isAbsolute, join, resolve, relative, sep } from 'node:path';
 import { mkdir, readFile, readdir, rename, stat } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { watch, type FSWatcher } from 'node:fs';
@@ -39,6 +39,7 @@ import type {
   ResultsWatchStartResult,
   WriteFileTextResult,
 } from '@shared/types';
+import { classifyPath, docFormatForPath } from '@shared/file-kinds';
 
 /** Drafts file location: path-based keying. The sidecar lives next to the
  *  source doc in `.review-state/drafts/<basename>.json`. Path-based keying
@@ -53,11 +54,7 @@ function draftsPathFor(docPath: string): string {
  *  takes this as a hint so the migrated `format` field is accurate without
  *  inferring from comment shapes. */
 function draftFormatForPath(docPath: string): DocFormat {
-  const lower = resolve(docPath).toLowerCase();
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
-  if (lower.endsWith('.docx')) return 'docx';
-  return 'pdf';
+  return docFormatForPath(resolve(docPath));
 }
 
 /** Legacy sha256-based sidecar path — used only during migration to find
@@ -77,12 +74,7 @@ const HIDDEN_DIR_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function classifyFile(name: string): FileKind {
-  const ext = extname(name).toLowerCase();
-  if (ext === '.pdf') return 'pdf';
-  if (ext === '.md' || ext === '.markdown') return 'md';
-  if (ext === '.html' || ext === '.htm') return 'html';
-  if (ext === '.docx') return 'docx';
-  return 'other';
+  return classifyPath(name);
 }
 
 function isHiddenName(name: string, isDir: boolean): boolean {
@@ -752,7 +744,7 @@ void app.whenReady().then(async () => {
           if (isHiddenName(d.name, true)) continue;
           stack.push(join(dir, d.name));
         } else if (d.isFile()) {
-          if (classifyFile(d.name) !== 'pdf') continue;
+          if (classifyPath(d.name) !== 'pdf') continue;
           const path = join(dir, d.name);
           // Normalize relPath to forward slashes for stable display + match
           // ranking, regardless of platform.

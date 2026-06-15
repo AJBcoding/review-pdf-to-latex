@@ -8,10 +8,11 @@ export interface OpenFolderDialogResult {
   path: string | null;
 }
 
-/** Kinds the tree distinguishes. `pdf` opens in the middle pane; `md`/`docx`
- *  are reserved for later milestones (currently fall under `other`); `other`
- *  renders dimmed and inert (§3.2). */
-export type FileKind = 'pdf' | 'md' | 'html' | 'docx' | 'other';
+// `FileKind` and the path→kind classifier live in `./file-kinds` (X7 — single
+// source of truth, consumed by the tree, the indexer, and the renderer). Kept
+// re-exported here so the ~existing importers that reach for it via `@shared/files`
+// don't churn.
+export type { FileKind } from './file-kinds';
 
 /** One entry returned by `fs:listDir`. The tree never auto-recurses — folders
  *  are listed on expand to keep large repos snappy. */

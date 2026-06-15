@@ -571,22 +571,6 @@ function dirnameOf(p: string): string {
   return i > 0 ? p.slice(0, i) : '/';
 }
 
-function classifyPath(p: string): 'pdf' | 'md' | 'html' | 'docx' | 'other' {
-  const lower = p.toLowerCase();
-  if (lower.endsWith('.pdf')) return 'pdf';
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
-  if (lower.endsWith('.docx')) return 'docx';
-  return 'other';
-}
-
-/** DraftsFile v2 file-level `format` (§3.3). `other` collapses to `pdf` — the
- *  same safe default the v1 `anchor_kind` carried. */
-function draftFormat(p: string): DocFormat {
-  const k = classifyPath(p);
-  return k === 'other' ? 'pdf' : k;
-}
-
 // ─── §3 left drawer + §3.5 palette ────────────────────────────────────────
 //
 // Owns: a FileTree instance, a QuickOpenPalette instance, the AppState
