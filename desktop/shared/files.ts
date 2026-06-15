@@ -10,9 +10,10 @@ export interface OpenFolderDialogResult {
 
 // `FileKind` and the path→kind classifier live in `./file-kinds` (X7 — single
 // source of truth, consumed by the tree, the indexer, and the renderer). Kept
-// re-exported here so the ~existing importers that reach for it via `@shared/files`
-// don't churn.
-export type { FileKind } from './file-kinds';
+// imported + re-exported here so DirEntry below can name it and the existing
+// importers that reach for it via `@shared/files` don't churn.
+import type { FileKind } from './file-kinds';
+export type { FileKind };
 
 /** One entry returned by `fs:listDir`. The tree never auto-recurses — folders
  *  are listed on expand to keep large repos snappy. */

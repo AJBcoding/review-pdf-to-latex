@@ -3,7 +3,6 @@ import type {
   AppStateFile,
   CommentPayload,
   CommentStatus,
-  DocFormat,
   DraftsFile,
   EngagementLevel,
   EngineResult,
@@ -20,6 +19,7 @@ import { MarkdownViewer, type MdSelection } from './md-viewer';
 import { HtmlViewer, type HtmlSelection, type HtmlAnchor } from './html-viewer';
 import { DocxViewer } from './docx-viewer';
 import { createMdAnchor, fuzzyMatchAnchor } from '@shared/md/anchors';
+import { classifyPath, docFormatForPath } from '@shared/file-kinds';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
 import {
@@ -260,7 +260,7 @@ async function flushDraftsWrite(): Promise<void> {
   const file: DraftsFile = {
     schema_version: 2,
     doc_version: docState.sha256,
-    format: draftFormat(docState.path),
+    format: docFormatForPath(docState.path),
     comments: docState.comments,
   };
   draftsCache.set(draftsCacheKey(docState.path, docState.sha256), file);
