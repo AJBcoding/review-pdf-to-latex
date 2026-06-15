@@ -17,6 +17,7 @@ import {
 } from './session-store.js';
 import { startSession, type ClaudeSession } from './claude-backend.js';
 import { resolveSessionCwd } from './session-policy.js';
+import { probeReviewer, reviewerEnvOverlay } from './reviewer-probe.js';
 import { buildDocPrimingLine } from '@shared/priming';
 import {
   CONV_SESSION_ID,
@@ -38,6 +39,19 @@ let currentDocSourceDir: string | undefined;
  *  userData dir, matching the pty route's fallback (claude-pty.ts). */
 function fallbackCwd(): string {
   return dirname(app.getPath('userData'));
+}
+
+/** process.env as a string-only record, for the SDK `env` option. The SDK
+ *  REPLACES the subprocess env entirely when `env` is set (it doesn't merge
+ *  with process.env), so the caller must spread it — mirrors the pty route's
+ *  buildPtyEnv, minus the pty-only TERM. */
+function sessionBaseEnv(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([, v]) => v !== undefined) as [
+      string,
+      string,
+    ][],
+  );
 }
 
 function emitToRenderer(sessionId: string, event: BackendEvent): void {
@@ -85,11 +99,25 @@ function ensureSession(options?: {
   const cwd = resolveSessionCwd(docSourceDir, fallbackCwd());
   const skipPermissions = false;
 
+  // X8 Stage 3.5 reviewer-rig parity: apply the SAME gt-presence gate the pty
+  // route applies in buildPtyEnv. When gas-town is present the SDK subprocess
+  // joins the Reviewer rig via GT_RIG=reviewer; otherwise (no_gt / gt_failed)
+  // no overlay and we omit env entirely so the subprocess inherits process.env.
+  // The probe is cached + 2s-timeout + Dolt-free in the shared module. Applied
+  // to conv AND worker sessions, mirroring the pty route's spawnConversational
+  // and spawnWorker both calling buildPtyEnv.
+  const reviewerOverlay = reviewerEnvOverlay(probeReviewer());
+  const env =
+    Object.keys(reviewerOverlay).length > 0
+      ? { ...sessionBaseEnv(), ...reviewerOverlay }
+      : undefined;
+
   const session = startSession({
     emit: makeEmit(sessionId),
     resume,
     cwd,
     skipPermissions,
+    ...(env ? { env } : {}),
     onSessionId: isConv ? saveSessionId : () => undefined,
     // When the session dies on its own (SDK stream end or error), drop it
     // from the registry so the next send lazily creates a FRESH one instead
