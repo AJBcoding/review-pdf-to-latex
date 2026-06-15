@@ -38,6 +38,7 @@ import type {
   WorkerStartResult,
 } from '@shared/pty';
 import { MAX_WORKER_TABS } from '@shared/pty';
+import { buildDocPrimingLine } from '@shared/priming';
 
 // CSS for xterm.js — must be imported so the styling rules are bundled. The
 // xterm package ships its CSS alongside its dist; without this import the
@@ -463,20 +464,11 @@ export function notifyDocSwitch(payload: {
     const p = state.pendingDocSwitch;
     state.pendingDocSwitch = null;
     if (!p) return;
-    const base = basenameOf(p.path);
-    const ext = base.toLowerCase().split('.').pop() ?? '';
-    const verb = (ext === 'md' || ext === 'markdown') ? 'editing' : 'reviewing';
-    const unit = p.pages === 1 && (ext === 'md' || ext === 'markdown') ? 'file' : `${p.pages} pages`;
-    const line = `[Now ${verb}: ${base} — ${p.path} (${unit}, ${p.comments} comments)]`;
-    // Trailing \r so claude treats it as a complete input line. Newline is
-    // sufficient — claude reads stdin as line-buffered.
-    window.electronAPI.sendPtyInput(`${line}\r`);
+    // Single-source the doc-switch line with the SDK route (X8 stage 2) — see
+    // shared/priming.ts. Trailing \r so claude treats it as a complete input
+    // line; it reads stdin as line-buffered.
+    window.electronAPI.sendPtyInput(`${buildDocPrimingLine(p)}\r`);
   }, DOC_SWITCH_DEBOUNCE_MS);
-}
-
-function basenameOf(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(i + 1) : p;
 }
 
 // ─── Identity label / error UI ────────────────────────────────────────────

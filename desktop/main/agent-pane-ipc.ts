@@ -20,6 +20,7 @@ import {
   resolveSessionCwd,
   resolveSkipPermissions,
 } from './session-policy.js';
+import { buildDocPrimingLine } from '@shared/priming';
 import {
   CONV_SESSION_ID,
   type BackendEvent,
@@ -132,19 +133,6 @@ let pendingDocSwitch: { path: string; pages: number; comments: number } | null =
 let docSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 let lastDocSwitch: { path: string; pages: number; comments: number } | null =
   null;
-
-function basenameOf(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
-function buildDocPrimingLine(p: { path: string; pages: number; comments: number }): string {
-  const base = basenameOf(p.path);
-  const ext = base.toLowerCase().split('.').pop() ?? '';
-  const verb = (ext === 'md' || ext === 'markdown') ? 'editing' : 'reviewing';
-  const unit = p.pages === 1 && (ext === 'md' || ext === 'markdown') ? 'file' : `${p.pages} pages`;
-  return `[Now ${verb}: ${base} — ${p.path} (${unit}, ${p.comments} comments)]`;
-}
 
 function flushDocSwitch(): void {
   docSwitchTimer = null;
