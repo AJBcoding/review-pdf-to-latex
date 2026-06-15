@@ -204,6 +204,11 @@ let activeTool: Tool = 'comment';
  *  v1 quartet of pdf/md/html/docx `*ViewerRef` lets; the open queue disposes it
  *  and constructs the next via the format registry. */
 let activeViewer: FileViewer | null = null;
+/** Session dark-mode preference, applied to every viewer the registry builds.
+ *  Held in module state because viewers are now per-open: without it, dark mode
+ *  would reset on each doc switch (v1's persistent PDF viewer kept it across
+ *  PDF opens — this preserves that, and now extends it to every format). */
+let darkModePref = false;
 
 // ─── M-md-3: .md source save debounce (500ms) ────────────────────────────
 let mdSaveTimer: number | null = null;
@@ -1053,8 +1058,9 @@ function bootProjectOpenFlow(): void {
   fitWidthBtn.addEventListener('click', () => { void activeViewer?.fitWidth(); });
   darkBtn.addEventListener('click', () => {
     if (!activeViewer) return;
-    activeViewer.setDarkMode(!activeViewer.isDarkMode());
-    darkBtn.setAttribute('aria-pressed', String(activeViewer.isDarkMode()));
+    darkModePref = !activeViewer.isDarkMode();
+    activeViewer.setDarkMode(darkModePref);
+    darkBtn.setAttribute('aria-pressed', String(darkModePref));
   });
 
   openBtn.addEventListener('click', () => { void handleOpenClick(openBtn); });
@@ -1450,6 +1456,9 @@ async function runOpen(path: string, token: number): Promise<void> {
   // ── construct the viewer via the registry + load ──
   const viewer = VIEWER_REGISTRY[viewerKind](h.mount);
   activeViewer = viewer;
+  // Re-apply the session dark-mode preference to the fresh viewer.
+  viewer.setDarkMode(darkModePref);
+  h.darkBtn.setAttribute('aria-pressed', String(darkModePref));
 
   // Editable-text formats (md) want an external-change watch so a change on
   // disk while the user has unsaved edits prompts a reload.
