@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { IPC_INVOKE } from '@shared/ipc';
+import { IPC_INVOKE, type ElectronAPI } from '@shared/ipc';
 import type {
   BundleWriteRequest,
   DraftsFile,

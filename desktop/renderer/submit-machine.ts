@@ -94,6 +94,10 @@ export function describeSlingFailure(
       return { kind: 'send_failed', reason: 'gas-town disabled', stderr: r.message };
     case 'spawn_failed':
       return { kind: 'send_failed', reason: 'spawn failed', stderr: r.error };
+    case 'stdin_error':
+      return { kind: 'send_failed', reason: 'stdin error', stderr: r.error };
+    case 'stdin_write_failed':
+      return { kind: 'send_failed', reason: 'stdin write failed', stderr: r.error };
     case 'timeout':
       return {
         kind: 'send_failed',

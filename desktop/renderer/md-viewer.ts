@@ -97,7 +97,6 @@ export class MarkdownViewer implements FileViewer {
   private editorHost: HTMLElement;
   private editorView: EditorView | null = null;
   private dark = false;
-  private bodyOffset = 0;
   private fmPrefix = '';
 
   constructor(opts: MarkdownViewerOptions) {
@@ -174,7 +173,6 @@ export class MarkdownViewer implements FileViewer {
   async loadBytes(bytes: Uint8Array, _ctx?: ViewerLoadContext): Promise<void> {
     const text = new TextDecoder('utf-8').decode(bytes);
     const { frontmatter, body, bodyOffset } = parseFrontmatter(text);
-    this.bodyOffset = bodyOffset;
     this.fmPrefix = text.slice(0, bodyOffset);
     this.renderFrontmatter(frontmatter);
     this.mountEditor(body);
