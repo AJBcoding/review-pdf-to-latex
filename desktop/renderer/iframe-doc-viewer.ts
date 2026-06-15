@@ -99,9 +99,22 @@ export abstract class IframeDocViewer implements FileViewer {
     this.setHighlightedAnchors(htmlAnchorsFromComments(comments));
   }
 
-  /** No jump-to-anchor for the iframe viewers in v1 (matches the host's prior
-   *  pdf-only `revealCommentAnchor`). */
-  reveal(_anchor: Anchor): void {}
+  /** Scroll an html-selector-hint anchor into view inside the iframe (X6
+   *  polymorphic reveal) — one implementation for every iframe viewer (HTML,
+   *  DOCX). Best-effort and text-first, mirroring {@link applyHighlights}:
+   *  prefer the painted `.review-highlight` whose text matches `quoted_text`,
+   *  then fall back to the locality `selector`. No-op when the iframe doc isn't
+   *  ready, the anchor is a foreign kind, or the target can't be resolved. */
+  reveal(anchor: Anchor): void {
+    if (anchor.kind !== 'html-selector-hint') return;
+    const doc = this.iframe.contentDocument;
+    if (!doc) return;
+    const marks = Array.from(doc.querySelectorAll('.review-highlight'));
+    const target =
+      marks.find((m) => (m.textContent ?? '').includes(anchor.quoted_text)) ??
+      querySelectorSafe(doc, anchor.selector);
+    target?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+  }
 
   async loadBytes(bytes: Uint8Array, ctx?: ViewerLoadContext): Promise<void> {
     this.iframe.srcdoc = await this.bytesToHtml(bytes, ctx);

@@ -1185,7 +1185,7 @@ async function handleSubmitBundle(): Promise<void> {
     recentRigs: [...recentRigsList],
     lastDestinationForDoc: lastDestinationPerDoc.get(docState.path) ?? null,
     gasTownEnabled: gtProbe.enabled,
-    author: 'AJB',
+    author: AUTHOR,
   };
   await executeSubmit(ctx);
 }
@@ -1245,7 +1245,7 @@ async function writeBundle(): Promise<boolean> {
     pageCount,
     comments: docState.comments,
     appVersion: APP_VERSION,
-    author: 'AJB',
+    author: AUTHOR,
   });
   if (!res.ok) {
     flashAnchorMeta(`Bundle write failed (${res.reason}): ${res.error}`);
@@ -1279,6 +1279,12 @@ async function writeBundle(): Promise<boolean> {
 /** Bundle's `app_version` field. Hardcoded to match package.json for v1;
  *  refactor to an injected build-time constant when packaging lands. */
 const APP_VERSION = '0.0.1';
+
+/** Reviewer identity stamped on every comment the app authors and on the
+ *  bundle/submit envelopes. Single source (X6) — previously the bare `'AJB'`
+ *  literal was duplicated across the comment builder and the bundle/submit
+ *  builders. */
+const AUTHOR = 'AJB';
 
 async function handleOpenClick(openBtn: HTMLButtonElement): Promise<void> {
   openBtn.disabled = true;
@@ -1940,65 +1946,77 @@ async function handleSubmit(): Promise<void> {
     flashAnchorMeta('Select text first to anchor this comment.');
     return;
   }
-  const payload = buildPayloadFromSelection(buf, sel);
-  docState.comments.unshift(payload);
-  renderAllCards();
-  scheduleDraftsWrite();
-  // Re-project anchors into the viewer: md re-tracks (incl. the new comment),
-  // html/docx re-highlight, pdf no-ops. Subsumes the per-format post-submit
-  // calls (reanchorMdComments / apply{Html,Docx}CommentHighlights).
-  activeViewer?.applyAnchors(docState.comments);
-  clearInput();
-  input.focus();
+  commitNewComment(buildPayload(buf, anchorFromSelection(sel), sel.text));
 }
 
-/** Build a v2 comment from the unified selection + the input buffer (X7).
- *  Replaces the three near-identical buildPdf/buildMd/buildHtml payload
- *  builders — only the `anchor` differs, switched on the selection kind. */
-function buildPayloadFromSelection(buf: string, sel: ViewerSelection): CommentPayload {
-  // Tool ↔ engagement_level / field mapping (§11.1):
-  //   Comment / Surface → buffer is the comment text; redraft is null.
-  //   Redraft           → buffer is the edited replacement text; comment is "".
-  const isRedraft = activeTool === 'redraft';
-  let anchor: Anchor;
+/** Lift a viewer-native selection into the discriminated anchor union (§3.1).
+ *  The one place selection kinds map to anchor kinds — from here on `buildPayload`
+ *  and the reveal/label paths speak the union, never the selection. */
+function anchorFromSelection(sel: ViewerSelection): Anchor {
   switch (sel.kind) {
     case 'pdf-quad':
-      anchor = { kind: 'pdf-quad', page: sel.page, region: sel.region };
-      break;
+      return { kind: 'pdf-quad', page: sel.page, region: sel.region };
     case 'text-quote': {
       // md anchors fold into the text-quote union kind verbatim (§3.1 rule 3).
       const doc = activeViewer instanceof MarkdownViewer ? activeViewer.getContent() : '';
-      anchor = { ...createMdAnchor(doc, sel.from, sel.to), relocated: null };
-      break;
+      return { ...createMdAnchor(doc, sel.from, sel.to), relocated: null };
     }
     case 'html-selector-hint':
       // html/docx anchor by the declared html-selector-hint kind — the v1
       // `as any` smuggle through md_anchor (C6) is gone.
-      anchor = {
+      return {
         kind: 'html-selector-hint',
         selector: sel.selector,
         char_offset: sel.charOffset,
         char_length: sel.charLength,
         quoted_text: sel.text,
       };
-      break;
   }
+}
+
+/** Build a v2 comment from the input buffer + an anchor union (X6). ONE builder
+ *  for every format — the three near-identical buildPdf/buildMd/buildHtml
+ *  builders collapsed here; the per-kind work now lives in `anchorFromSelection`.
+ *  `highlightedText` is passed separately because a pdf-quad anchor carries no
+ *  text of its own (the region is geometric); the other kinds duplicate it in
+ *  `quoted_text` but we keep one source for the card quote. */
+function buildPayload(buf: string, anchor: Anchor, highlightedText: string): CommentPayload {
+  // Tool ↔ engagement_level / field mapping (§11.1):
+  //   Comment / Surface → buffer is the comment text; redraft is null.
+  //   Redraft           → buffer is the edited replacement text; comment is "".
+  const isRedraft = activeTool === 'redraft';
   return {
     id: crypto.randomUUID(),
     doc_id: docState.path,
     doc_version: docState.sha256,
     anchor,
-    highlighted_text: sel.text,
+    highlighted_text: highlightedText,
     comment: isRedraft ? '' : buf,
     redraft: isRedraft ? buf : null,
     redraft_suggestion: null,
     engagement_level: activeTool,
-    author: 'AJB',
+    author: AUTHOR,
     kind: 'comment',
     status: 'open',
     created_at: new Date().toISOString(),
     origin: 'app-draft',
   };
+}
+
+/** The shared tail for adding a freshly-authored comment (X6): prepend it to the
+ *  live set, re-render the stream, schedule the drafts write, re-project anchors
+ *  into the viewer, and reset the composer. Re-projection subsumes the old
+ *  per-format post-submit calls (reanchorMdComments / apply{Html,Docx}
+ *  CommentHighlights) — md re-tracks (incl. the new comment), html/docx
+ *  re-highlight, pdf no-ops. */
+function commitNewComment(payload: CommentPayload): void {
+  docState.comments.unshift(payload);
+  renderAllCards();
+  scheduleDraftsWrite();
+  activeViewer?.applyAnchors(docState.comments);
+  clearInput();
+  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  input?.focus();
 }
 
 /** Rebuild the comment stream from `docState.comments`. Cheap enough for
@@ -2081,21 +2099,36 @@ function bindCommentStreamKeyboard(): void {
       const c = id ? docState.comments.find((x) => x.id === id) : null;
       if (!c || !activeViewer) return;
       e.preventDefault();
-      revealCommentAnchor(c.new_anchor ?? c.anchor);
+      revealComment(c);
     }
   });
 }
 
-/** Reveal a comment's anchor in the active viewer. PDF anchors navigate to the
- *  page + region; text-quote / selector anchors are tracked by their own
- *  viewers (md/html/docx). Full polymorphic reveal across formats is roadmap
- *  X6 — this keeps the PDF path working and is a no-op for the others. */
+/** The anchor a card points at: the rig-relocated `new_anchor` when present
+ *  (that's where the applied text now lives), else the original capture. Single
+ *  source (X6) for the card's reveal target, location label, and ARIA phrase.
+ *  The original `anchor` is kept on the comment for audit even when superseded. */
+function effectiveAnchor(c: CommentPayload): Anchor {
+  return c.new_anchor ?? c.anchor;
+}
+
+/** Reveal a comment in the active viewer via its effective anchor. Shared by the
+ *  card click handler and the stream's Enter binding (X6) so click and keyboard
+ *  resolve to the exact same target. */
+function revealComment(c: CommentPayload): void {
+  revealCommentAnchor(effectiveAnchor(c));
+}
+
+/** Route a reveal to the active viewer, which handles its own anchor kind (X6
+ *  polymorphic reveal): PDF navigates to page + region, md scrolls + selects the
+ *  text-quote range, html/docx scroll the selector into view. */
 function revealCommentAnchor(a: Anchor): void {
   activeViewer?.reveal(a);
 }
 
-/** Short, kind-aware card location label. Replaces the v1 "p.1 · 0,0 0×0" that
- *  rendered for 3 of 4 formats (C5/C6); honest cards are roadmap X6. */
+/** Short, per-kind card location label (X6 honest cards): page + region for
+ *  pdf-quad, char-range for text-quote, trailing selector for html-selector-hint.
+ *  Replaces the v1 "p.1 · 0,0 0×0" that rendered for 3 of 4 formats (C5/C6). */
 function anchorLabel(a: Anchor): string {
   if (a.kind === 'pdf-quad') {
     const r = a.region;
@@ -2152,11 +2185,11 @@ function buildCommentCard(c: CommentPayload): HTMLElement {
   // For comments with a `new_anchor` (rig moved the text on apply), the
   // reveal points at the new location — that's where the resulting text
   // actually lives. Original anchor is kept on the comment for audit only.
-  const revealAnchor = c.new_anchor ?? c.anchor;
+  const revealAnchor = effectiveAnchor(c);
   card.setAttribute('aria-label', `${labelFor(c.engagement_level)} on ${anchorAriaLocation(revealAnchor)}`);
   card.addEventListener('focus', () => { focusedCommentId = c.id; });
   card.addEventListener('click', () => {
-    revealCommentAnchor(revealAnchor);
+    revealComment(c);
   });
 
   const head = document.createElement('div');

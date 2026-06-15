@@ -70,8 +70,10 @@ export interface FileViewer {
    *  keeps the v1 in-place re-anchor until X12 rewires provenance). */
   applyAnchors(comments: CommentPayload[]): void;
 
-  /** Scroll/navigate to a comment's anchor and surface it. No-op for formats
-   *  that can't meaningfully reveal (md/html/docx today). */
+  /** Scroll/navigate to a comment's anchor and surface it, each viewer handling
+   *  its own anchor kind (X6 polymorphic reveal): PDF navigates to page + region,
+   *  md scrolls + selects the text-quote range, html/docx scroll the selector
+   *  into view. Best-effort — a no-op when the target can't be resolved. */
   reveal(anchor: Anchor): void;
 
   dispose(): void;

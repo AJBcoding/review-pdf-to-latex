@@ -151,9 +151,25 @@ export class MarkdownViewer implements FileViewer {
     this.setTrackedAnchors(tracked);
   }
 
-  /** Markdown has no jump-to-anchor affordance in v1 (matches the host's prior
-   *  pdf-only `revealCommentAnchor`). */
-  reveal(_anchor: Anchor): void {}
+  /** Scroll the editor to a text-quote anchor and select its range (X6
+   *  polymorphic reveal). Uses the rig-relocated range when present, else the
+   *  originally-resolved char offsets, clamped to the live document — the same
+   *  coordinates the anchor-highlight decorations track. Foreign anchor kinds
+   *  can't occur on a markdown doc; ignored defensively. */
+  reveal(anchor: Anchor): void {
+    if (anchor.kind !== 'text-quote') return;
+    const view = this.editorView;
+    if (!view) return;
+    const r = anchor.relocated ?? { char_start: anchor.char_start, char_end: anchor.char_end };
+    const len = view.state.doc.length;
+    const from = Math.max(0, Math.min(r.char_start, len));
+    const to = Math.max(from, Math.min(r.char_end, len));
+    view.dispatch({
+      selection: { anchor: from, head: to },
+      effects: EditorView.scrollIntoView(from, { y: 'center' }),
+    });
+    view.focus();
+  }
 
   async loadBytes(bytes: Uint8Array, _ctx?: ViewerLoadContext): Promise<void> {
     const text = new TextDecoder('utf-8').decode(bytes);
