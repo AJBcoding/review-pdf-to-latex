@@ -80,7 +80,7 @@ export class HtmlViewer implements FileViewer {
   get currentPage(): number { return 1; }
   get anchorKind(): AnchorKind { return 'html-selector-hint'; }
   get capabilities(): ViewerCapabilities {
-    return { paged: false, editableText: false, submit: false };
+    return { paged: false, editableText: false };
   }
 
   applyAnchors(comments: CommentPayload[]): void {

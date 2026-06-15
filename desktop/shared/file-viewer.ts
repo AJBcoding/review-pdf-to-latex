@@ -7,12 +7,14 @@ export interface FileViewerPageInfo {
 
 /** What a viewer can do — read by the host (X7) instead of branching on
  *  `classifyPath` at every decision point. `paged` gates the prev/next/fit
- *  chrome; `editableText` drives the .md save-debounce + external-change
- *  watch; `submit` is the pre-v2 C5 guard (PDF-only Submit pipeline). */
+ *  chrome; `editableText` drives the .md save-debounce + external-change watch
+ *  + the focus-on-select rule. (The PDF-only Submit/Bundle pipeline stays gated
+ *  on `classifyPath` at the doc level, not a viewer capability — an unknown
+ *  extension falls back to the PDF viewer for rendering but must NOT become
+ *  submittable.) */
 export interface ViewerCapabilities {
   readonly paged: boolean;
   readonly editableText: boolean;
-  readonly submit: boolean;
 }
 
 /** Viewer-native selection, unified across formats as a discriminated union

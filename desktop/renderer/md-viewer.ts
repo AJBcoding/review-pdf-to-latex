@@ -123,7 +123,7 @@ export class MarkdownViewer implements FileViewer {
   get capabilities(): ViewerCapabilities {
     // The only editable-text format: drives the .md save debounce + the
     // external-modification watch in the host.
-    return { paged: false, editableText: true, submit: false };
+    return { paged: false, editableText: true };
   }
 
   /** Fuzzy-track each text-quote comment against the current document and push

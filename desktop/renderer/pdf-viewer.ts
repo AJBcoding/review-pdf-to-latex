@@ -329,8 +329,8 @@ export class PdfViewer implements FileViewer {
   get currentZoom(): number { return this.zoom; }
   get anchorKind(): AnchorKind { return 'pdf-quad'; }
   get capabilities(): ViewerCapabilities {
-    // The only paged format; the only one wired to the §10.1 Submit pipeline.
-    return { paged: true, editableText: false, submit: true };
+    // The only paged format.
+    return { paged: true, editableText: false };
   }
 
   /** PDF comment anchors are revealed on demand (`reveal`) rather than painted

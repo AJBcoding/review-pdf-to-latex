@@ -567,8 +567,10 @@ function bootToolbar(): void {
     ctx: {
       docPath: () => docState.path,
       docSourceDir: () => docState.path ? dirnameOf(docState.path) : '',
-      currentPage: () => activeViewer?.currentPage ?? null,
-      pageCount: () => activeViewer?.totalPages ?? null,
+      // Page info is meaningful only for paged formats (PDF); non-paged viewers
+      // report 1/1, so mirror the v1 null for those (Create-Context is PDF-centric).
+      currentPage: () => (activeViewer?.capabilities.paged ? activeViewer.currentPage : null),
+      pageCount: () => (activeViewer?.capabilities.paged ? activeViewer.totalPages : null),
       selection: () => {
         // Create-Context is PDF-centric; only a pdf-quad selection carries the
         // page + region the toolbar context needs.
@@ -1124,9 +1126,10 @@ async function handleSubmitBundle(): Promise<void> {
     flashAnchorMeta('Open a PDF before submitting.');
     return;
   }
-  // Pre-v2 C5 guard (§4.4 step 0): submit is PDF-only — now keyed on the
-  // viewer's `submit` capability rather than re-classifying the path (X7).
-  if (!activeViewer?.capabilities.submit) {
+  // Pre-v2 C5 guard (§4.4 step 0): submit is PDF-only. Keyed on the doc's
+  // classification, NOT a viewer capability — an unknown extension renders in
+  // the fallback PDF viewer but must not become submittable.
+  if (classifyPath(docState.path) !== 'pdf') {
     flashAnchorMeta('Submit is only available for PDF documents.');
     return;
   }
@@ -1212,9 +1215,9 @@ let lastBundleSnapshot: BundleSnapshot | null = null;
 async function writeBundle(): Promise<boolean> {
   if (!docState.path || !docState.sha256 || !activeViewer) return false;
   // C5 guard (§4.4 step 0): bundle/submit pipeline is PDF-only. Reject if the
-  // active viewer can't submit, or if any live comment carries a non-`pdf-quad`
+  // open file is not a PDF, or if any live comment carries a non-`pdf-quad`
   // anchor (the per-comment guard, keyed on the truthful union kind).
-  if (!activeViewer.capabilities.submit) {
+  if (classifyPath(docState.path) !== 'pdf') {
     flashAnchorMeta('Bundle export is only available for PDF documents.');
     return false;
   }
