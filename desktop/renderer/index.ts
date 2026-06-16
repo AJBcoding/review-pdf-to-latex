@@ -18,7 +18,7 @@ import { PdfViewer } from './pdf-viewer';
 import { MarkdownViewer } from './md-viewer';
 import { HtmlViewer } from './html-viewer';
 import { DocxViewer } from './docx-viewer';
-import { IframeDocViewer } from './iframe-doc-viewer';
+import { IframeDocViewer, type AnchorUpgrade } from './iframe-doc-viewer';
 import { createMdAnchor } from '@shared/md/anchors';
 import { classifyPath, docFormatForPath } from '@shared/file-kinds';
 import { basename, dirnameOf } from '@shared/paths';
@@ -1217,8 +1217,18 @@ const VIEWER_REGISTRY: Record<ViewerKind, (mount: HTMLElement) => FileViewer> = 
       void mdSave.flush();
     },
   }),
-  html: (mount) => new HtmlViewer({ container: mount, onSelection: handleSelection }),
-  docx: (mount) => new DocxViewer({ container: mount, onSelection: handleSelection }),
+  html: (mount) =>
+    new HtmlViewer({
+      container: mount,
+      onSelection: handleSelection,
+      onAnchorsUpgraded: handleAnchorUpgrades,
+    }),
+  docx: (mount) =>
+    new DocxViewer({
+      container: mount,
+      onSelection: handleSelection,
+      onAnchorsUpgraded: handleAnchorUpgrades,
+    }),
 };
 
 /** Reset all per-document session state to a clean slate for `path` (X7
@@ -1473,6 +1483,30 @@ function syncMdAnchorsToComments(): void {
       }
     }
   }
+}
+
+/** §5.5 lazy upgrade write-back: promote the migrated `html-selector-hint`
+ *  anchors the iframe viewer just resolved into true `text-quote` anchors and
+ *  persist them. The HTML/DOCX twin of {@link syncMdAnchorsToComments} — the
+ *  viewer resolves the DOM position; the host owns `scheduleDraftsWrite`, so the
+ *  promotion crosses back over that boundary here. Builds the anchor with the
+ *  same `createMdAnchor` builder selection capture uses, mutating the live
+ *  comment's anchor in place (the same object the viewer holds). Idempotent:
+ *  once promoted the comment is `text-quote` and never re-reports. */
+function handleAnchorUpgrades(upgrades: AnchorUpgrade[]): void {
+  if (upgrades.length === 0) return;
+  const text = activeViewer instanceof IframeDocViewer ? activeViewer.getContent() : '';
+  if (!text) return;
+  const byId = new Map(docState.comments.map((c) => [c.id, c]));
+  let changed = false;
+  for (const u of upgrades) {
+    const c = byId.get(u.commentId);
+    if (!c || c.anchor.kind !== 'html-selector-hint') continue;
+    if (u.from < 0 || u.to <= u.from || u.to > text.length) continue;
+    c.anchor = { ...createMdAnchor(text, u.from, u.to), relocated: null };
+    changed = true;
+  }
+  if (changed) scheduleDraftsWrite();
 }
 
 function resolveAndOpenWikilink(target: string): void {

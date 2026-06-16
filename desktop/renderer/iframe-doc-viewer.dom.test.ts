@@ -7,12 +7,13 @@
 // the novel logic; `fuzzyMatchAnchor` (the resolver they feed) is covered in
 // shared/md/anchors.test.ts.
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { TextQuoteAnchor } from '@shared/types';
+import type { HtmlSelectorHint, TextQuoteAnchor } from '@shared/types';
 import { fuzzyMatchAnchor } from '@shared/md/anchors';
 import {
   buildLinearIndex,
   locate,
   paintCharRange,
+  selectorHintOffsets,
 } from './iframe-doc-viewer';
 
 function bodyFrom(html: string): HTMLElement {
@@ -105,6 +106,57 @@ describe('paintCharRange', () => {
     const idx = buildLinearIndex(bodyFrom('<p>abc</p>'));
     expect(paintCharRange(document, idx, 5, 2)).toBe(false);
     expect(paintCharRange(document, idx, -1, 2)).toBe(false);
+  });
+});
+
+describe('selectorHintOffsets (§5.5 lazy-upgrade resolution)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  function hint(over: Partial<HtmlSelectorHint>): HtmlSelectorHint {
+    return {
+      kind: 'html-selector-hint',
+      selector: '',
+      char_offset: 0,
+      char_length: 0,
+      quoted_text: '',
+      ...over,
+    };
+  }
+
+  it('projects a quoted match onto linear offsets, counting preceding text', () => {
+    const root = bodyFrom('<h1>Title</h1><p>The cat sat on the mat.</p>');
+    const off = selectorHintOffsets(root, hint({ selector: 'p', quoted_text: 'cat sat' }));
+    const linear = buildLinearIndex(root).text;
+    expect(off).toEqual({ from: linear.indexOf('cat sat'), to: linear.indexOf('cat sat') + 7 });
+    // The offsets feed paintCharRange directly and highlight the same text.
+    paintCharRange(document, buildLinearIndex(root), off!.from, off!.to);
+    expect(root.querySelector('.review-highlight')?.textContent).toBe('cat sat');
+  });
+
+  it('falls back to the whole body when the selector is missing or bad', () => {
+    const root = bodyFrom('<p>alpha</p><p>beta gamma</p>');
+    const linear = buildLinearIndex(root).text;
+    // A selector that matches nothing is demoted to a whole-body search scope.
+    const off = selectorHintOffsets(root, hint({ selector: '.nope', quoted_text: 'gamma' }));
+    expect(off).toEqual({ from: linear.indexOf('gamma'), to: linear.indexOf('gamma') + 5 });
+    // A malformed selector is swallowed and behaves the same way.
+    const bad = selectorHintOffsets(root, hint({ selector: ':::', quoted_text: 'beta' }));
+    expect(bad).toEqual({ from: linear.indexOf('beta'), to: linear.indexOf('beta') + 4 });
+  });
+
+  it('confines the search to the selector scope', () => {
+    const root = bodyFrom('<div class="a">target</div><div class="b">target</div>');
+    const linear = buildLinearIndex(root).text;
+    const off = selectorHintOffsets(root, hint({ selector: '.b', quoted_text: 'target' }));
+    // Both divs contain "target"; the scope picks the second occurrence.
+    expect(off?.from).toBe(linear.indexOf('target', 'target'.length));
+  });
+
+  it('returns null when the quoted text is absent', () => {
+    const root = bodyFrom('<p>nothing here</p>');
+    expect(selectorHintOffsets(root, hint({ quoted_text: 'missing' }))).toBeNull();
   });
 });
 
