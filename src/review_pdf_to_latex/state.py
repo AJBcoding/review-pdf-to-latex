@@ -430,13 +430,29 @@ class StateFile:
         }
 
 
-_TERMINAL_STATUSES: frozenset[str] = frozenset(
+# Canonical status enumeration — the single source of truth (rev-l13).
+# Every other module that needs the status set imports from here; do NOT
+# re-list these elsewhere. STATUSES preserves the spec §7.3 canonical order
+# (it mirrors the `Status` Literal above; tests/test_state.py pins the two in
+# sync). TERMINAL/NON_TERMINAL/ALL are unordered membership sets.
+STATUSES: tuple[str, ...] = (
+    "pending",
+    "applied",
+    "accepted",
+    "rejected",
+    "redrafted",
+    "deferred",
+    "surfaced_pending",
+    "surfaced_resolved",
+    "needs_review",
+)
+TERMINAL_STATUSES: frozenset[str] = frozenset(
     {"accepted", "rejected", "redrafted", "deferred", "surfaced_resolved"}
 )
-_NON_TERMINAL_STATUSES: frozenset[str] = frozenset(
+NON_TERMINAL_STATUSES: frozenset[str] = frozenset(
     {"pending", "applied", "surfaced_pending", "needs_review"}
 )
-_ALL_STATUSES: frozenset[str] = _TERMINAL_STATUSES | _NON_TERMINAL_STATUSES
+ALL_STATUSES: frozenset[str] = TERMINAL_STATUSES | NON_TERMINAL_STATUSES
 
 
 def status_is_terminal(status: str) -> bool:
@@ -451,11 +467,11 @@ def status_is_terminal(status: str) -> bool:
     ValueError
         ``status`` is not in the spec §7.3 enum.
     """
-    if status not in _ALL_STATUSES:
+    if status not in ALL_STATUSES:
         raise ValueError(
-            f"unknown status: {status!r} (expected one of {sorted(_ALL_STATUSES)})"
+            f"unknown status: {status!r} (expected one of {sorted(ALL_STATUSES)})"
         )
-    return status in _TERMINAL_STATUSES
+    return status in TERMINAL_STATUSES
 
 
 Action = Literal[

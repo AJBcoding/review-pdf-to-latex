@@ -28,19 +28,6 @@ class StateMissingError(Exception):
     """
 
 
-_ALL_STATUSES: tuple[str, ...] = (
-    "pending",
-    "applied",
-    "accepted",
-    "rejected",
-    "redrafted",
-    "deferred",
-    "surfaced_pending",
-    "surfaced_resolved",
-    "needs_review",
-)
-
-
 @dataclass
 class StatusReport:
     """Snapshot of state.json for human or machine consumption."""
@@ -91,7 +78,9 @@ def compute_status_report(state_dir: _state.StateDir) -> StatusReport:
         )
     payload = _state.read_json(state_path)
 
-    counts: dict[str, int] = {s: 0 for s in _ALL_STATUSES}
+    # Zero-fill in the canonical spec §7.3 order (state.STATUSES) so the
+    # report's `counts` dict is deterministic for machine consumers.
+    counts: dict[str, int] = {s: 0 for s in _state.STATUSES}
     annotations = payload.get("annotations", {})
     for entry in annotations.values():
         s = entry.get("status")
@@ -100,14 +89,8 @@ def compute_status_report(state_dir: _state.StateDir) -> StatusReport:
         # Unknown statuses are silently ignored here; the read_json
         # schema check upstream is responsible for rejecting them.
 
-    terminal = sum(
-        counts[s]
-        for s in ("accepted", "rejected", "redrafted", "deferred", "surfaced_resolved")
-    )
-    non_terminal = sum(
-        counts[s]
-        for s in ("pending", "applied", "surfaced_pending", "needs_review")
-    )
+    terminal = sum(counts[s] for s in _state.TERMINAL_STATUSES)
+    non_terminal = sum(counts[s] for s in _state.NON_TERMINAL_STATUSES)
     total = terminal + non_terminal
 
     builds = payload.get("builds", [])

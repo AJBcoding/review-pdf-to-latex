@@ -100,6 +100,9 @@ _PHASE_LABELS: dict[str, str] = {
 }
 
 # Statuses that count as edits in the commit summary, in display order.
+# This is a presentation ordering, not a set definition: its membership is
+# pinned to state.ALL_STATUSES by test_summary_statuses_cover_all_statuses
+# (rev-l13), so the canonical enum in state.py stays the single source.
 _SUMMARY_STATUSES: list[str] = [
     "applied",
     "accepted",
