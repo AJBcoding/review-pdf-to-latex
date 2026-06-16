@@ -353,6 +353,8 @@ One JSON object per line. Written exclusively by the viewer's click handler. Con
 
 Action enum (full set): `approve` | `reject` | `redraft` | `preview` | `skip` | `surface` | `override-mapping`. See §10.3 for the button-to-action mapping and the engine-side CLI translation of each action.
 
+> **`ts` precision (rev-l7).** The examples above show second resolution for readability, but the engine writes `ts` with **microsecond** precision (e.g. `2026-05-16T20:47:11.482915Z`). `wait-event --since` compares the raw `ts` string with `ts > since` (lexicographic); second resolution let two clicks in the same second collide so the cursor dropped the second one. Microsecond precision keeps a single writer's timestamps strictly monotonic without a schema-version bump.
+
 The log is an append-only audit record of every user click; `state.json` is the authoritative session state, mutated exclusively by `review-pdf` CLI subcommands triggered by the skill in response to events. The viewer never reads `state-events.jsonl`; the engine reads it for replay diagnostics only (`review-pdf status --replay-events` is reserved for future use).
 
 ## 8. CLI surface
