@@ -8,6 +8,9 @@ import { describe, expect, it } from 'vitest';
 import {
   formatAnnotColor,
   normalizePdfAnnotations,
+  quadToRect,
+  reconstructHighlightedText,
+  type PdfTextBox,
   type RawPdfAnnotation,
 } from './pdf-annotations';
 
@@ -144,6 +147,77 @@ describe('normalizePdfAnnotations', () => {
       1,
     );
     expect(a.native.created).toBe("D:20260101000000+00'00'");
+  });
+});
+
+describe('quadToRect', () => {
+  it('collapses an Acrobat UL/UR/LL/LR quad to its bounding rect', () => {
+    // The single-line Highlight quad from the fixtures above.
+    expect(quadToRect({ x1: 72, y1: 714, x2: 449, y2: 714, x3: 72, y3: 698, x4: 449, y4: 698 }))
+      .toEqual({ x: 72, y: 698, w: 377, h: 16 });
+  });
+
+  it('is robust to corner-order quirks (min/max of all four points)', () => {
+    expect(quadToRect({ x1: 449, y1: 698, x2: 72, y2: 698, x3: 449, y3: 714, x4: 72, y4: 714 }))
+      .toEqual({ x: 72, y: 698, w: 377, h: 16 });
+  });
+});
+
+describe('reconstructHighlightedText', () => {
+  /** A text run box: baseline-left origin (x,y), advance width w, font height h
+   *  — the PDF.js `TextItem` geometry the viewer feeds in. */
+  function run(str: string, x: number, w: number, y = 700, h = 12): PdfTextBox {
+    return { str, x, y, w, h };
+  }
+
+  // A line-rect whose band ([y-6 … y+h+6]) contains baseline y=700.
+  const line = { x: 72, y: 696, w: 200, h: 14 };
+
+  it('concatenates the runs a single line-rect covers, left to right', () => {
+    const items = [run('world', 112, 48), run('Hello ', 72, 40)];
+    expect(reconstructHighlightedText(items, [line])).toBe('Hello world');
+  });
+
+  it('inserts a space across a visible horizontal gap between bare runs', () => {
+    const items = [run('foo', 72, 20), run('bar', 120, 20)]; // gap 28 ≫ h*0.25
+    expect(reconstructHighlightedText(items, [line])).toBe('foo bar');
+  });
+
+  it('does not double-space when a run already carries whitespace', () => {
+    const items = [run('foo', 72, 20), run(' bar', 120, 20)];
+    expect(reconstructHighlightedText(items, [line])).toBe('foo bar');
+  });
+
+  it('orders multi-line rects top-to-bottom regardless of input order', () => {
+    const top = { x: 72, y: 718, w: 200, h: 12 };    // band [712 … 736]
+    const bottom = { x: 72, y: 694, w: 200, h: 12 };  // band [688 … 712]
+    const items = [run('two', 72, 30, 700), run('line', 72, 40, 724)];
+    // Pass the lower rect first to prove the sort, not input order, wins.
+    expect(reconstructHighlightedText(items, [bottom, top])).toBe('line two');
+  });
+
+  it('drops runs whose baseline falls outside every line band', () => {
+    const items = [run('on', 72, 20, 700), run('off', 72, 20, 760)];
+    expect(reconstructHighlightedText(items, [line])).toBe('on');
+  });
+
+  it('drops a run barely clipped at the edge (under 30% horizontal overlap)', () => {
+    // rect spans x [72 … 272]. 'edge' is 20 wide at x=270 → only 2px overlap,
+    // below the 0.3·width = 6px threshold, so it's not part of the highlight.
+    const items = [run('in', 100, 20), run('edge', 270, 20)];
+    expect(reconstructHighlightedText(items, [line])).toBe('in');
+  });
+
+  it('assigns each run to at most one line (no duplication on overlapping bands)', () => {
+    const top = { x: 72, y: 718, w: 200, h: 12 };
+    const bottom = { x: 72, y: 694, w: 200, h: 12 };
+    const items = [run('word', 72, 40, 724)]; // matches only the top band
+    expect(reconstructHighlightedText(items, [top, bottom])).toBe('word');
+  });
+
+  it('returns empty string for empty rects or items', () => {
+    expect(reconstructHighlightedText([run('x', 72, 10)], [])).toBe('');
+    expect(reconstructHighlightedText([], [line])).toBe('');
   });
 });
 
