@@ -43,6 +43,7 @@ import {
   canResume as submitCanResume,
   type SubmitContext,
 } from './submit';
+import { DebouncedSave, drainAllDebouncedSaves } from './debounced-save';
 
 /** Look up a renderer element that the static `index.html` is expected to
  *  provide, typed as `T` (defaults to `HTMLElement`). Returns `null` when the
@@ -205,20 +206,16 @@ let activeViewer: FileViewer | null = null;
 let darkModePref = false;
 
 // ─── M-md-3: .md source save debounce (500ms) ────────────────────────────
-let mdSaveTimer: number | null = null;
 const MD_SAVE_DEBOUNCE_MS = 500;
 let mdSourceModified = false;
 let mdFileChangeUnsub: (() => void) | null = null;
+const mdSave = new DebouncedSave(MD_SAVE_DEBOUNCE_MS, flushMdSave);
 
 function scheduleMdSave(): void {
   if (!docState.path || classifyPath(docState.path) !== 'md') return;
   mdSourceModified = true;
   fileTree?.setModifiedFile(docState.path, true);
-  if (mdSaveTimer !== null) window.clearTimeout(mdSaveTimer);
-  mdSaveTimer = window.setTimeout(() => {
-    mdSaveTimer = null;
-    void flushMdSave();
-  }, MD_SAVE_DEBOUNCE_MS);
+  mdSave.schedule();
 }
 
 async function flushMdSave(): Promise<void> {
@@ -244,9 +241,9 @@ async function rehashCurrentDoc(): Promise<string | null> {
 }
 
 // ─── Drafts write debounce (§10.3 — 250ms) ─────────────────────────────────
-let writeTimer: number | null = null;
 const WRITE_DEBOUNCE_MS = 250;
 const draftsCache = new Map<string, DraftsFile>();
+const draftsSave = new DebouncedSave(WRITE_DEBOUNCE_MS, flushDraftsWrite);
 
 /** Cache key for an in-memory drafts snapshot. Drafts are a function of
  *  (path, content) — keying on path alone lets a stale entry from one
@@ -260,12 +257,8 @@ function draftsCacheKey(path: string, sha256: string): string {
 
 function scheduleDraftsWrite(): void {
   if (!docState.path || !docState.sha256) return;
-  if (writeTimer !== null) window.clearTimeout(writeTimer);
   setSavedIndicator({ kind: 'saving' });
-  writeTimer = window.setTimeout(() => {
-    writeTimer = null;
-    void flushDraftsWrite();
-  }, WRITE_DEBOUNCE_MS);
+  draftsSave.schedule();
 }
 
 async function flushDraftsWrite(): Promise<void> {
@@ -529,8 +522,8 @@ function bootToolbar(): void {
 let fileTree: FileTree | null = null;
 let palette: QuickOpenPalette | null = null;
 let viewerHandlesRef: ViewerHandles | null = null;
-let appStateSaveTimer: number | null = null;
 const APP_STATE_DEBOUNCE_MS = 250;
+const appStateSave = new DebouncedSave(APP_STATE_DEBOUNCE_MS, flushAppStateSave);
 
 /** In-memory mirror of AppStateFile.left_drawer_collapsed. Toggled by the
  *  chevron button + Cmd+\; persisted via the existing app-state debounce. */
@@ -744,11 +737,7 @@ async function refreshPdfIndex(root: string): Promise<void> {
  *  and external handoff. Dispatches by file kind to the right viewer. */
 
 function scheduleAppStateSave(): void {
-  if (appStateSaveTimer !== null) window.clearTimeout(appStateSaveTimer);
-  appStateSaveTimer = window.setTimeout(() => {
-    appStateSaveTimer = null;
-    void flushAppStateSave();
-  }, APP_STATE_DEBOUNCE_MS);
+  appStateSave.schedule();
 }
 
 async function flushAppStateSave(): Promise<void> {
@@ -849,7 +838,13 @@ async function restoreFromAppState(): Promise<void> {
   }
 }
 
-/** rev-cm6: drain the debounced drafts write before the window/app goes away.
+/** rev-cm6: drain the debounced writes before the window/app goes away.
+ *
+ *  Drains the whole debounced-save registry — drafts, .md source, AND app-state
+ *  (the app-state save used to be omitted here, so a layout/expansion change in
+ *  the last 250ms before quit was silently lost). `drainAllDebouncedSaves`
+ *  flushes only the savers with a write actually pending, so a doc opened and
+ *  closed without edits still writes nothing.
  *
  *  Two paths:
  *    1. Main-side handshake — main sends `drafts:flushRequest` from its
@@ -862,40 +857,11 @@ async function restoreFromAppState(): Promise<void> {
  */
 function wireDraftsQuitFlush(): void {
   window.electronAPI.onDraftsFlushRequest(async (id) => {
-    // Only write if a debounced write was actually pending — otherwise the
-    // ack is a no-op. Avoids writing an empty drafts file for documents the
-    // user opens and closes without commenting (would litter the .review-state
-    // dir next to every PDF the user even peeks at).
-    // Flush both drafts and md source saves
-    const flushes: Promise<void>[] = [];
-    if (writeTimer !== null) {
-      window.clearTimeout(writeTimer);
-      writeTimer = null;
-      flushes.push(flushDraftsWrite());
-    }
-    if (mdSaveTimer !== null) {
-      window.clearTimeout(mdSaveTimer);
-      mdSaveTimer = null;
-      flushes.push(flushMdSave());
-    }
-    if (flushes.length === 0) {
-      window.electronAPI.sendDraftsFlushAck(id);
-      return;
-    }
-    try { await Promise.all(flushes); }
+    try { await drainAllDebouncedSaves(); }
     finally { window.electronAPI.sendDraftsFlushAck(id); }
   });
   window.addEventListener('beforeunload', () => {
-    if (writeTimer !== null) {
-      window.clearTimeout(writeTimer);
-      writeTimer = null;
-      void flushDraftsWrite();
-    }
-    if (mdSaveTimer !== null) {
-      window.clearTimeout(mdSaveTimer);
-      mdSaveTimer = null;
-      void flushMdSave();
-    }
+    void drainAllDebouncedSaves();
   });
 }
 
@@ -1154,11 +1120,7 @@ async function writeBundle(): Promise<boolean> {
   // goes into the bundle JSON. Otherwise a Cmd+S 100ms after editing
   // would write a bundle with the edits but a drafts file without —
   // confusing on next reload (drafts is checked first, per §10.4).
-  if (writeTimer !== null) {
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    await flushDraftsWrite();
-  }
+  await draftsSave.flush();
   const pageCount = activeViewer.totalPages;
   if (pageCount === 0) {
     flashAnchorMeta('Wait for the PDF to finish loading before exporting.');
@@ -1254,11 +1216,7 @@ const VIEWER_REGISTRY: Record<ViewerKind, (mount: HTMLElement) => FileViewer> = 
       syncMdAnchorsToComments();
     },
     onBlur: () => {
-      if (mdSaveTimer !== null) {
-        window.clearTimeout(mdSaveTimer);
-        mdSaveTimer = null;
-        void flushMdSave();
-      }
+      void mdSave.flush();
     },
   }),
   html: (mount) => new HtmlViewer({ container: mount, onSelection: handleSelection }),
@@ -1325,18 +1283,16 @@ async function runOpen(path: string, token: number): Promise<void> {
 
   // ── teardown of the previous document ──
   // Flush a pending .md save before its viewer is gone (uses the still-current
-  // previous-doc path/sha — reset happens below).
-  if (mdSaveTimer !== null) {
-    window.clearTimeout(mdSaveTimer);
-    mdSaveTimer = null;
-    await flushMdSave();
+  // previous-doc path/sha — reset happens below). `flush()` is a no-op when
+  // nothing is pending, so the superseded re-check only matters after an
+  // actual write.
+  if (mdSave.pending) {
+    await mdSave.flush();
     if (openSuperseded(token)) return;
   }
   // Flush a pending drafts write before the previous sha256 is overwritten.
-  if (writeTimer !== null) {
-    window.clearTimeout(writeTimer);
-    writeTimer = null;
-    await flushDraftsWrite();
+  if (draftsSave.pending) {
+    await draftsSave.flush();
     if (openSuperseded(token)) return;
   }
   if (mdFileChangeUnsub) { mdFileChangeUnsub(); mdFileChangeUnsub = null; }
