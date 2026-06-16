@@ -49,12 +49,12 @@ def test_readme_install_block_has_pip_install(readme_text: str) -> None:
     assert ".claude/skills/review-pdf-to-latex" in install_block
 
 
-def test_readme_cli_reference_mentions_all_14_subcommands(readme_text: str) -> None:
+def test_readme_cli_reference_mentions_all_13_subcommands(readme_text: str) -> None:
     cli_idx = readme_text.find("## CLI reference")
     next_h2 = readme_text.find("\n## ", cli_idx + 1)
     cli_block = readme_text[cli_idx:next_h2 if next_h2 != -1 else None]
     for sub in (
-        "extract", "serve", "apply", "revert", "preview", "build", "status",
+        "extract", "apply", "revert", "preview", "build", "status",
         "override-mapping", "set-status", "append-chat", "record-proposal",
         "commit-phase", "wait-event", "migrate-state",
     ):

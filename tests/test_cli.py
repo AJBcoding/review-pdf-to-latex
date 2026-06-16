@@ -23,7 +23,6 @@ pdftoppm = pytest.mark.skipif(
 
 ALL_SUBCOMMANDS = [
     "extract",
-    "serve",
     "apply",
     "revert",
     "preview",
