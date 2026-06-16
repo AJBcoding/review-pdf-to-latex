@@ -337,7 +337,11 @@ export function registerFsIpc(): void {
       }
       try {
         await atomicWrite(resolvedPath, content);
-        return { ok: true, filePath: resolvedPath };
+        // Same digest readFileBytes would compute on a re-read: atomicWrite
+        // persists the string as UTF-8, so hashing the UTF-8 bytes here matches
+        // the on-disk content and lets the renderer skip the rehash read.
+        const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
+        return { ok: true, filePath: resolvedPath, sha256 };
       } catch (err) {
         return {
           ok: false, reason: 'write_failed', filePath: resolvedPath,

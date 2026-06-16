@@ -230,14 +230,8 @@ async function flushMdSave(): Promise<void> {
   }
   mdSourceModified = false;
   fileTree?.setModifiedFile(docState.path, false);
-  const newHash = await rehashCurrentDoc();
-  if (newHash) docState.sha256 = newHash;
-}
-
-async function rehashCurrentDoc(): Promise<string | null> {
-  if (!docState.path) return null;
-  const res = await window.electronAPI.readFileBytes(docState.path);
-  return res.ok ? res.sha256 : null;
+  // writeFileText already hashed the bytes it wrote — no follow-up read needed.
+  docState.sha256 = res.sha256;
 }
 
 // ─── Drafts write debounce (§10.3 — 250ms) ─────────────────────────────────
