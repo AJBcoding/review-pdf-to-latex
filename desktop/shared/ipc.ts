@@ -36,20 +36,7 @@ import type {
   WriteFileTextResult,
   FileChangeEvent,
 } from './files';
-import type {
-  ReviewerProbe,
-  PtyStartParams,
-  PtyStartResult,
-  PtyDataEvent,
-  PtyExitEvent,
-  WorkerStartParams,
-  WorkerStartResult,
-  WorkerDataEvent,
-  WorkerExitEvent,
-  WorkerProgressEvent,
-  FreshStartParams,
-  FreshStartResult,
-} from './pty';
+import type { ReviewerProbe } from './pty';
 
 export interface ElectronAPI {
   // Smoke-test echo, retained from the empty-shell milestone.
@@ -156,50 +143,13 @@ export interface ElectronAPI {
   // idle so Submit re-enables.
   submitAbandonRound(request: SubmitAbandonRequest): Promise<SubmitAbandonResult>;
 
-  // ─── §9.2 embedded Claude pane (rev-1md.2) ──────────────────────────────
+  // ─── §9.2.5 reviewer-rig probe ──────────────────────────────────────────
   // Probe gas-town presence + identity. Cached on the main side; safe to call
-  // freely. Drives the Sling button's enabled/disabled state (§9.2.5).
+  // freely. Drives the Sling button's enabled/disabled state (§9.2.5). The
+  // only surviving member of the former pty surface — the conversational and
+  // worker ptys were retired in X8 stage 4 (rev-enext.3) in favor of the SDK
+  // agent pane (window.agentViewer); the handler lives in agent-pane-ipc.ts.
   probeReviewer(): Promise<ReviewerProbe>;
-  // Spawn the conversational pty (lazy, on first PDF open). Idempotent — a
-  // second call with a pty already alive returns `already_running: true`.
-  // The renderer wires onPtyData / onPtyExit BEFORE calling start so no
-  // initial bytes are dropped.
-  startPty(params: PtyStartParams): Promise<PtyStartResult>;
-  // Write to the pty's stdin (user keystrokes from xterm.js + app-injected
-  // doc-switch lines). The newline character is the caller's responsibility.
-  sendPtyInput(data: string): void;
-  // Propagate xterm.js's geometry to the pty. Called on every fit().
-  resizePty(cols: number, rows: number): void;
-  // SIGTERM the pty (SIGKILL fallback after 1.5s). Used by Fresh Start
-  // (rev-1md.3) and on app quit.
-  killPty(): Promise<{ ok: true }>;
-  // Data stream from main → renderer. Subscribe before calling startPty.
-  // Returns an unsubscribe fn.
-  onPtyData(cb: (event: PtyDataEvent) => void): () => void;
-  // Exit notification — fires once per spawn generation. The renderer shows
-  // "Claude session ended. [Restart]" per §9.2.2.
-  onPtyExit(cb: (event: PtyExitEvent) => void): () => void;
-
-  // ─── §9.2.6 toolbar / worker ptys (rev-1md.3) ──────────────────────────
-  // Spawn a worker pty (Create Context or Sling). Each has its own claude
-  // subprocess pre-primed with the context bundle. Main mints a workerId
-  // the renderer uses for input/resize/kill. Subscribe to onWorker* BEFORE
-  // calling so the priming output isn't dropped.
-  startWorkerPty(params: WorkerStartParams): Promise<WorkerStartResult>;
-  workerPtyInput(workerId: string, data: string): void;
-  resizeWorkerPty(workerId: string, cols: number, rows: number): void;
-  killWorkerPty(workerId: string): Promise<{ ok: true }>;
-  onWorkerPtyData(cb: (event: WorkerDataEvent) => void): () => void;
-  onWorkerPtyExit(cb: (event: WorkerExitEvent) => void): () => void;
-  // §9.2.7 β/γ progress markers — main parses `[β]` lines out of worker
-  // stdout before forwarding the rest. Channel is purely additive; absence
-  // of markers degrades the strip to `⟳ <task> running [log]`.
-  onWorkerPtyProgress(cb: (event: WorkerProgressEvent) => void): () => void;
-
-  // §9.2.6 Fresh Start — kill the conversational pty and respawn with a
-  // handoff summary as additional priming after the standard slash-command
-  // activation. The renderer re-attaches its xterm.js terminal in place.
-  freshStartPty(params: FreshStartParams): Promise<FreshStartResult>;
 }
 
 declare global {
@@ -246,11 +196,6 @@ export const IPC_INVOKE = {
   submitSling: 'submit:sling',
   submitAbandonRound: 'submit:abandonRound',
   probeReviewer: 'pty:probeReviewer',
-  startPty: 'pty:start',
-  killPty: 'pty:kill',
-  startWorkerPty: 'pty:startWorker',
-  killWorkerPty: 'pty:killWorker',
-  freshStartPty: 'pty:freshStart',
 } as const satisfies Partial<Record<keyof ElectronAPI, string>>;
 
 /** Invoke-style `ElectronAPI` method names — the keys of {@link IPC_INVOKE}. */

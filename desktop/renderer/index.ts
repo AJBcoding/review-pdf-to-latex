@@ -23,28 +23,7 @@ import { classifyPath, docFormatForPath } from '@shared/file-kinds';
 import type { FileViewer, ViewerSelection } from '@shared/file-viewer';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
-import {
-  mount as mountClaudePane,
-  ensureSpawned as ensureClaudePaneSpawned,
-  notifyDocSwitch as notifyClaudeDocSwitch,
-} from './claude-pane';
 import { mountAgentPane } from './agent-pane/main';
-
-/**
- * Project 4 / M-int-1 feature flag: when localStorage.pdf-latex-new-agent-pane
- * is "1", the lower-right pane mounts the React agent-viewer port instead of
- * the xterm-based Claude pane. Flip via DevTools console:
- *   localStorage.setItem('pdf-latex-new-agent-pane', '1'); location.reload()
- * To revert:
- *   localStorage.removeItem('pdf-latex-new-agent-pane'); location.reload()
- */
-function useNewAgentPane(): boolean {
-  try {
-    return localStorage.getItem('pdf-latex-new-agent-pane') === '1';
-  } catch {
-    return false;
-  }
-}
 import { seedNextVersionDraft as seedNextVersionDraftPure } from './seed-next-draft';
 import { mountToolbar } from './toolbar';
 import { bootSplitters, applyLayoutWidths, type LayoutWidths } from './splitter';
@@ -446,89 +425,24 @@ function bootClaudePane(): void {
   const identity = document.getElementById('claudeIdentity');
   const body = document.getElementById('claudeBody');
   const tabs = document.getElementById('claudeTabs');
-  const progressStrip = document.getElementById('progressStrip');
-  const tasksToggle = document.getElementById('tasksPanelToggle') as HTMLButtonElement | null;
-  const tasksCount = document.getElementById('tasksPanelCount');
-  const tasksPanel = document.getElementById('tasksPanel');
-  const tasksList = document.getElementById('tasksPanelList');
-  const tasksEmpty = document.getElementById('tasksPanelEmpty');
-  const tasksClose = document.getElementById('tasksPanelClose') as HTMLButtonElement | null;
-  if (!empty || !term || !error || !identity || !body || !tabs ||
-      !progressStrip || !tasksToggle || !tasksCount || !tasksPanel ||
-      !tasksList || !tasksEmpty || !tasksClose) return;
+  if (!empty || !term || !error || !identity || !body || !tabs) return;
 
-  if (useNewAgentPane()) {
-    // Hide the legacy xterm DOM scaffold and mount the React island in
-    // its place. The agent-viewer renderer uses its own internal layout.
-    empty.style.display = 'none';
-    term.style.display = 'none';
-    error.style.display = 'none';
-    identity.style.display = 'none';
-    tabs.style.display = 'none';
-    body.classList.add('agent-pane-react-host');
-    mountAgentPane(body);
-    // Project 4 / M-int-4b Phase 1: toolbar comes back so Fresh Start is
-    // reachable. Create Context / Sling stay disabled until M-int-4c
-    // wires worker spawn to agent:spawnSession + γ-panel routing.
-    const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
-    const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
-    if (createBtn) createBtn.title = 'Create Context: spawn a focused agent session with current page + selection';
-    if (slingBtn) slingBtn.title = 'Sling: send the current review to another rig for processing';
-    bootToolbar();
-    return;
-  }
-
-  mountClaudePane({
-    empty, term, error, identity, body, tabs, progressStrip,
-    tasksToggle, tasksCount, tasksPanel, tasksList, tasksEmpty, tasksClose,
-    // App theme is dark in v1 (§13.6 toggle is a spike-only affordance).
-    themeMode: 'dark',
-  });
-  // §9.2.2 — Restart button on a crashed pty fires this event. We re-spawn
-  // against the currently-open PDF's source dir.
-  window.addEventListener('claude-pane:restart-requested', () => {
-    if (!docState.path) return;
-    void ensureClaudePaneSpawned({ docSourceDir: dirnameOf(docState.path) });
-  });
-
+  // X8 stage 4 (rev-enext.3): the React agent pane is the only surface now
+  // that the OD-3 parity checklist is green and the legacy pty route is
+  // retired. Hide the legacy xterm DOM scaffold and mount the React island in
+  // its place — the agent-viewer renderer uses its own internal layout.
+  empty.style.display = 'none';
+  term.style.display = 'none';
+  error.style.display = 'none';
+  identity.style.display = 'none';
+  tabs.style.display = 'none';
+  body.classList.add('agent-pane-react-host');
+  mountAgentPane(body);
+  const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
+  const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
+  if (createBtn) createBtn.title = 'Create Context: spawn a focused agent session with current page + selection';
+  if (slingBtn) slingBtn.title = 'Sling: send the current review to another rig for processing';
   bootToolbar();
-  bootClaudeSettings();
-}
-
-function bootClaudeSettings(): void {
-  const btn = document.getElementById('claudeSettingsBtn') as HTMLButtonElement | null;
-  const panel = document.getElementById('claudeSettingsPanel');
-  const skipCheck = document.getElementById('settingSkipPermissions') as HTMLInputElement | null;
-  const costCheck = document.getElementById('settingShowCost') as HTMLInputElement | null;
-  if (!btn || !panel || !skipCheck || !costCheck) return;
-
-  btn.addEventListener('click', () => {
-    panel.hidden = !panel.hidden;
-    btn.setAttribute('aria-expanded', String(!panel.hidden));
-  });
-
-  // Load persisted state
-  void window.electronAPI.readAppState().then((res) => {
-    if (res.ok && res.state) {
-      skipCheck.checked = res.state.claude_dangerous_skip_permissions !== false;
-    }
-  });
-  try {
-    costCheck.checked = localStorage.getItem('pdf-latex-show-cost') !== '0';
-  } catch {}
-
-  skipCheck.addEventListener('change', () => {
-    claudeSkipPermissions = skipCheck.checked;
-    scheduleAppStateSave();
-  });
-  costCheck.addEventListener('change', () => {
-    try {
-      localStorage.setItem('pdf-latex-show-cost', costCheck.checked ? '1' : '0');
-    } catch {}
-    window.dispatchEvent(new CustomEvent('settings:cost-display-changed', {
-      detail: { show: costCheck.checked },
-    }));
-  });
 }
 
 /** §9.2.6 right-drawer toolbar (rev-1md.3). Wires the three buttons + their
@@ -1372,19 +1286,12 @@ function resetDocSession(path: string): void {
 /** §9.2 — notify the Claude / agent pane that the active doc changed. Lazy
  *  spawn on first open; debounced context line thereafter. Best-effort. */
 function announceDocSwitch(path: string, pages: number, comments: number): void {
-  if (useNewAgentPane()) {
-    const w = window as unknown as {
-      agentViewer?: {
-        notifyDocSwitch: (payload: { path: string; pages: number; comments: number }) => Promise<void>;
-      };
+  const w = window as unknown as {
+    agentViewer?: {
+      notifyDocSwitch: (payload: { path: string; pages: number; comments: number }) => Promise<void>;
     };
-    void w.agentViewer?.notifyDocSwitch({ path, pages, comments });
-  } else {
-    const sourceDir = dirnameOf(path);
-    void ensureClaudePaneSpawned({ docSourceDir: sourceDir }).then(() => {
-      notifyClaudeDocSwitch({ path, pages, comments });
-    });
-  }
+  };
+  void w.agentViewer?.notifyDocSwitch({ path, pages, comments });
 }
 
 /** The single document-load path (X7). Collapses the four cloned loaders into

@@ -18,12 +18,13 @@ import {
 import { startSession, type ClaudeSession } from './claude-backend.js';
 import { resolveSessionCwd } from './session-policy.js';
 import { probeReviewer, reviewerEnvOverlay } from './reviewer-probe.js';
+import { typedHandle } from './typed-ipc.js';
 import { buildDocPrimingLine } from '@shared/priming';
 import {
   CONV_SESSION_ID,
   type BackendEvent,
 } from '@shared/agent-pane/types.js';
-import { MAX_WORKER_PTYS } from '@shared/pty';
+import { MAX_WORKER_PTYS, type ReviewerProbe } from '@shared/pty';
 
 const sessions = new Map<string, ClaudeSession>();
 let mainWindowRef: BrowserWindow | null = null;
@@ -183,6 +184,12 @@ export function rebindMainWindow(mainWindow: BrowserWindow): void {
 /** Register the agent-pane IPC handlers. Safe to call once at app boot. */
 export function registerAgentPaneIpc(mainWindow: BrowserWindow): void {
   mainWindowRef = mainWindow;
+
+  // X8 stage 4 (rev-enext.3): the reviewer-rig probe handler moved here from
+  // the retired claude-pty.ts. Same channel (IPC_INVOKE.probeReviewer) so the
+  // preload bridge and renderer (toolbar Sling gating, agent pane) are
+  // unchanged. probeReviewer() is cached + 2s-timeout + Dolt-free.
+  typedHandle('probeReviewer', (): ReviewerProbe => probeReviewer());
 
   ipcMain.handle(
     'agent:send',

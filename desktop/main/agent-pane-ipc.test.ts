@@ -184,6 +184,9 @@ describe('agent-pane-ipc', () => {
           'agent:send',
           'agent:setModel',
           'agent:spawnSession',
+          // X8 stage 4 (rev-enext.3): reviewer-rig probe relocated here from
+          // the retired claude-pty.ts (keeps its original channel).
+          'pty:probeReviewer',
         ].sort(),
       );
     });

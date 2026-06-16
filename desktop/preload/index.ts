@@ -12,16 +12,6 @@ import type {
   AppStateFile,
   FileChangeEvent,
 } from '@shared/files';
-import type {
-  FreshStartParams,
-  PtyDataEvent,
-  PtyExitEvent,
-  PtyStartParams,
-  WorkerDataEvent,
-  WorkerExitEvent,
-  WorkerProgressEvent,
-  WorkerStartParams,
-} from '@shared/pty';
 
 // Expose a minimal, typed IPC surface to the renderer.
 // Anything the renderer can call must be declared here — this is the security boundary.
@@ -87,48 +77,11 @@ const electronAPI: ElectronAPI = {
   submitAbandonRound: (request: SubmitAbandonRequest) =>
     ipcRenderer.invoke(IPC_INVOKE.submitAbandonRound, request),
 
-  // ─── §9.2 embedded Claude pane (rev-1md.2) ─────────────────────────────
+  // ─── §9.2.5 reviewer-rig probe ─────────────────────────────────────────
+  // X8 stage 4 (rev-enext.3): the only surviving member of the former pty
+  // surface. Backs Sling gating (gt presence + identity) on the SDK route;
+  // the handler now lives in agent-pane-ipc.ts.
   probeReviewer: () => ipcRenderer.invoke(IPC_INVOKE.probeReviewer),
-  startPty: (params: PtyStartParams) => ipcRenderer.invoke(IPC_INVOKE.startPty, params),
-  sendPtyInput: (data: string) => { ipcRenderer.send('pty:input', data); },
-  resizePty: (cols: number, rows: number) => { ipcRenderer.send('pty:resize', cols, rows); },
-  killPty: () => ipcRenderer.invoke(IPC_INVOKE.killPty),
-  onPtyData: (cb) => {
-    const listener = (_e: IpcRendererEvent, event: PtyDataEvent) => cb(event);
-    ipcRenderer.on('pty:onData', listener);
-    return () => { ipcRenderer.off('pty:onData', listener); };
-  },
-  onPtyExit: (cb) => {
-    const listener = (_e: IpcRendererEvent, event: PtyExitEvent) => cb(event);
-    ipcRenderer.on('pty:onExit', listener);
-    return () => { ipcRenderer.off('pty:onExit', listener); };
-  },
-
-  // ─── §9.2.6 toolbar / worker ptys (rev-1md.3) ─────────────────────────
-  startWorkerPty: (params: WorkerStartParams) => ipcRenderer.invoke(IPC_INVOKE.startWorkerPty, params),
-  workerPtyInput: (workerId: string, data: string) => {
-    ipcRenderer.send('pty:workerInput', workerId, data);
-  },
-  resizeWorkerPty: (workerId: string, cols: number, rows: number) => {
-    ipcRenderer.send('pty:workerResize', workerId, cols, rows);
-  },
-  killWorkerPty: (workerId: string) => ipcRenderer.invoke(IPC_INVOKE.killWorkerPty, workerId),
-  onWorkerPtyData: (cb) => {
-    const listener = (_e: IpcRendererEvent, event: WorkerDataEvent) => cb(event);
-    ipcRenderer.on('pty:onWorkerData', listener);
-    return () => { ipcRenderer.off('pty:onWorkerData', listener); };
-  },
-  onWorkerPtyExit: (cb) => {
-    const listener = (_e: IpcRendererEvent, event: WorkerExitEvent) => cb(event);
-    ipcRenderer.on('pty:onWorkerExit', listener);
-    return () => { ipcRenderer.off('pty:onWorkerExit', listener); };
-  },
-  onWorkerPtyProgress: (cb) => {
-    const listener = (_e: IpcRendererEvent, event: WorkerProgressEvent) => cb(event);
-    ipcRenderer.on('pty:onWorkerProgress', listener);
-    return () => { ipcRenderer.off('pty:onWorkerProgress', listener); };
-  },
-  freshStartPty: (params: FreshStartParams) => ipcRenderer.invoke(IPC_INVOKE.freshStartPty, params),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
