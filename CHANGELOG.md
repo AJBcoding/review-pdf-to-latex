@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- HTML/DOCX comments now anchor on the unified `text-quote` model over the iframe's extracted linear text (the truth), resolved by the same `fuzzyMatchAnchor` core the Markdown viewer uses. Selections are captured as `text-quote`, highlights paint across the multiple text nodes a range spans, and reveal scrolls the resolved range into view. The legacy `html-selector-hint` kind is kept as a locality hint so migrated v1 comments keep displaying (spec §5.5, rev-l6).
 - Engine scaffolding (`src/review_pdf_to_latex/`) with the 13-subcommand `review-pdf` CLI.
 - `extract` subcommand: pdfannots + rapidfuzz fuzzy mapping + pdftoppm page rendering.
 - `apply` / `revert` / `set-status` / `append-chat` / `record-proposal` / `override-mapping` mutators with atomic `state.json` writes.
