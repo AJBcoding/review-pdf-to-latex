@@ -72,3 +72,7 @@ CLAUDE.local.md
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+
+# Gas Town (added by gt)
+.opencode/
+GEMINI.md
