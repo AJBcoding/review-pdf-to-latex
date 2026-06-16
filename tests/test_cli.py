@@ -149,6 +149,83 @@ def test_print_json_serializes_sort_keys(capsys: pytest.CaptureFixture):
     assert out == '{"a": 2, "z": 1}'
 
 
+# ---- rev-l13: uniform --json error envelope --------------------------------
+
+
+def test_emit_error_json_mode_writes_envelope_to_stdout(
+    capsys: pytest.CaptureFixture,
+):
+    """In --json mode, _emit_error writes {error, exit_code} to stdout."""
+    import argparse
+
+    args = argparse.Namespace(json_output=True)
+    rc = cli._emit_error(args, "boom", 7)
+    captured = capsys.readouterr()
+    assert rc == 7
+    # The returned code is the authoritative signal; the field mirrors it.
+    assert json.loads(captured.out.strip()) == {"error": "boom", "exit_code": 7}
+    # Nothing leaks to stderr in machine mode.
+    assert captured.err == ""
+
+
+def test_emit_error_human_mode_writes_to_stderr_only(
+    capsys: pytest.CaptureFixture,
+):
+    """Without --json, _emit_error preserves the legacy stderr message."""
+    import argparse
+
+    args = argparse.Namespace(json_output=False)
+    rc = cli._emit_error(args, "boom", 6)
+    captured = capsys.readouterr()
+    assert rc == 6
+    assert captured.out == ""  # stdout stays clean for machine consumers
+    assert captured.err.strip() == "boom"
+
+
+def test_emit_error_defaults_to_human_when_flag_absent(
+    capsys: pytest.CaptureFixture,
+):
+    """A namespace without json_output behaves as human mode (getattr default)."""
+    import argparse
+
+    rc = cli._emit_error(argparse.Namespace(), "boom", 1)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
+    assert captured.err.strip() == "boom"
+
+
+def test_json_error_envelope_status_state_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """`--json status` on a project with no state.json emits the envelope.
+
+    End-to-end through cli.main: exit code 6 (EXIT_STATE_MISSING) and a single
+    JSON object on stdout carrying both the message and the mirrored code.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    rc = cli.main(["--project-dir", str(project), "--json", "status"])
+    captured = capsys.readouterr()
+    assert rc == cli.EXIT_STATE_MISSING
+    payload = json.loads(captured.out.strip())
+    assert payload["exit_code"] == cli.EXIT_STATE_MISSING
+    assert "state missing" in payload["error"]
+
+
+def test_human_status_state_missing_uses_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """Without --json, the same failure prints to stderr and leaves stdout empty."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    rc = cli.main(["--project-dir", str(project), "status"])
+    captured = capsys.readouterr()
+    assert rc == cli.EXIT_STATE_MISSING
+    assert captured.out == ""
+    assert "state missing" in captured.err
+
+
 # ---- Task 6.8 / 7.5 / 10.3: mutator + preview + commit-phase CLI ----------
 
 import hashlib as _hashlib

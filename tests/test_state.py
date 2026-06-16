@@ -296,6 +296,48 @@ def test_status_is_terminal_rejects_unknown_status():
         state.status_is_terminal("invalid-status")
 
 
+# ---- rev-l13: canonical status enum is the single source of truth ----------
+
+
+def test_canonical_status_sets_are_internally_consistent():
+    """state.STATUSES, the frozensets, and the Status Literal agree.
+
+    state.py is the single source of truth for the status enum (rev-l13).
+    The ordered tuple (STATUSES), the membership frozensets
+    (TERMINAL/NON_TERMINAL/ALL), and the typing Literal (Status) must all
+    describe exactly the same nine values, or a consumer that trusts one will
+    silently diverge from one that trusts another.
+    """
+    from typing import get_args
+
+    # The ordered tuple has no dupes and matches the union of the two sets.
+    assert len(state.STATUSES) == len(set(state.STATUSES))
+    assert set(state.STATUSES) == state.ALL_STATUSES
+    # Terminal and non-terminal partition ALL (disjoint + covering).
+    assert state.TERMINAL_STATUSES.isdisjoint(state.NON_TERMINAL_STATUSES)
+    assert state.TERMINAL_STATUSES | state.NON_TERMINAL_STATUSES == state.ALL_STATUSES
+    # The typing Literal stays in sync with the runtime sets.
+    assert set(get_args(state.Status)) == state.ALL_STATUSES
+
+
+def test_status_consumer_orderings_cover_all_statuses():
+    """Presentation orderings in other modules enumerate exactly ALL_STATUSES.
+
+    cli._format_status_human's `headline_order` and commit._SUMMARY_STATUSES
+    are display orderings (deliberately not the spec §7.3 order), but their
+    *membership* must match the canonical set so no status is ever dropped
+    from a status line or commit summary. This pins them without forcing the
+    canonical order onto presentation code (rev-l13).
+    """
+    from review_pdf_to_latex import cli as _cli
+    from review_pdf_to_latex import commit as _commit
+
+    assert set(_commit._SUMMARY_STATUSES) == state.ALL_STATUSES
+    assert len(_commit._SUMMARY_STATUSES) == len(state.ALL_STATUSES)  # no dupes
+    assert set(_cli._STATUS_HEADLINE_ORDER) == state.ALL_STATUSES
+    assert len(_cli._STATUS_HEADLINE_ORDER) == len(state.ALL_STATUSES)  # no dupes
+
+
 @pytest.mark.parametrize(
     "from_status,to_status,action",
     [
