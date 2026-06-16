@@ -21,7 +21,12 @@ export class DocxViewer extends IframeDocViewer {
     ) as ArrayBuffer;
     const result = await mammoth.convertToHtml(
       { arrayBuffer },
-      { styleMap: ['u => em'] },
+      // `comment-reference => sup` opts the document's comments into the render
+      // (L5 display leg): mammoth ignores comment references by default, so
+      // without this map native DOCX comments would be invisible. With it, each
+      // reference renders as a superscript `[AB1]` link and the comment bodies
+      // are appended as a definition list at the end of the document.
+      { styleMap: ['u => em', 'comment-reference => sup'] },
     );
 
     if (result.messages.length > 0) {
