@@ -24,9 +24,9 @@
 // comments in a permanently-submitted state.
 
 import { REVIEWER_LOCAL_ID } from '@shared/comments';
-import type { CommentPayload } from '@shared/comments';
+import type { CommentPayload, SubmitFile, SubmitSlingRequest } from '@shared/comments';
 import { SubmitMachine } from './submit-machine.js';
-import type { SubmitState, StatusUpdate } from './submit-machine.js';
+import type { SubmitState, StatusUpdate, CachedRound } from './submit-machine.js';
 
 // ─── Public surface ────────────────────────────────────────────────────────
 
@@ -195,6 +195,8 @@ export async function executeSubmit(ctx: SubmitContext): Promise<void> {
       sourceFileVersion: ctx.sourceFileVersion,
       bundlePdfPath: ctx.bundlePdfPath,
       bundleJsonPath: ctx.bundleJsonPath,
+      bundleId: ctx.bundleId,
+      destination,
       originRig: ctx.originRig,
       comments: ctx.submittedComments,
       author: ctx.author,
@@ -225,6 +227,55 @@ export async function resling(): Promise<boolean> {
  *  back to guidance. */
 export function canResume(): boolean {
   return getMachine().canResume();
+}
+
+/** rev-7cg — rebuild the cached round from the on-disk submit file the
+ *  results-watcher already read, so the round-banner Resume works after an app
+ *  restart (the in-memory cache is gone on a fresh launch). `submitFilePath` is
+ *  the frozen `submit-<id>.json` the re-sling re-sends; `appVersion` is the
+ *  CURRENT running app's version (the re-sling is a new delivery from this
+ *  process, not a replay of the old payload).
+ *
+ *  Returns false — leaving the banner's Cmd+Return hint in place — when the
+ *  round can't be rehydrated: a sling is already in flight / a live round is
+ *  cached, or the submit file predates rev-7cg and lacks the resume metadata
+ *  (`bundle_id` / `destination_rig`) the sling payload requires. */
+export function rehydrateRound(
+  submit: SubmitFile,
+  submitFilePath: string,
+  appVersion: string,
+): boolean {
+  const destination = submit.destination_rig;
+  const bundleId = submit.bundle_id;
+  if (!destination || !bundleId) return false;
+  // Prefer the generalized v2 paths; fall back to the v1 PDF aliases.
+  const bundlePdfPath = submit.native_artifact_path ?? submit.bundle_pdf;
+  const bundleJsonPath = submit.sidecar_json_path ?? submit.bundle_json;
+  if (!bundlePdfPath || !bundleJsonPath) return false;
+
+  const slingRequest: SubmitSlingRequest = {
+    destinationRig: destination,
+    originRig: submit.origin_rig,
+    submitId: submit.submit_id,
+    bundleId,
+    sourcePath: submit.doc_id,
+    submitFilePath,
+    bundlePdfPath,
+    bundleJsonPath,
+    appVersion,
+  };
+  const cached: CachedRound = {
+    submitId: submit.submit_id,
+    destination,
+    slingRequest,
+    // The comments were flipped to `submitted` (and persisted) at the original
+    // submit; the reloaded drafts already reflect that, so there is nothing to
+    // re-flip on the re-sling.
+    statusUpdates: [],
+  };
+  const ok = getMachine().rehydrate(cached);
+  if (ok) { renderPill(); renderBanner(); }
+  return ok;
 }
 
 // ─── Pill ──────────────────────────────────────────────────────────────────

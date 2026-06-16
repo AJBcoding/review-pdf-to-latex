@@ -58,6 +58,8 @@ function promoteReq(comments: CommentPayload[]) {
     sourceFileVersion: '1.0',
     bundlePdfPath: join(projectRoot, 'bundle.pdf'),
     bundleJsonPath: join(projectRoot, 'bundle.json'),
+    bundleId: '20260614-000000',
+    destination: 'review_pdf_to_latex',
     originRig: 'review_pdf_to_latex',
     comments,
     author: 'AJB',
@@ -154,6 +156,22 @@ describe('promoteDraft — status flip semantics', () => {
     expect(onDisk.doc_version).toBe('sha-abc');
     expect(onDisk.doc_id).toBe(sourcePath);
     expect(onDisk.comments[0].status).toBe('submitted');
+  });
+
+  it('persists bundle_id + destination_rig so a round survives an app restart (rev-7cg)', async () => {
+    const res = await promoteDraft(promoteReq([makeComment({ id: 'resume-1' })]));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    // In-memory result carries them…
+    expect(res.submitFile.bundle_id).toBe('20260614-000000');
+    expect(res.submitFile.destination_rig).toBe('review_pdf_to_latex');
+
+    // …and they survive the v1 down-conversion that lands on disk — without
+    // them, the post-restart rehydrate can't rebuild the sling request.
+    const onDisk: SubmitFile = JSON.parse(await readFile(res.submitFilePath, 'utf8'));
+    expect(onDisk.bundle_id).toBe('20260614-000000');
+    expect(onDisk.destination_rig).toBe('review_pdf_to_latex');
   });
 
   it('creates .review-state/ when it does not exist yet', async () => {

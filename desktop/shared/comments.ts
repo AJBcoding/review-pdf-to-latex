@@ -302,6 +302,15 @@ export interface SubmitFile {
   source_file_version: string;
   submitted_at: string;
   origin_rig: string | null;
+  /** Bundle id the JSON sidecar carries (§10.4). Persisted at promote time so
+   *  an interrupted round can be re-slung after an app restart — the sling
+   *  payload needs `bundle_id` — without re-parsing the sidecar (rev-7cg).
+   *  Absent on pre-rev-7cg submit files read off disk. */
+  bundle_id?: string;
+  /** Destination rig this round was slung to. Persisted at promote time so a
+   *  disk-rehydrated resume re-slings to the SAME rig (rev-7cg). Absent on
+   *  pre-rev-7cg submit files. */
+  destination_rig?: string | null;
   /** v2 bundle generalization (§4.2): the round's native artifact + sidecar
    *  paths and the document format, replacing the PDF-shaped `bundle_pdf` /
    *  `bundle_json` pair. For PDF rounds `native_artifact_path` equals
@@ -331,6 +340,10 @@ export interface SubmitFileV1 {
   source_file_version: string;
   submitted_at: string;
   origin_rig: string | null;
+  /** rev-7cg: persisted so a disk-rehydrated resume can rebuild the sling
+   *  request after an app restart. Absent on pre-rev-7cg files. */
+  bundle_id?: string;
+  destination_rig?: string | null;
   bundle_pdf?: string;
   bundle_json?: string;
   comments: CommentPayloadV1[];
@@ -374,6 +387,10 @@ export function downConvertSubmitFileToV1(sf: SubmitFile): SubmitFileV1 {
     source_file_version: sf.source_file_version,
     submitted_at: sf.submitted_at,
     origin_rig: sf.origin_rig,
+    // rev-7cg: carry the resume metadata onto the v1 file written to disk so a
+    // post-restart rehydrate can rebuild the sling request.
+    bundle_id: sf.bundle_id,
+    destination_rig: sf.destination_rig,
     // Only PDF rounds promote during the transition window, so the v1 shape
     // carries the PDF aliases. Fall back to the generalized paths when a v2
     // submit file populated only those (§4.2): the format is PDF (or absent,
@@ -613,6 +630,13 @@ export interface SubmitPromoteRequest {
    *  `bundle_pdf`/`bundle_json` aliases (§4.2). */
   bundlePdfPath: string;
   bundleJsonPath: string;
+  /** Bundle id the JSON sidecar carries — persisted into the submit file so an
+   *  interrupted round can be re-slung after an app restart (rev-7cg). */
+  bundleId: string;
+  /** Destination rig resolved before the submit fires — persisted into the
+   *  submit file so a disk-rehydrated resume re-slings to the same rig
+   *  (rev-7cg). */
+  destination: string;
   /** Document format for this round (§4.2). Defaults to `'pdf'` — the only
    *  format that promotes during the transition window — when omitted. Drives
    *  whether the deprecated `bundle_pdf`/`bundle_json` aliases are populated. */

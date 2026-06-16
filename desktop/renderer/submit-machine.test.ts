@@ -18,6 +18,8 @@ function makeStartRequest(): StartRequest {
       sourceFileVersion: '1.0',
       bundlePdfPath: '/docs/bundle.pdf',
       bundleJsonPath: '/docs/bundle.json',
+      bundleId: '20260613-090000',
+      destination: 'report-engine/anthony',
       originRig: 'report-engine/anthony',
       comments: [{ id: 'c1', status: 'open' } as never],
       author: 'AJB',
@@ -234,6 +236,59 @@ describe('SubmitMachine — resume lifecycle', () => {
     expect(h.machine.getState()).toBe('complete');
     expect(h.machine.canResume()).toBe(false);
     expect(await h.machine.resling()).toBe(false);
+  });
+
+  it('rehydrate re-seats a disk-rebuilt round so Resume works after a restart (rev-7cg)', async () => {
+    // Fresh machine = fresh app launch: no in-memory cached round.
+    const h = makeMachine([SLING_OK]);
+    expect(h.machine.canResume()).toBe(false);
+
+    const slingRequest: SubmitSlingRequest = {
+      destinationRig: 'report-engine/anthony',
+      originRig: 'report-engine/anthony',
+      submitId: SUBMIT_ID,
+      bundleId: '20260613-090000',
+      sourcePath: '/docs/report-1.0.pdf',
+      submitFilePath: `/docs/.review-state/submit-${SUBMIT_ID}.json`,
+      bundlePdfPath: '/docs/bundle.pdf',
+      bundleJsonPath: '/docs/bundle.json',
+      appVersion: '0.0.1',
+    };
+    const seated = h.machine.rehydrate({
+      submitId: SUBMIT_ID,
+      destination: 'report-engine/anthony',
+      slingRequest,
+      statusUpdates: [],
+    });
+    expect(seated).toBe(true);
+    expect(h.machine.canResume()).toBe(true);
+    expect(h.machine.getDestination()).toBe('report-engine/anthony');
+
+    // Resume re-slings the rehydrated round — same submit_id, no promote.
+    const did = await h.machine.resling();
+    expect(did).toBe(true);
+    expect(h.promoteFn).not.toHaveBeenCalled();
+    expect(h.slingRequests[0].submitId).toBe(SUBMIT_ID);
+    expect(h.machine.getState()).toBe('sent_unconfirmed');
+  });
+
+  it('rehydrate refuses to clobber a live cached round or an in-flight send (rev-7cg)', async () => {
+    const h = makeMachine([SLING_OK]);
+    await h.machine.start(makeStartRequest()); // sent_unconfirmed, cached live
+    const other: SubmitSlingRequest = {
+      ...makeStartRequest().promoteRequest,
+      destinationRig: 'someone-else/anthony',
+      submitId: 'ZZZ-other',
+    } as unknown as SubmitSlingRequest;
+    const seated = h.machine.rehydrate({
+      submitId: 'ZZZ-other',
+      destination: 'someone-else/anthony',
+      slingRequest: other,
+      statusUpdates: [],
+    });
+    expect(seated).toBe(false);
+    // The live round's identity is untouched.
+    expect(h.machine.getPendingSubmitId()).toBe(SUBMIT_ID);
   });
 
   it('reset drops everything (doc switch)', async () => {

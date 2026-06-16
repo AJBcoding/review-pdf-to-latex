@@ -222,6 +222,19 @@ export class SubmitMachine {
     await this.doSling();
   }
 
+  /** Re-seat a cached round rebuilt from the on-disk submit file after an app
+   *  restart (rev-7cg). The in-memory cache is gone on a fresh launch, so the
+   *  round-banner Resume would otherwise be dead; this restores it from the
+   *  frozen submit file the results-watcher already read off disk. Refuses to
+   *  overwrite a live cached round or interrupt an in-flight send — those hold
+   *  the authoritative in-session state. Returns true when the round was
+   *  seated (Resume becomes available). */
+  rehydrate(cached: CachedRound): boolean {
+    if (this.cached || this.isInFlight()) return false;
+    this.cached = cached;
+    return true;
+  }
+
   /** Re-sling the cached round: SAME submit_id, SAME frozen submit file, no
    *  re-promote and no picker. Backs Retry, Re-sling, and Resume. Returns
    *  false when there is nothing to re-sling or a sling is already running. */

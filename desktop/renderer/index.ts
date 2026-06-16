@@ -11,6 +11,7 @@ import type {
   ResultEntry,
   ResultsEvent,
   ResultsFile,
+  SubmitFile,
 } from '@shared/types';
 import { REVIEWER_LOCAL_ID } from '@shared/types';
 import { parseSourceName } from '@shared/bundle';
@@ -40,6 +41,7 @@ import {
   canRetry as submitCanRetry,
   resling as reslingSubmit,
   canResume as submitCanResume,
+  rehydrateRound as rehydrateSubmitRound,
   type SubmitContext,
 } from './submit';
 import { DebouncedSave, drainAllDebouncedSaves } from './debounced-save';
@@ -128,6 +130,12 @@ interface ResultsRoundState {
   results_id: string;
   filePath: string;
   results: ResultsFile;
+  /** The matched frozen submit file (rev-7cg). The results-watcher reads it off
+   *  disk and rides it along on every `results:event` — even the initial scan
+   *  after an app restart — so the round-banner Resume can rebuild the cached
+   *  round (and re-sling) without an extra IPC. Null when the submit file
+   *  couldn't be found/parsed. */
+  submit: SubmitFile | null;
   /** True once we've written the seeded v1.1 draft for this completed round.
    *  Prevents double-seeding when the same results file re-emits (e.g., the
    *  user re-opens the doc later). */
@@ -2565,6 +2573,9 @@ async function applyResultsEvent(event: ResultsEvent): Promise<void> {
     results_id: results.results_id,
     filePath: event.filePath,
     results,
+    // Keep the last non-null submit we saw — a late results re-emit could
+    // arrive with submit:null before the submit file is readable.
+    submit: event.submit ?? prev?.submit ?? null,
     seeded: prev?.seeded ?? false,
   });
   renderRoundBanner();
@@ -2668,10 +2679,25 @@ function fillRoundBanner(banner: HTMLElement, round: ResultsRoundState): void {
       // per its resume guard. This wires to the SAME entry as the Retry /
       // Re-sling banner buttons (submit module's `resling()`), which re-sends
       // the cached frozen submit file — no re-promote, no picker, no
-      // duplicate round. If the cached round was lost (e.g. an app restart
-      // since the sling), `resling()` returns false and falls back to a hint
-      // directing a fresh Cmd+Return — disk-rehydrated resume after restart
-      // is tracked separately (rev-n6 follow-up).
+      // duplicate round.
+      //
+      // rev-7cg: after an app restart the in-memory cached round is gone, so
+      // `submitCanResume()` would be false and Resume dead. Rebuild the cached
+      // round from the frozen submit file the watcher already read off disk
+      // (rides along on the round as `round.submit`) so a restarted Resume can
+      // re-sling. No-op when a live round is already cached, or when the submit
+      // file predates rev-7cg and lacks the resume metadata — Resume then stays
+      // disabled and the user falls back to a fresh Cmd+Return.
+      if (!submitCanResume() && round.submit) {
+        const dir = round.filePath.slice(
+          0, round.filePath.length - basename(round.filePath).length,
+        );
+        rehydrateSubmitRound(
+          round.submit,
+          `${dir}submit-${round.submit_id}.json`,
+          APP_VERSION,
+        );
+      }
       const resume = document.createElement('button');
       resume.type = 'button';
       resume.className = 'is-primary';

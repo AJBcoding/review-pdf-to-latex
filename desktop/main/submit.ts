@@ -132,6 +132,11 @@ export async function promoteDraft(
     source_file_version: req.sourceFileVersion ?? '',
     submitted_at: submittedAt,
     origin_rig: req.originRig,
+    // rev-7cg: freeze the bundle id + destination so an interrupted round can
+    // be re-slung after an app restart (the sling payload needs both, and
+    // neither is recoverable from the bundle filename grammar).
+    bundle_id: req.bundleId,
+    destination_rig: req.destination,
     format,
     native_artifact_path: req.bundlePdfPath,
     sidecar_json_path: req.bundleJsonPath,
