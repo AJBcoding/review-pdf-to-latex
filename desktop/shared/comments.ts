@@ -781,3 +781,69 @@ export type DocxCommentWriteResult =
       reason: 'anchor_unresolved' | 'no_text' | 'no_document' | 'not_found' | 'write_failed';
       error: string;
     };
+
+// ─── §5.1 / L4 native PDF comments IPC ─────────────────────────────────────
+//
+// The PDF twin of the native-DOCX channels above: the L4 `pdf-comments.ts`
+// adapter (pdf-lib) reads/writes a PDF's markup annotations in main, behind
+// these channels. Native-pdf comments are a READ PROJECTION of the source PDF
+// (re-derived on every open, never frozen into the drafts sidecar). Reading
+// here goes through the SAME adapter as edit/delete so the cards carry the
+// adapter's own handle (the /NM, or the `(page_index, annot_index)` fallback) —
+// the renderer's edit/delete then locate the annot deterministically. Create/
+// edit/delete mutate the PDF in place (atomic write); the renderer re-opens the
+// doc to pick up the new bytes (and any freshly-stamped /NM).
+
+/** Read result for `pdf:readComments`. The annotations are mapped straight to
+ *  unified CommentPayloads with `origin: 'native-pdf'`. An empty array is the
+ *  normal no-annotations case, not an error; `read_failed` is a true I/O / parse
+ *  failure (missing file, corrupt PDF, non-PDF bytes). */
+export type PdfCommentsReadResult =
+  | { ok: true; comments: CommentPayload[] }
+  | { ok: false; reason: 'read_failed'; error: string };
+
+/** Create a native markup annotation over a pdf-quad span in the PDF. Mirrors
+ *  the app-draft write path (one `app-draft` comment through the adapter); the
+ *  minted /NM comes back as `commentId`. */
+export interface PdfCommentCreateRequest {
+  docPath: string;
+  /** The geometric pdf-quad anchor (1-indexed page + region, optional per-line
+   *  quads). The adapter writes /QuadPoints + a union /Rect from it. */
+  anchor: PdfQuadAnchor;
+  commentText: string;
+  author: string;
+  /** Markup flavor → annotation subtype/color. Defaults to `comment`. */
+  engagementLevel?: EngagementLevel;
+}
+
+/** Edit a native annotation's body text. The adapter locates by /NM when
+ *  `commentId` is a real name, else by the read-time `(pageIndex, annotIndex)`
+ *  handle (carried on the payload as `native.page_index` / `native.annot_index`);
+ *  both come from the same adapter read, so the index handle stays valid. */
+export interface PdfCommentEditRequest {
+  docPath: string;
+  commentId: string;
+  pageIndex: number;
+  annotIndex: number;
+  newText: string;
+}
+
+/** Delete a native annotation (and its reply subtree). Same dual handle as edit. */
+export interface PdfCommentDeleteRequest {
+  docPath: string;
+  commentId: string;
+  pageIndex: number;
+  annotIndex: number;
+}
+
+/** Write result shared by create/edit/delete. `commentId` echoes the affected
+ *  annotation's /NM (the freshly-minted one for create, or the one stamped on
+ *  the first edit of a foreign annot). `out_of_range` is a stale/off-page create
+ *  anchor; `not_found` is an edit/delete handle that no longer locates. */
+export type PdfCommentWriteResult =
+  | { ok: true; commentId: string }
+  | {
+      ok: false;
+      reason: 'out_of_range' | 'not_found' | 'write_failed';
+      error: string;
+    };

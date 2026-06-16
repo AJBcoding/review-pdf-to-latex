@@ -14,6 +14,7 @@ import { typedHandle } from './typed-ipc.js';
 import { assertObjectArg, assertPathArg, assertStringArg } from './ipc-validators.js';
 import { registerFsIpc } from './fs-ipc.js';
 import { registerDocxIpc } from './docx-ipc.js';
+import { registerPdfIpc } from './pdf-ipc.js';
 import {
   clearPrimaryWindow,
   registerExternalOpenReady,
@@ -98,6 +99,11 @@ if (setupSingleInstance()) {
     // route to the comments.xml adapter). Renderer folds the reads in as
     // native-docx cards alongside app drafts.
     registerDocxIpc();
+
+    // §5.1 / L4 — native PDF comments surface (read on open; create/edit/delete
+    // route to the pdf-comments adapter). Renderer folds the reads in as
+    // native-pdf cards alongside app drafts (the PDF twin of registerDocxIpc).
+    registerPdfIpc();
 
     // §10.1 step 6 + §10.3 — results-file watcher lifecycle. Renderer calls
     // start right after loadPdf resolves a sha256; stop fires on doc switch
