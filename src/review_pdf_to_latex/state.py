@@ -17,6 +17,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .exit_codes import (
+    EXIT_MIGRATION_REQUIRED,
+    EXIT_SCHEMA_UNSUPPORTED,
+    EngineError,
+)
+
 
 class StateDir:
     """Wrapper around a project's ``.review-state/`` directory.
@@ -108,21 +114,33 @@ changes.
 """
 
 
-class SchemaVersionError(Exception):
+class SchemaVersionError(EngineError):
     """Raised when a state file's schema_version is missing or unsupported.
 
     Distinct from :class:`MigrationRequiredError`, which signals a known
     older version that the engine could migrate forward via
     ``review-pdf migrate-state``.
+
+    Carries ``exit_code = EXIT_SCHEMA_UNSUPPORTED`` (24) so the top-level
+    ``cli.main`` catch — and the ``_guard_source_pdf``-style wrappers in
+    ``apply``/``commit`` — map it to a single spec-§8 code (rides X10).
     """
 
+    exit_code = EXIT_SCHEMA_UNSUPPORTED
 
-class MigrationRequiredError(Exception):
+
+class MigrationRequiredError(EngineError):
     """Raised when a state file's schema_version is older than SUPPORTED_SCHEMA.
 
     The engine refuses to read the file in place; the user must run
     ``review-pdf migrate-state --from N --to M`` to upgrade it.
+
+    Carries ``exit_code = EXIT_MIGRATION_REQUIRED`` (25) so the top-level
+    ``cli.main`` catch — and the ``_guard_source_pdf``-style wrappers in
+    ``apply``/``commit`` — map it to a single spec-§8 code (rides X10).
     """
+
+    exit_code = EXIT_MIGRATION_REQUIRED
 
 
 def read_json(path: Path) -> dict[str, Any]:

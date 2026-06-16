@@ -37,6 +37,8 @@ export const EXIT = {
   SOURCE_PDF_CHANGED: 21,
   LEGACY_STATE: 22,
   REVIEWER_RIG_REFUSED: 23,
+  SCHEMA_UNSUPPORTED: 24,
+  MIGRATION_REQUIRED: 25,
 } as const;
 
 // pdf-health reuses 21 for the encrypted-PDF case (deliberate; see header).

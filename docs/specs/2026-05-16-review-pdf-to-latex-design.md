@@ -381,6 +381,8 @@ Every command is a subcommand of the `review-pdf` entry point. All accept `--pro
 
 The CLI is a *contract*. The skill depends on these flags and exit codes; tests must enforce them. Output formats may add fields without bumping schema version, but cannot remove or rename fields without a major migration.
 
+**Schema-version backstop exit codes (24 / 25).** Any subcommand that reads a `schema_version`-bearing state file (`apply`, `revert`, `set-status`, `append-chat`, `record-proposal`, `override-mapping`, `bulk-surface`, `commit-phase`, `build`, `preview`, `status`) enforces the §7 schema-version guard on every read. When the guard fires the engine refuses to read the file and exits with one of two cross-command codes: **24** (`schema_version` is missing, or newer than this engine supports — upgrade the engine) or **25** (`schema_version` is older than supported — run `review-pdf migrate-state`). Mutators map the guard to these codes per-handler; the readers that go straight through `state.read_json` are caught by a top-level `cli.main` backstop so no schema mismatch ever surfaces as the generic code 1 (rev-l1 / C3).
+
 ## 9. Workflow phases
 
 There are four phases: 0 (Setup), 1 (Batch pre-apply), 2 (Review — split into sub-phases 2a Ratify and 2b Surface, interleaved), 3 (Final commit). Sub-phase order within Phase 2 is controlled by the `--order` flag. See handoff §7 for the originating description.

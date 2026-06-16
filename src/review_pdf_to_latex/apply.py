@@ -12,7 +12,6 @@ override-mapping rows), §9.2 (reverse-line-order batch), §10.3 (transitions),
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,17 +24,22 @@ from .exit_codes import (
     EXIT_INVALID_LINE_RANGE,
     EXIT_LEGACY_STATE,
     EXIT_MAPPING_UNRESOLVED,
+    EXIT_MIGRATION_REQUIRED,
     EXIT_NO_PRIOR_APPLY,
     EXIT_OVERLAPPING_LINE_RANGE,
+    EXIT_SCHEMA_UNSUPPORTED,
     EXIT_SOURCE_PDF_CHANGED,
     EngineError,
 )
 from .state import (
     StateDir,
     LegacyStateError,
+    MigrationRequiredError,
+    SchemaVersionError,
     SourcePdfChangedError,
     assert_source_pdf_unchanged,
     atomic_write_json,
+    read_json,
     validate_status_transition,
 )
 
@@ -90,6 +94,18 @@ class LegacyStateApplyError(ApplyError):
     exit_code = EXIT_LEGACY_STATE
 
 
+class SchemaUnsupportedApplyError(ApplyError):
+    """Wraps state.SchemaVersionError for exit-code mapping."""
+
+    exit_code = EXIT_SCHEMA_UNSUPPORTED
+
+
+class MigrationRequiredApplyError(ApplyError):
+    """Wraps state.MigrationRequiredError for exit-code mapping."""
+
+    exit_code = EXIT_MIGRATION_REQUIRED
+
+
 def _guard_source_pdf(state_dir: Path) -> None:
     """Refuse to mutate if the source PDF has changed since extract.
 
@@ -132,9 +148,21 @@ class AppliedEdit:
 
 # --- Helpers ----------------------------------------------------------------
 
-def _read_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+def _read_state_json(path: Path) -> dict[str, Any]:
+    """Read a schema-versioned state file through the ``state.read_json`` guard.
+
+    Wraps the guard's ``SchemaVersionError`` / ``MigrationRequiredError`` into
+    ``ApplyError`` subclasses so CLI handlers map them to exit codes — the same
+    pattern :func:`_guard_source_pdf` uses for the source-PDF guard. Replaces
+    the old unguarded ``_read_json`` that let every mutator bypass the
+    schema-version contract (rev-l1 / C3).
+    """
+    try:
+        return read_json(path)
+    except SchemaVersionError as exc:
+        raise SchemaUnsupportedApplyError(str(exc)) from exc
+    except MigrationRequiredError as exc:
+        raise MigrationRequiredApplyError(str(exc)) from exc
 
 
 def _now_iso() -> str:
@@ -159,7 +187,7 @@ def _load_state_and_mapping(state_dir: Path) -> tuple[Path, dict, Path, dict]:
         raise FileMutationError(f"state.json not found at {state_path}")
     if not mapping_path.exists():
         raise FileMutationError(f"mapping.json not found at {mapping_path}")
-    return state_path, _read_json(state_path), mapping_path, _read_json(mapping_path)
+    return state_path, _read_state_json(state_path), mapping_path, _read_state_json(mapping_path)
 
 
 def _project_root_from_state_dir(state_dir: Path) -> Path:
@@ -618,7 +646,7 @@ def set_annotation_status(
     state_path = state_dir / "state.json"
     if not state_path.exists():
         raise FileMutationError(f"state.json not found at {state_path}")
-    state = _read_json(state_path)
+    state = _read_state_json(state_path)
 
     if annotation_id not in state.get("annotations", {}):
         raise AnnotationNotFoundError(annotation_id)
@@ -680,8 +708,8 @@ def bulk_surface_pending(state_dir: Path) -> list[str]:
             f"annotations.json not found at {annotations_path}"
         )
 
-    state = _read_json(state_path)
-    annotations_doc = _read_json(annotations_path)
+    state = _read_state_json(state_path)
+    annotations_doc = _read_state_json(annotations_path)
     state_entries: dict[str, Any] = state.get("annotations", {})
 
     promoted: list[str] = []
@@ -733,7 +761,7 @@ def set_current_annotation(
     state_path = state_dir / "state.json"
     if not state_path.exists():
         raise FileMutationError(f"state.json not found at {state_path}")
-    state = _read_json(state_path)
+    state = _read_state_json(state_path)
     if annotation_id not in state.get("annotations", {}):
         raise AnnotationNotFoundError(annotation_id)
     state["current_annotation_id"] = annotation_id
@@ -764,7 +792,7 @@ def append_chat_turn(
     state_path = state_dir / "state.json"
     if not state_path.exists():
         raise FileMutationError(f"state.json not found at {state_path}")
-    state = _read_json(state_path)
+    state = _read_state_json(state_path)
     if annotation_id not in state.get("annotations", {}):
         raise AnnotationNotFoundError(annotation_id)
 
@@ -800,7 +828,7 @@ def record_proposal(
     state_path = state_dir / "state.json"
     if not state_path.exists():
         raise FileMutationError(f"state.json not found at {state_path}")
-    state = _read_json(state_path)
+    state = _read_state_json(state_path)
     if annotation_id not in state.get("annotations", {}):
         raise AnnotationNotFoundError(annotation_id)
     state["annotations"][annotation_id]["proposed_text"] = proposed_text
@@ -837,7 +865,7 @@ def override_mapping(
     mapping_path = state_dir / "mapping.json"
     if not mapping_path.exists():
         raise FileMutationError(f"mapping.json not found at {mapping_path}")
-    mapping = _read_json(mapping_path)
+    mapping = _read_state_json(mapping_path)
     if annotation_id not in mapping.get("mappings", {}):
         raise AnnotationNotFoundError(annotation_id)
 

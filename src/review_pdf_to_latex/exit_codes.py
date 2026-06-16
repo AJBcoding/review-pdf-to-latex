@@ -65,6 +65,8 @@ EXIT_WAIT_TIMEOUT = 20  # wait-event: --timeout elapsed before any event
 EXIT_SOURCE_PDF_CHANGED = 21  # any mutator: PDF md5 differs from annotations.json.source_pdf_md5
 EXIT_LEGACY_STATE = 22  # any mutator: annotations.json predates source_pdf_md5 guard
 EXIT_REVIEWER_RIG_REFUSED = 23  # apply/build/revert refused under $GT_RIG=reviewer/* per spec §10.5.2
+EXIT_SCHEMA_UNSUPPORTED = 24  # any reader: schema_version missing or newer than the engine supports
+EXIT_MIGRATION_REQUIRED = 25  # any reader: schema_version older than supported; run migrate-state
 
 # pdf-health reuses 21 for the encrypted-PDF case. See the module docstring for
 # why this is a deliberate per-subcommand namespace reuse and not a collision.

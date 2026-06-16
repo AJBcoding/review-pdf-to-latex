@@ -1056,6 +1056,80 @@ def test_cli_migrate_state_same_from_to_also_exits_14(
     assert rc == cli.EXIT_UNSUPPORTED_MIGRATION
 
 
+def test_cli_main_backstop_maps_unsupported_schema_to_24(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """A reader (status) hitting a too-new schema_version exits 24 via the
+    top-level cli.main backstop, not the generic code 1 (rev-l1 / C3)."""
+    state_dir = tmp_project / ".review-state"
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,  # newer than SUPPORTED_SCHEMA (1)
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == cli.EXIT_SCHEMA_UNSUPPORTED == 24
+    err = capsys.readouterr().err
+    assert "schema version unsupported" in err.lower()
+
+
+def test_cli_main_backstop_maps_older_schema_to_25(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """A reader (status) hitting an older schema_version exits 25 (migration
+    required) via the top-level cli.main backstop (rev-l1 / C3)."""
+    state_dir = tmp_project / ".review-state"
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 0,  # older than SUPPORTED_SCHEMA (1)
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = cli.main(["--project-dir", str(tmp_project), "status"])
+    assert rc == cli.EXIT_MIGRATION_REQUIRED == 25
+    err = capsys.readouterr().err
+    assert "migration required" in err.lower()
+
+
+def test_cli_main_backstop_json_mode_emits_error_envelope(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """In --json mode the backstop emits the uniform {error, exit_code} envelope."""
+    state_dir = tmp_project / ".review-state"
+    (state_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "phase": "1-batch",
+                "order": "mechanical-first",
+                "current_annotation_id": None,
+                "annotations": {},
+                "builds": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = cli.main(["--project-dir", str(tmp_project), "--json", "status"])
+    assert rc == cli.EXIT_SCHEMA_UNSUPPORTED
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["exit_code"] == cli.EXIT_SCHEMA_UNSUPPORTED
+
+
 @pdflatex
 @pdftoppm
 def test_cli_build_benchmark_emits_timing(tmp_path: Path) -> None:
@@ -1261,6 +1335,8 @@ def test_exit_code_constants_match_spec():
     assert cli.EXIT_SOURCE_PDF_CHANGED == 21
     assert cli.EXIT_LEGACY_STATE == 22
     assert cli.EXIT_REVIEWER_RIG_REFUSED == 23
+    assert cli.EXIT_SCHEMA_UNSUPPORTED == 24
+    assert cli.EXIT_MIGRATION_REQUIRED == 25
 
 
 def test_cli_constants_are_single_sourced_from_exit_codes():
@@ -1298,6 +1374,8 @@ def test_exception_class_exit_codes_match_constants():
     assert apply.IllegalStatusTransitionError.exit_code == exit_codes.EXIT_ILLEGAL_STATUS_TRANSITION
     assert apply.SourcePdfChangedApplyError.exit_code == exit_codes.EXIT_SOURCE_PDF_CHANGED
     assert apply.LegacyStateApplyError.exit_code == exit_codes.EXIT_LEGACY_STATE
+    assert apply.SchemaUnsupportedApplyError.exit_code == exit_codes.EXIT_SCHEMA_UNSUPPORTED
+    assert apply.MigrationRequiredApplyError.exit_code == exit_codes.EXIT_MIGRATION_REQUIRED
 
     # commit.py hierarchy
     assert commit.DirtyGitError.exit_code == exit_codes.EXIT_DIRTY_GIT_STATE
@@ -1305,6 +1383,16 @@ def test_exception_class_exit_codes_match_constants():
     assert commit.IllegalPhaseError.exit_code == exit_codes.EXIT_GENERIC
     assert commit.SourcePdfChangedCommitError.exit_code == exit_codes.EXIT_SOURCE_PDF_CHANGED
     assert commit.LegacyStateCommitError.exit_code == exit_codes.EXIT_LEGACY_STATE
+    assert commit.SchemaUnsupportedCommitError.exit_code == exit_codes.EXIT_SCHEMA_UNSUPPORTED
+    assert commit.MigrationRequiredCommitError.exit_code == exit_codes.EXIT_MIGRATION_REQUIRED
+
+    # state.py guard errors fold into EngineError so the top-level cli.main
+    # catch maps them by exit_code (rev-l1 / C3)
+    from review_pdf_to_latex import state
+    assert issubclass(state.SchemaVersionError, exit_codes.EngineError)
+    assert issubclass(state.MigrationRequiredError, exit_codes.EngineError)
+    assert state.SchemaVersionError.exit_code == exit_codes.EXIT_SCHEMA_UNSUPPORTED
+    assert state.MigrationRequiredError.exit_code == exit_codes.EXIT_MIGRATION_REQUIRED
 
     # preview.py hierarchy — folded into EngineError (rev-x10)
     assert issubclass(preview.PreviewError, exit_codes.EngineError)

@@ -120,6 +120,61 @@ def _make_project(tmp_path: Path, lines: list[str] | None = None) -> _ProjectFix
     )
 
 
+def test_apply_edit_rejects_unsupported_schema(tmp_path: Path) -> None:
+    """A state.json with a newer schema_version makes the mutator refuse (rev-l1).
+
+    The old _read_json bypassed the schema guard; now the read routes through
+    state.read_json and the guard's SchemaVersionError is wrapped into
+    SchemaUnsupportedApplyError (exit 24).
+    """
+    from review_pdf_to_latex.apply import SchemaUnsupportedApplyError
+    from review_pdf_to_latex.exit_codes import EXIT_SCHEMA_UNSUPPORTED
+
+    proj = _make_project(tmp_path)
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    state["schema_version"] = 2  # newer than SUPPORTED_SCHEMA (1)
+    proj.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SchemaUnsupportedApplyError) as exc:
+        apply_edit(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            new_text="x\n",
+            dry_run=False,
+        )
+    assert exc.value.exit_code == EXIT_SCHEMA_UNSUPPORTED == 24
+
+
+def test_apply_edit_rejects_older_schema_as_migration_required(tmp_path: Path) -> None:
+    """A state.json with an older schema_version demands migration (rev-l1)."""
+    from review_pdf_to_latex.apply import MigrationRequiredApplyError
+    from review_pdf_to_latex.exit_codes import EXIT_MIGRATION_REQUIRED
+
+    proj = _make_project(tmp_path)
+    state = json.loads(proj.state_path.read_text(encoding="utf-8"))
+    state["schema_version"] = 0  # older than SUPPORTED_SCHEMA (1)
+    proj.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(MigrationRequiredApplyError) as exc:
+        apply_edit(
+            state_dir=proj.state_dir,
+            annotation_id="ann-001",
+            new_text="x\n",
+            dry_run=False,
+        )
+    assert exc.value.exit_code == EXIT_MIGRATION_REQUIRED == 25
+
+
+def test_apply_module_has_no_unguarded_read_json(tmp_path: Path) -> None:
+    """The unguarded apply._read_json shim is gone (rev-l1 / C3 done-criterion)."""
+    from review_pdf_to_latex import apply as _apply
+
+    assert not hasattr(_apply, "_read_json"), (
+        "apply._read_json must be deleted; all reads route through "
+        "state.read_json via _read_state_json"
+    )
+
+
 def test_apply_edit_happy_path(tmp_path: Path) -> None:
     proj = _make_project(tmp_path)
 

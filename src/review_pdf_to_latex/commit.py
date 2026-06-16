@@ -6,7 +6,6 @@ Implements spec §8 (commit-phase row), §13.1 (clean-state precondition),
 """
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -17,15 +16,20 @@ from .exit_codes import (
     EXIT_DIRTY_GIT_STATE,
     EXIT_GENERIC,
     EXIT_LEGACY_STATE,
+    EXIT_MIGRATION_REQUIRED,
+    EXIT_SCHEMA_UNSUPPORTED,
     EXIT_SOURCE_PDF_CHANGED,
     EngineError,
 )
 from .state import (
     LegacyStateError,
+    MigrationRequiredError,
+    SchemaVersionError,
     SourcePdfChangedError,
     StateDir,
     assert_source_pdf_unchanged,
     atomic_write_json,
+    read_json,
 )
 
 
@@ -59,6 +63,35 @@ class LegacyStateCommitError(CommitError):
     """Wraps state.LegacyStateError; commit-phase refuses to proceed."""
 
     exit_code = EXIT_LEGACY_STATE
+
+
+class SchemaUnsupportedCommitError(CommitError):
+    """Wraps state.SchemaVersionError; commit-phase refuses to proceed."""
+
+    exit_code = EXIT_SCHEMA_UNSUPPORTED
+
+
+class MigrationRequiredCommitError(CommitError):
+    """Wraps state.MigrationRequiredError; commit-phase refuses to proceed."""
+
+    exit_code = EXIT_MIGRATION_REQUIRED
+
+
+def _read_state_json(path: Path) -> dict:
+    """Read a schema-versioned state file through the ``state.read_json`` guard.
+
+    Wraps the guard's ``SchemaVersionError`` / ``MigrationRequiredError`` into
+    ``CommitError`` subclasses so the CLI handler maps them to exit codes — the
+    same pattern the source-PDF guard uses above. Replaces the raw ``json.load``
+    reads that let ``commit-phase`` bypass the schema-version contract
+    (rev-l1 / C3).
+    """
+    try:
+        return read_json(path)
+    except SchemaVersionError as exc:
+        raise SchemaUnsupportedCommitError(str(exc)) from exc
+    except MigrationRequiredError as exc:
+        raise MigrationRequiredCommitError(str(exc)) from exc
 
 
 def assert_clean_git(project_root: Path, current_phase: str) -> None:
@@ -238,8 +271,7 @@ def _files_touched_by_state(state: dict, project_root: Path) -> list[Path]:
     mapping_path = state_dir / "mapping.json"
     if not mapping_path.exists():
         return []
-    with mapping_path.open("r", encoding="utf-8") as f:
-        mapping = json.load(f)
+    mapping = _read_state_json(mapping_path)
     touched: set[str] = set()
     annotation_states = state.get("annotations", {})
     for ann_id, map_entry in mapping.get("mappings", {}).items():
@@ -282,6 +314,10 @@ def commit_phase(
         CommitFailedError (exit 19): git add or git commit failed.
         SourcePdfChangedCommitError (exit 21): PDF md5 mismatch.
         LegacyStateCommitError (exit 22): annotations.json predates the guard.
+        SchemaUnsupportedCommitError (exit 24): state.json schema_version missing
+            or newer than the engine supports.
+        MigrationRequiredCommitError (exit 25): state.json schema_version older
+            than supported; run `review-pdf migrate-state`.
     """
     state_dir = Path(state_dir)
     project_root = state_dir.parent
@@ -293,8 +329,7 @@ def commit_phase(
     except LegacyStateError as exc:
         raise LegacyStateCommitError(str(exc)) from exc
     state_path = state_dir / "state.json"
-    with state_path.open("r", encoding="utf-8") as f:
-        state = json.load(f)
+    state = _read_state_json(state_path)
 
     current_phase = state.get("phase")
     if phase_arg != current_phase:
