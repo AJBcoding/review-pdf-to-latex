@@ -44,6 +44,25 @@ import {
   type SubmitContext,
 } from './submit';
 
+/** Look up a renderer element that the static `index.html` is expected to
+ *  provide, typed as `T` (defaults to `HTMLElement`). Returns `null` when the
+ *  element is absent.
+ *
+ *  This is the single chokepoint for the "silent-bail" DOM lookups in this
+ *  module: callers keep their `if (!el) return` guards so a missing element
+ *  degrades gracefully at runtime instead of throwing, while `requireEl` names
+ *  the contract — every id passed here is required to exist in `index.html`.
+ *  `index.dom.test.ts` enforces that contract by loading the real HTML and
+ *  asserting every `requireEl(...)` id resolves, turning a silent runtime bail
+ *  into a caught test failure when an id drifts between the HTML and this file.
+ *
+ *  Runtime-created elements (e.g. the external-modification modal) are NOT
+ *  looked up through here — they intentionally stay on `getElementById`, since
+ *  they are absent from the static HTML by design. */
+function requireEl<T extends HTMLElement = HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
+
 // Renderer entry. Milestone #2 (project-open flow):
 //
 //   1. Two startup diagnostics — IPC bridge + engine reachability — surface
@@ -302,7 +321,7 @@ function setSavedIndicator(next: SavedIndicatorState): void {
 }
 
 function renderSavedIndicator(): void {
-  const el = document.getElementById('pdfSaved');
+  const el = requireEl('pdfSaved');
   if (!el) return;
   const s = savedIndicatorState;
   el.dataset.state = s.kind;
@@ -349,14 +368,14 @@ async function init() {
 // §10.1 — wire the Submit pill + banner + destination picker. Lazy mount:
 // the picker is not opened until first Submit, so we just hand over refs.
 function bootSubmitFlow(): void {
-  const pill = document.getElementById('pdfSubmit');
-  const banner = document.getElementById('submitBanner');
-  const pickerRoot = document.getElementById('destinationPicker');
-  const pickerList = document.getElementById('destPickerList');
-  const pickerCustom = document.getElementById('destPickerCustom') as HTMLInputElement | null;
-  const pickerSubmitBtn = document.getElementById('destPickerSubmit') as HTMLButtonElement | null;
-  const pickerCloseBtn = document.getElementById('destPickerClose') as HTMLButtonElement | null;
-  const pickerHint = document.getElementById('destPickerHint');
+  const pill = requireEl('pdfSubmit');
+  const banner = requireEl('submitBanner');
+  const pickerRoot = requireEl('destinationPicker');
+  const pickerList = requireEl('destPickerList');
+  const pickerCustom = requireEl<HTMLInputElement>('destPickerCustom');
+  const pickerSubmitBtn = requireEl<HTMLButtonElement>('destPickerSubmit');
+  const pickerCloseBtn = requireEl<HTMLButtonElement>('destPickerClose');
+  const pickerHint = requireEl('destPickerHint');
   if (!pill || !banner || !pickerRoot || !pickerList || !pickerCustom ||
       !pickerSubmitBtn || !pickerCloseBtn || !pickerHint) return;
   mountSubmit({
@@ -418,12 +437,12 @@ function bootSubmitFlow(): void {
  *  alongside (the toolbar's Create Context / Sling / Fresh Start buttons
  *  will get rewired to the new pane in M-int-4 / M-int-5). */
 function bootClaudePane(): void {
-  const empty = document.getElementById('claudeEmpty');
-  const term = document.getElementById('claudeTerm');
-  const error = document.getElementById('claudeError');
-  const identity = document.getElementById('claudeIdentity');
-  const body = document.getElementById('claudeBody');
-  const tabs = document.getElementById('claudeTabs');
+  const empty = requireEl('claudeEmpty');
+  const term = requireEl('claudeTerm');
+  const error = requireEl('claudeError');
+  const identity = requireEl('claudeIdentity');
+  const body = requireEl('claudeBody');
+  const tabs = requireEl('claudeTabs');
   if (!empty || !term || !error || !identity || !body || !tabs) return;
 
   // X8 stage 4 (rev-enext.3): the React agent pane is the only surface now
@@ -437,8 +456,8 @@ function bootClaudePane(): void {
   tabs.style.display = 'none';
   body.classList.add('agent-pane-react-host');
   mountAgentPane(body);
-  const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
-  const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
+  const createBtn = requireEl<HTMLButtonElement>('toolbarCreateContext');
+  const slingBtn = requireEl<HTMLButtonElement>('toolbarSling');
   if (createBtn) createBtn.title = 'Create Context: spawn a focused agent session with current page + selection';
   if (slingBtn) slingBtn.title = 'Sling: send the current review to another rig for processing';
   bootToolbar();
@@ -448,24 +467,24 @@ function bootClaudePane(): void {
  *  modals + the context provider that exposes current doc state to the
  *  toolbar at click-time. */
 function bootToolbar(): void {
-  const createBtn = document.getElementById('toolbarCreateContext') as HTMLButtonElement | null;
-  const slingBtn = document.getElementById('toolbarSling') as HTMLButtonElement | null;
-  const freshBtn = document.getElementById('toolbarFreshStart') as HTMLButtonElement | null;
-  const toolbar = document.getElementById('claudeToolbar');
-  const ctxModal = document.getElementById('ctxModal');
-  const ctxBundle = document.getElementById('ctxBundle');
-  const ctxPrompt = document.getElementById('ctxPrompt') as HTMLTextAreaElement | null;
-  const ctxIterations = document.getElementById('ctxIterations') as HTMLInputElement | null;
-  const ctxSubmit = document.getElementById('ctxSubmit') as HTMLButtonElement | null;
-  const slingModal = document.getElementById('slingModal');
-  const slingBundle = document.getElementById('slingBundle');
-  const slingPrompt = document.getElementById('slingPrompt') as HTMLTextAreaElement | null;
-  const slingDestination = document.getElementById('slingDestination') as HTMLInputElement | null;
-  const slingHint = document.getElementById('slingHint');
-  const slingSubmit = document.getElementById('slingSubmit') as HTMLButtonElement | null;
-  const freshModal = document.getElementById('freshModal');
-  const freshHandoff = document.getElementById('freshHandoff') as HTMLTextAreaElement | null;
-  const freshSubmit = document.getElementById('freshSubmit') as HTMLButtonElement | null;
+  const createBtn = requireEl<HTMLButtonElement>('toolbarCreateContext');
+  const slingBtn = requireEl<HTMLButtonElement>('toolbarSling');
+  const freshBtn = requireEl<HTMLButtonElement>('toolbarFreshStart');
+  const toolbar = requireEl('claudeToolbar');
+  const ctxModal = requireEl('ctxModal');
+  const ctxBundle = requireEl('ctxBundle');
+  const ctxPrompt = requireEl<HTMLTextAreaElement>('ctxPrompt');
+  const ctxIterations = requireEl<HTMLInputElement>('ctxIterations');
+  const ctxSubmit = requireEl<HTMLButtonElement>('ctxSubmit');
+  const slingModal = requireEl('slingModal');
+  const slingBundle = requireEl('slingBundle');
+  const slingPrompt = requireEl<HTMLTextAreaElement>('slingPrompt');
+  const slingDestination = requireEl<HTMLInputElement>('slingDestination');
+  const slingHint = requireEl('slingHint');
+  const slingSubmit = requireEl<HTMLButtonElement>('slingSubmit');
+  const freshModal = requireEl('freshModal');
+  const freshHandoff = requireEl<HTMLTextAreaElement>('freshHandoff');
+  const freshSubmit = requireEl<HTMLButtonElement>('freshSubmit');
   if (!toolbar || !createBtn || !slingBtn || !freshBtn ||
       !ctxModal || !ctxBundle || !ctxPrompt || !ctxIterations || !ctxSubmit ||
       !slingModal || !slingBundle || !slingPrompt || !slingDestination || !slingHint || !slingSubmit ||
@@ -538,7 +557,7 @@ function setLeftDrawerCollapsed(next: boolean): void {
   leftDrawerCollapsed = next;
   const layout = document.querySelector<HTMLElement>('.layout');
   if (layout) layout.classList.toggle('left-collapsed', next);
-  const btn = document.getElementById('treeToggleCollapse');
+  const btn = requireEl('treeToggleCollapse');
   if (btn) {
     btn.textContent = next ? '▶' : '◀';
     btn.setAttribute('aria-pressed', String(next));
@@ -547,17 +566,17 @@ function setLeftDrawerCollapsed(next: boolean): void {
 }
 
 async function bootLeftDrawerAndPalette(): Promise<void> {
-  const body = document.getElementById('treeBody');
-  const title = document.getElementById('treeTitle');
-  const empty = document.getElementById('treeEmpty');
-  const openBtn = document.getElementById('treeOpenFolder') as HTMLButtonElement | null;
-  const hiddenBtn = document.getElementById('treeToggleHidden') as HTMLButtonElement | null;
-  const collapseBtn = document.getElementById('treeToggleCollapse') as HTMLButtonElement | null;
-  const emptyOpenLink = document.getElementById('treeEmptyOpen');
-  const paletteRoot = document.getElementById('palette');
-  const paletteInput = document.getElementById('paletteInput') as HTMLInputElement | null;
-  const paletteList = document.getElementById('paletteList');
-  const paletteEmpty = document.getElementById('paletteEmpty');
+  const body = requireEl('treeBody');
+  const title = requireEl('treeTitle');
+  const empty = requireEl('treeEmpty');
+  const openBtn = requireEl<HTMLButtonElement>('treeOpenFolder');
+  const hiddenBtn = requireEl<HTMLButtonElement>('treeToggleHidden');
+  const collapseBtn = requireEl<HTMLButtonElement>('treeToggleCollapse');
+  const emptyOpenLink = requireEl('treeEmptyOpen');
+  const paletteRoot = requireEl('palette');
+  const paletteInput = requireEl<HTMLInputElement>('paletteInput');
+  const paletteList = requireEl('paletteList');
+  const paletteEmpty = requireEl('paletteEmpty');
   if (!body || !title || !empty || !openBtn || !hiddenBtn || !emptyOpenLink ||
       !paletteRoot || !paletteInput || !paletteList || !paletteEmpty) return;
 
@@ -611,10 +630,10 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
   }
 
   // In-tree search: 🔎 toggle reveals an inline filter input.
-  const searchToggle = document.getElementById('treeSearchToggle') as HTMLButtonElement | null;
-  const searchBar = document.getElementById('treeSearchBar') as HTMLElement | null;
-  const searchInput = document.getElementById('treeSearchInput') as HTMLInputElement | null;
-  const searchClear = document.getElementById('treeSearchClear') as HTMLButtonElement | null;
+  const searchToggle = requireEl<HTMLButtonElement>('treeSearchToggle');
+  const searchBar = requireEl<HTMLElement>('treeSearchBar');
+  const searchInput = requireEl<HTMLInputElement>('treeSearchInput');
+  const searchClear = requireEl<HTMLButtonElement>('treeSearchClear');
   if (searchToggle && searchBar && searchInput && searchClear) {
     const openSearch = () => {
       searchBar.hidden = false;
@@ -650,7 +669,7 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
   }
 
   // Refresh button: clear dir cache and re-read from disk.
-  const refreshBtn = document.getElementById('treeRefresh') as HTMLButtonElement | null;
+  const refreshBtn = requireEl<HTMLButtonElement>('treeRefresh');
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
       if (!fileTree) return;
@@ -662,7 +681,7 @@ async function bootLeftDrawerAndPalette(): Promise<void> {
   }
 
   // Fit-width: measure the tree's natural width and bump --col-left to match.
-  const fitWidthBtn = document.getElementById('treeFitWidth') as HTMLButtonElement | null;
+  const fitWidthBtn = requireEl<HTMLButtonElement>('treeFitWidth');
   if (fitWidthBtn) {
     fitWidthBtn.addEventListener('click', () => {
       if (!fileTree) return;
@@ -881,7 +900,7 @@ function wireDraftsQuitFlush(): void {
 }
 
 async function mountStartupDiagnostics(): Promise<void> {
-  const diag = document.getElementById('diag');
+  const diag = requireEl('diag');
   if (!diag) return;
 
   const ipcLine = document.createElement('div');
@@ -929,17 +948,17 @@ let focusedCommentId: string | null = null;
 let editingCommentId: string | null = null;
 
 function bootProjectOpenFlow(): void {
-  const mount = document.getElementById('pdfMount');
-  const empty = document.getElementById('pdfEmpty');
-  const title = document.getElementById('pdfTitle');
-  const banner = document.getElementById('pdfBanner');
-  const openBtn = document.getElementById('pdfOpen') as HTMLButtonElement | null;
-  const prevBtn = document.getElementById('pdfPrev') as HTMLButtonElement | null;
-  const nextBtn = document.getElementById('pdfNext') as HTMLButtonElement | null;
-  const darkBtn = document.getElementById('pdfDarkToggle') as HTMLButtonElement | null;
-  const fitPageBtn = document.getElementById('pdfFitPage') as HTMLButtonElement | null;
-  const fitWidthBtn = document.getElementById('pdfFitWidth') as HTMLButtonElement | null;
-  const pageLabel = document.getElementById('pdfPageLabel');
+  const mount = requireEl('pdfMount');
+  const empty = requireEl('pdfEmpty');
+  const title = requireEl('pdfTitle');
+  const banner = requireEl('pdfBanner');
+  const openBtn = requireEl<HTMLButtonElement>('pdfOpen');
+  const prevBtn = requireEl<HTMLButtonElement>('pdfPrev');
+  const nextBtn = requireEl<HTMLButtonElement>('pdfNext');
+  const darkBtn = requireEl<HTMLButtonElement>('pdfDarkToggle');
+  const fitPageBtn = requireEl<HTMLButtonElement>('pdfFitPage');
+  const fitWidthBtn = requireEl<HTMLButtonElement>('pdfFitWidth');
+  const pageLabel = requireEl('pdfPageLabel');
   if (
     !mount || !empty || !title || !banner ||
     !openBtn || !prevBtn || !nextBtn || !darkBtn ||
@@ -1676,9 +1695,9 @@ function formatPageList(pages: number[]): string {
 // ─── §4.2 tool palette + §4.3 bottom input ───────────────────────────────
 
 function bootToolPaletteAndInput(): void {
-  const palette = document.getElementById('toolPalette');
-  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
-  const clearBtn = document.getElementById('commentClear') as HTMLButtonElement | null;
+  const palette = requireEl('toolPalette');
+  const input = requireEl<HTMLTextAreaElement>('commentInput');
+  const clearBtn = requireEl<HTMLButtonElement>('commentClear');
   if (!palette || !input || !clearBtn) return;
 
   // Tool selection (click + ⌘1/⌘2/⌘3 accelerators per spec §16 keyboard table).
@@ -1730,7 +1749,7 @@ function setActiveTool(next: Tool): void {
   // selected text as the editing starter (§4.3). Switching OUT of Redraft
   // leaves whatever is in the input alone — the user owns the buffer.
   if (next === 'redraft' && previous !== 'redraft' && docState.lastSelection) {
-    const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+    const input = requireEl<HTMLTextAreaElement>('commentInput');
     if (input) {
       input.value = docState.lastSelection.text;
       input.focus();
@@ -1747,7 +1766,7 @@ function handleSelection(sel: ViewerSelection | null): void {
   docState.lastSelection = sel;
   updateAnchorMeta();
   if (!sel) return;
-  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  const input = requireEl<HTMLTextAreaElement>('commentInput');
   if (!input) return;
   // §4.3: a fresh selection while Redraft is active populates the input as the
   // editing starter (v1 did this for PDF + md; X7 extends it to html/docx).
@@ -1764,7 +1783,7 @@ function handleSelection(sel: ViewerSelection | null): void {
 }
 
 function updateAnchorMeta(): void {
-  const meta = document.getElementById('commentAnchor');
+  const meta = requireEl('commentAnchor');
   if (!meta) return;
   // rev-b8t: in edit mode the meta line tells the user what they're doing
   // (and how to bail) instead of showing the live-selection breadcrumb.
@@ -1808,7 +1827,7 @@ function updateAnchorMeta(): void {
 }
 
 function clearInput(): void {
-  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  const input = requireEl<HTMLTextAreaElement>('commentInput');
   if (input) input.value = '';
 }
 
@@ -1817,7 +1836,7 @@ function truncate(s: string, n: number): string {
 }
 
 async function handleSubmit(): Promise<void> {
-  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  const input = requireEl<HTMLTextAreaElement>('commentInput');
   if (!input) return;
   const buf = input.value.trim();
   if (!buf) return; // nothing to submit — silent no-op
@@ -1922,7 +1941,7 @@ function commitNewComment(payload: CommentPayload): void {
   scheduleDraftsWrite();
   activeViewer?.applyAnchors(docState.comments);
   clearInput();
-  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  const input = requireEl<HTMLTextAreaElement>('commentInput');
   input?.focus();
 }
 
@@ -2001,7 +2020,7 @@ function buildNativeComment(a: NativePdfAnnotation): CommentPayload {
  *  show two stub headers below.
  */
 function renderAllCards(): void {
-  const stream = document.getElementById('commentStream');
+  const stream = requireEl('commentStream');
   if (!stream) return;
   if (docState.comments.length === 0) {
     stream.replaceChildren(buildEmptyPlaceholder());
@@ -2053,7 +2072,7 @@ function buildLevelSection(level: EngagementLevel, cards: CommentPayload[]): HTM
  *  the bottom textarea, keystrokes land there and never reach this
  *  listener, so the spec's focus discipline is enforced structurally. */
 function bindCommentStreamKeyboard(): void {
-  const stream = document.getElementById('commentStream');
+  const stream = requireEl('commentStream');
   if (!stream) return;
   stream.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return; // don't shadow Cmd+J etc.
@@ -2270,7 +2289,7 @@ function buildCardActions(c: CommentPayload): HTMLElement {
 function beginEditComment(id: string): void {
   const c = docState.comments.find((x) => x.id === id);
   if (!c) return;
-  const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
+  const input = requireEl<HTMLTextAreaElement>('commentInput');
   if (!input) return;
   editingCommentId = id;
   // Body lives in `redraft` for Redraft cards, `comment` otherwise. Load
@@ -2317,7 +2336,7 @@ function labelFor(level: Tool): string {
 }
 
 function flashAnchorMeta(msg: string): void {
-  const meta = document.getElementById('commentAnchor');
+  const meta = requireEl('commentAnchor');
   if (!meta) return;
   const previous = meta.textContent;
   meta.textContent = msg;
@@ -2475,7 +2494,7 @@ function applyEntry(target: CommentPayload, r: ResultEntry): boolean {
 }
 
 function hideRoundBanner(): void {
-  const banner = document.getElementById('roundBanner');
+  const banner = requireEl('roundBanner');
   if (!banner) return;
   banner.hidden = true;
   banner.removeAttribute('data-state');
@@ -2487,7 +2506,7 @@ function hideRoundBanner(): void {
  *  otherwise the latest `complete` (its CTA stays visible until the user
  *  opens the new version or switches docs), otherwise hidden. */
 function renderRoundBanner(): void {
-  const banner = document.getElementById('roundBanner');
+  const banner = requireEl('roundBanner');
   if (!banner) return;
   const rounds = Array.from(docState.rounds.values());
   if (rounds.length === 0) { hideRoundBanner(); return; }
