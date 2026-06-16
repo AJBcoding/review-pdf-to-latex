@@ -31,6 +31,9 @@ import type {
   ViewerSelection,
 } from '@shared/file-viewer';
 import type { Anchor, AnchorKind, CommentPayload } from '@shared/types';
+import { normalizePdfAnnotations } from './pdf-annotations';
+import type { NativePdfAnnotation, RawPdfAnnotation } from './pdf-annotations';
+export type { NativePdfAnnotation, RawPdfAnnotation } from './pdf-annotations';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import {
@@ -80,11 +83,17 @@ export interface PdfViewerOptions {
   /** Called when the loaded document's page count is known (and on every
    * page change), so the host can update navigation chrome. */
   onPageInfo?(info: { page: number; totalPages: number }): void;
+  /** L3 round-trip READ half. Called inside `renderPage` with the page's native
+   *  PDF markup annotations, normalized into the union + provenance. Fired per
+   *  page render (incl. zoom / revisit), so the host MUST dedupe by
+   *  `native.comment_id` before adding cards. Empty array when the page has no
+   *  readable annotations. */
+  onNativeAnnotations?(annots: NativePdfAnnotation[]): void;
 }
 
 export class PdfViewer implements FileViewer {
-  private opts: Required<Omit<PdfViewerOptions, 'onSelection' | 'onPageInfo'>>
-              & Pick<PdfViewerOptions, 'onSelection' | 'onPageInfo'>;
+  private opts: Required<Omit<PdfViewerOptions, 'onSelection' | 'onPageInfo' | 'onNativeAnnotations'>>
+              & Pick<PdfViewerOptions, 'onSelection' | 'onPageInfo' | 'onNativeAnnotations'>;
 
   // DOM. The text layer element is owned by TextLayerBuilder and re-created
   // per page render — `textLayerEl` is updated to point at the current
@@ -119,6 +128,7 @@ export class PdfViewer implements FileViewer {
       initialZoom: opts.initialZoom ?? 1,
       onSelection: opts.onSelection,
       onPageInfo: opts.onPageInfo,
+      onNativeAnnotations: opts.onNativeAnnotations,
     };
     this.zoom = this.opts.initialZoom;
 
@@ -248,6 +258,27 @@ export class PdfViewer implements FileViewer {
     }
 
     this.opts.onPageInfo?.({ page: this.currentPageNum, totalPages: this.doc.numPages });
+
+    // L3 round-trip READ half: surface this page's native PDF annotations into
+    // the host's comment stream (NOT a second pdf.js annotation DOM). Best
+    // effort — a getAnnotations failure must not break page rendering.
+    await this.emitNativeAnnotations(this.currentPageNum, this.page);
+  }
+
+  /** Read the page's native markup annotations and hand the host the normalized
+   *  union + provenance (L3). Fired every render; the host dedupes by
+   *  `native.comment_id`. Swallows errors so a malformed annot dict never aborts
+   *  the page. */
+  private async emitNativeAnnotations(pageNum: number, page: PDFPageProxy): Promise<void> {
+    if (!this.opts.onNativeAnnotations) return;
+    try {
+      const raw = (await page.getAnnotations({ intent: 'display' })) as RawPdfAnnotation[];
+      // A page change mid-await means this result is stale — drop it.
+      if (this.currentPageNum !== pageNum || this.page !== page) return;
+      this.opts.onNativeAnnotations(normalizePdfAnnotations(raw, pageNum));
+    } catch (err) {
+      console.warn('[pdf-viewer] getAnnotations failed', { page: pageNum, err });
+    }
   }
 
   /** Cancel the active text-layer builder + a11y manager + struct tree, and

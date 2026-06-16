@@ -15,6 +15,7 @@ import type {
 import { REVIEWER_LOCAL_ID } from '@shared/types';
 import { parseSourceName } from '@shared/bundle';
 import { PdfViewer } from './pdf-viewer';
+import type { NativePdfAnnotation } from './pdf-viewer';
 import { MarkdownViewer } from './md-viewer';
 import { HtmlViewer } from './html-viewer';
 import { DocxViewer } from './docx-viewer';
@@ -254,7 +255,10 @@ async function flushDraftsWrite(): Promise<void> {
     schema_version: 2,
     doc_version: docState.sha256,
     format: docFormatForPath(docState.path),
-    comments: docState.comments,
+    // L3: native PDF annotations are a read-projection of the source — they're
+    // re-derived on every open, so we never freeze them into the working-state
+    // sidecar (they'd just be deduped away on the next render anyway).
+    comments: docState.comments.filter((c) => c.origin !== 'native-pdf'),
   };
   draftsCache.set(draftsCacheKey(docState.path, docState.sha256), file);
   const res = await window.electronAPI.writeDrafts(docState.path, file);
@@ -1220,6 +1224,7 @@ const VIEWER_REGISTRY: Record<ViewerKind, (mount: HTMLElement) => FileViewer> = 
       h.prevBtn.disabled = page <= 1;
       h.nextBtn.disabled = page >= totalPages;
     },
+    onNativeAnnotations: handleNativeAnnotations,
   }),
   md: (mount) => new MarkdownViewer({
     container: mount,
@@ -1919,6 +1924,71 @@ function commitNewComment(payload: CommentPayload): void {
   clearInput();
   const input = document.getElementById('commentInput') as HTMLTextAreaElement | null;
   input?.focus();
+}
+
+/** L3 round-trip READ half: fold a page's native PDF annotations into the live
+ *  comment stream as `native-pdf` cards. Fired per page render (incl. zoom /
+ *  revisit), so we dedupe by `native.comment_id` — only genuinely new annots get
+ *  added (PDF.js ref-based ids are deterministic for a given file, so the dedupe
+ *  also holds across reloads once the cards persist to drafts). When at least one
+ *  is added we re-render the stream, persist, and re-project anchors. The bundle
+ *  writer skips `native-pdf` origins, so these never re-emit as duplicate
+ *  annotations on the next bundle write (§3.2 provenance). */
+function handleNativeAnnotations(annots: NativePdfAnnotation[]): void {
+  if (annots.length === 0) return;
+  const seen = new Set(
+    docState.comments
+      .map((c) => c.native?.comment_id)
+      .filter((id): id is string => !!id),
+  );
+  let added = 0;
+  for (const a of annots) {
+    if (seen.has(a.native.comment_id)) continue;
+    seen.add(a.native.comment_id);
+    docState.comments.push(buildNativeComment(a));
+    added += 1;
+  }
+  if (added === 0) return;
+  renderAllCards();
+  // Deliberately NOT persisted to the drafts sidecar: native annotations are
+  // re-derived from the PDF on every open (getAnnotations in renderPage), so the
+  // PDF stays their single source of truth and merely *viewing* an annotated PDF
+  // never silently writes a `.review-state/drafts/` file. `flushDraftsWrite`
+  // filters `native-pdf` out too, so an app-authored write won't carry them.
+  // They DO ride along in an explicit bundle/submit (the frozen deliverable).
+  activeViewer?.applyAnchors(docState.comments);
+}
+
+/** Build a v2 `native-pdf` comment from a normalized native annotation (L3).
+ *  The annotation /Contents becomes the card body; `highlighted_text` is left
+ *  empty — PDF.js doesn't return the glyphs under a markup annot, and a
+ *  text-layer hit-test is a later enrichment (filed separately). Engagement
+ *  level is `comment`: a native highlight/note is a plain remark, not an app
+ *  L2/L3 action. `created_at` stays ISO for schema consistency; the PDF's own
+ *  /CreationDate is preserved in `native.created`. */
+function buildNativeComment(a: NativePdfAnnotation): CommentPayload {
+  return {
+    id: crypto.randomUUID(),
+    doc_id: docState.path,
+    doc_version: docState.sha256,
+    anchor: {
+      kind: 'pdf-quad',
+      page: a.page,
+      region: a.region,
+      ...(a.quads ? { quads: a.quads } : {}),
+    },
+    highlighted_text: '',
+    comment: a.contents,
+    redraft: null,
+    redraft_suggestion: null,
+    engagement_level: 'comment',
+    author: a.native.author ?? 'native',
+    kind: 'comment',
+    status: 'open',
+    created_at: new Date().toISOString(),
+    origin: 'native-pdf',
+    native: a.native,
+  };
 }
 
 /** Rebuild the comment stream from `docState.comments`. Cheap enough for

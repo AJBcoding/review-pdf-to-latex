@@ -214,6 +214,56 @@ describe('writeBundle — out-of-range page skip', () => {
   });
 });
 
+describe('writeBundle — §3.2 origin provenance (L3 round-trip)', () => {
+  it('does NOT re-emit native-pdf comments as new annotations (prevents duplication)', async () => {
+    await writeSourcePdf(1);
+    const res = await writeBundle(
+      bundleReq(
+        [
+          makeComment({ id: 'app', origin: 'app-draft' }),
+          // Read back from the source PDF's existing annotations — already
+          // physically present in the copy we're annotating.
+          makeComment({
+            id: 'native',
+            origin: 'native-pdf',
+            native: { comment_id: '10R', subtype: 'Highlight' },
+          }),
+        ],
+        1,
+      ),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    // Only the app-draft comment is drawn onto the PDF; the native one rounds
+    // trip through the JSON sidecar, not a freshly-stamped annotation.
+    expect(res.annotationIds.map((a) => a.commentId)).toEqual(['app']);
+    const doc = await loadBundle(res.bundlePdfPath);
+    expect(pageAnnots(doc, 0)!.size()).toBe(1);
+  });
+
+  it('keeps ALL origins in the JSON sidecar (only the PDF-draw loop is filtered)', async () => {
+    await writeSourcePdf(1);
+    const res = await writeBundle(
+      bundleReq(
+        [
+          makeComment({ id: 'app', origin: 'app-draft' }),
+          makeComment({ id: 'native', origin: 'native-pdf', native: { comment_id: '10R' } }),
+        ],
+        1,
+      ),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const json: BundleJsonFile = JSON.parse(await readFile(res.bundleJsonPath, 'utf8'));
+    expect(json.comments.map((c) => c.id).sort()).toEqual(['app', 'native']);
+    // The native comment's provenance handle survives untouched.
+    const native = json.comments.find((c) => c.id === 'native')!;
+    expect(native.origin).toBe('native-pdf');
+    expect(native.native?.comment_id).toBe('10R');
+  });
+});
+
 describe('writeBundle — guards', () => {
   it('rejects comments with a non-pdf-quad anchor (C5 PDF-only guard)', async () => {
     await writeSourcePdf(1);
