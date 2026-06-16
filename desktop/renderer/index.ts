@@ -18,6 +18,7 @@ import { PdfViewer } from './pdf-viewer';
 import { MarkdownViewer } from './md-viewer';
 import { HtmlViewer } from './html-viewer';
 import { DocxViewer } from './docx-viewer';
+import { IframeDocViewer } from './iframe-doc-viewer';
 import { createMdAnchor } from '@shared/md/anchors';
 import { classifyPath, docFormatForPath } from '@shared/file-kinds';
 import type { FileViewer, ViewerSelection } from '@shared/file-viewer';
@@ -1864,13 +1865,20 @@ function anchorFromSelection(sel: ViewerSelection): Anchor {
     case 'pdf-quad':
       return { kind: 'pdf-quad', page: sel.page, region: sel.region };
     case 'text-quote': {
-      // md anchors fold into the text-quote union kind verbatim (§3.1 rule 3).
-      const doc = activeViewer instanceof MarkdownViewer ? activeViewer.getContent() : '';
+      // ONE text-quote builder for every text format (§3.1 rule 3): MD folds in
+      // verbatim, and HTML/DOCX now anchor by text-quote over the iframe's linear
+      // text (rev-l6, §5.5). The `from`/`to` offsets are in the active viewer's
+      // own coordinate space; `getContent()` returns that same text.
+      const doc =
+        activeViewer instanceof MarkdownViewer || activeViewer instanceof IframeDocViewer
+          ? activeViewer.getContent()
+          : '';
       return { ...createMdAnchor(doc, sel.from, sel.to), relocated: null };
     }
     case 'html-selector-hint':
-      // html/docx anchor by the declared html-selector-hint kind — the v1
-      // `as any` smuggle through md_anchor (C6) is gone.
+      // Legacy locality-hint anchor (§5.5): retained for migrated v1 rows. The
+      // iframe viewers no longer EMIT this kind — capture is text-quote now — but
+      // the union member stays valid so existing comments keep resolving.
       return {
         kind: 'html-selector-hint',
         selector: sel.selector,
