@@ -24,9 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `bootstrap_state` now initializes annotations with empty `highlighted_text` and `trigger_match=false` directly to `surfaced_pending`, routing them past Phase 1 (which has nothing to anchor on without a source text run) into Phase 2b's SURFACE conversation loop (rev-mvd).
+- `wait-event --since` no longer drops events that share a wall-clock second: event timestamps now carry microsecond precision (`…:11.123456Z`), so the `ts > since` cursor distinguishes events appended within the same second instead of silently skipping the second one (rev-l7).
+- `wait_for_events` is now genuinely side-effect-free for a missing events file: the kqueue watcher watches the parent directory rather than `touch()`-ing the events file into existence to obtain a watch fd (rev-l7).
 
 ### Changed
-- (List breaking or notable behavior changes here.)
+- Extracted the format-agnostic event bus (`_validate_event`, `_append_event_line`, `wait_for_events`, `handle_wait_event` and helpers) out of `server.py` into a new viewer-free `events.py`. The viewer imports the event bus; the edge is one-way. Wait-event symbols remain importable from `server` for backward compatibility (rev-l7).
 
 ## [0.1.0] - YYYY-MM-DD
 
