@@ -29,20 +29,26 @@ import type {
   CommentPayload,
 } from '@shared/types';
 import { downConvertSubmitFileToV1 } from '@shared/comments';
+import { mintTimestampId } from '@shared/bundle';
 
 const GT_MAIL_TIMEOUT_MS = 30_000;
 const DEFAULT_SUBJECT_PREFIX = 'review-pdf submit';
 
-/** Mint a submit_id in the same `YYYYMMDD-HHmmss` UTC shape the bundle id
- *  uses (see shared/bundle.ts mintBundleId). Distinct from bundleId in
- *  semantics — bundleId identifies the deliverable artifact; submitId
- *  identifies the round of work the user just packaged. */
-function mintSubmitId(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}` +
-    `-${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`
-  );
+/** Mint a submit_id whose frozen file `submit-<id>.json` doesn't already
+ *  exist in `reviewStateDir`. The base id is the canonical `YYYYMMDD-HHmmss`
+ *  UTC stamp (shared mintTimestampId); since it's second-resolution and the
+ *  frozen path derives solely from it — atomicWriteJson would silently
+ *  overwrite — two promotes in the same UTC second are disambiguated with a
+ *  `-2`, `-3`, … suffix. The chosen id is what lands as `submit_id`, so the
+ *  results-watcher pairing (keyed on submit_id alone) stays correct. */
+function mintUniqueSubmitId(date: Date, reviewStateDir: string): string {
+  const base = mintTimestampId(date);
+  let submitId = base;
+  let suffix = 2;
+  while (existsSync(join(reviewStateDir, `submit-${submitId}.json`))) {
+    submitId = `${base}-${suffix++}`;
+  }
+  return submitId;
 }
 
 /** Resolve `gt` via PATH. Returns absolute path or null. Mirrors the
@@ -73,10 +79,8 @@ export async function promoteDraft(
   req: SubmitPromoteRequest,
 ): Promise<SubmitPromoteResult> {
   const date = new Date();
-  const submitId = mintSubmitId(date);
   const sourcePath = resolve(req.sourcePath);
   const reviewStateDir = join(dirname(sourcePath), '.review-state');
-  const submitFilePath = join(reviewStateDir, `submit-${submitId}.json`);
   const submittedAt = date.toISOString();
 
   try {
@@ -89,6 +93,10 @@ export async function promoteDraft(
       submitFilePath: null,
     };
   }
+
+  // Mint after mkdir so the collision scan sees any already-frozen rounds.
+  const submitId = mintUniqueSubmitId(date, reviewStateDir);
+  const submitFilePath = join(reviewStateDir, `submit-${submitId}.json`);
 
   // Promote only `open` entries to `submitted` — already-terminal entries
   // (applied / build_failed / etc. from a previous round) are preserved
