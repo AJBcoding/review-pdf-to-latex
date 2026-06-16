@@ -7,7 +7,6 @@ import { watch, type FSWatcher } from 'node:fs';
 import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
-import { registerClaudePtyIpc, shutdownClaudePty } from './claude-pty.js';
 import { registerAgentPaneIpc, rebindMainWindow, shutdownAgentPane } from './agent-pane-ipc.js';
 import { runSidecarMigration, findSidecarByFingerprint, buildFingerprint } from './sidecar-migration.js';
 import { migrateDraftsToV2 } from './drafts-migration.js';
@@ -819,13 +818,10 @@ void app.whenReady().then(async () => {
     ([request]) => assertObjectArg('submit:abandonRound', request),
   );
 
-  // §9.2 embedded Claude pane — pty manager (rev-1md.2).
-  registerClaudePtyIpc();
-
   const mainWin = createWindow();
-  // Project 4 / M-int-2: React agent-pane IPC handlers. Coexists with the
-  // legacy claude-pty above; the renderer chooses which path via the
-  // localStorage feature flag (see desktop/renderer/index.ts).
+  // §9.2 embedded Claude pane — the React agent-pane (SDK route) is the only
+  // surface as of X8 stage 4 (rev-enext.3); the legacy claude-pty route was
+  // retired once the OD-3 parity checklist went green.
   registerAgentPaneIpc(mainWin);
 
   app.on('activate', () => {
@@ -841,7 +837,6 @@ void app.whenReady().then(async () => {
 // covers the non-darwin path.
 app.on('before-quit', async () => {
   stopResultsWatch();
-  shutdownClaudePty();
   await shutdownAgentPane();
 });
 

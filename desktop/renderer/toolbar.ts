@@ -1,41 +1,39 @@
-// §9.2.6 right-drawer toolbar (rev-1md.3).
+// §9.2.6 right-drawer toolbar (rev-1md.3; SDK route since X8 stage 4 / rev-enext.3).
 //
-// Three icon buttons above the conversational pty:
-//   ✨ Create Context  — bundle current doc context + spawn worker pty
-//   🪃 Sling           — bundle + destination → worker pty calls `gt mail send`
-//   🌅 Fresh Start     — kill+respawn conv pty with handoff priming
+// Three icon buttons above the conversational agent pane:
+//   ✨ Create Context  — bundle current doc context + spawn a worker session
+//   🪃 Sling           — bundle + destination → worker session calls `gt mail send`
+//   🌅 Fresh Start     — respawn the conversational session with handoff priming
 //
 // Each button opens a modal that captures the user's prompt and any
 // per-action knobs (Ralph-loop iterations, sling destination, handoff
-// summary). On commit, we hand off to claude-pane.spawnWorker /
-// claude-pane.freshStart.
+// summary). On commit, we hand off to window.agentViewer.spawnSession /
+// window.agentViewer.freshStart (the React agent pane / SDK route).
 //
 // Sling is greyed out when gas-town isn't available (§9.2.5 — explanatory
-// popover). Create Context / Fresh Start require an alive conv pty (which
-// requires an open PDF) so they're also conditionally disabled.
+// popover). Create Context / Fresh Start require an open PDF so they're also
+// conditionally disabled.
 
 import type { CommentPayload, PdfQuadAnchor } from '@shared/comments';
 import type {
   CreateContextMode,
+  ReviewerProbe,
   ToolbarContextBundle,
 } from '@shared/pty';
-import {
-  getReviewerProbe,
-  isSpawned,
-  spawnWorker,
-  freshStart,
-} from './claude-pane';
 
-/** Project 4 / M-int-4b — when the new React agent pane is active, the
- *  toolbar's Fresh Start button routes through window.agentViewer.freshStart
- *  instead of the legacy claude-pane.freshStart (which would respawn the
- *  legacy conv pty that isn't in use). Returns true if rerouted. */
-function isNewAgentPaneActive(): boolean {
+// X8 stage 4 (rev-enext.3): the pty route is retired — the React agent pane
+// (window.agentViewer) is the only surface. The toolbar reads the reviewer-rig
+// probe directly via the preload bridge (formerly cached by the now-deleted
+// claude-pane) so Sling gating still reflects gt presence + identity.
+let reviewerProbe: ReviewerProbe | null = null;
+
+async function refreshReviewerProbe(): Promise<void> {
   try {
-    return localStorage.getItem('pdf-latex-new-agent-pane') === '1';
+    reviewerProbe = await window.electronAPI.probeReviewer();
   } catch {
-    return false;
+    reviewerProbe = null;
   }
+  refreshButtonStates();
 }
 
 /** Callback provided by the host so the toolbar can pull the current doc
@@ -136,9 +134,11 @@ export function mountToolbar(opts: MountToolbarOptions): void {
     }
   });
 
-  // Track pane state changes so we can flip enabled states on the fly.
-  window.addEventListener('claude-pane:spawn-state-changed', () => refreshButtonStates());
-  window.addEventListener('claude-pane:reviewer-probed', () => refreshButtonStates());
+  // X8 stage 4 (rev-enext.3): probe the reviewer rig once on mount so Sling
+  // gating reflects gt presence + identity (the now-deleted claude-pane used
+  // to broadcast this via 'claude-pane:reviewer-probed'). The call ends in
+  // refreshButtonStates() so initial button states settle once it resolves.
+  void refreshReviewerProbe();
   // Also react to selection / page changes — the modals re-read the bundle
   // when opened, but the buttons themselves are gated on doc presence only.
   window.addEventListener('toolbar:doc-state-changed', () => refreshButtonStates());
@@ -185,29 +185,18 @@ function closeModal(modal: HTMLElement): void {
 function refreshButtonStates(): void {
   if (!refsRef || !ctxRef) return;
   const hasDoc = ctxRef.docPath().length > 0;
-  const reviewer = getReviewerProbe();
-  const slingAvailable = !!(reviewer && reviewer.enabled);
-  const newPane = isNewAgentPaneActive();
-  const ptyAlive = isSpawned();
-  // Project 4 / M-int-4b: in new-pane mode the "agent is alive" condition
-  // is that the React pane is mounted (always true when the flag is on)
-  // rather than that the legacy pty has been spawned.
-  const agentAlive = newPane ? true : ptyAlive;
-
-  // Create Context / Sling stay disabled in new-pane mode until M-int-4c
-  // wires worker spawn to agent:spawnSession + γ-panel routing. The
-  // disabled tooltip is set elsewhere (renderer/index.ts).
-  refsRef.createBtn.disabled = !(hasDoc && agentAlive) || newPane;
-  refsRef.slingBtn.disabled = !(hasDoc && slingAvailable) || newPane;
-  if (!slingAvailable) {
-    refsRef.slingBtn.title =
-      'Enable gas-town integration in Settings to sling to other rigs';
-  } else if (!newPane) {
-    refsRef.slingBtn.title = 'Sling to another rig or crew';
-  }
-  // Fresh Start gets a UI in new-pane mode via M-int-4b — it routes to
-  // window.agentViewer.freshStart in commitFresh().
-  refsRef.freshBtn.disabled = !(hasDoc && agentAlive);
+  const slingAvailable = !!(reviewerProbe && reviewerProbe.enabled);
+  // X8 stage 4 (rev-enext.3): the React agent pane is always mounted, so the
+  // "agent is alive" condition is simply that a doc is open. Create Context
+  // and Fresh Start need a doc; Sling additionally needs gas-town (reviewer
+  // probe enabled) + a destination (validated at commit time). The buttons
+  // route to window.agentViewer.spawnSession / freshStart at commit.
+  refsRef.createBtn.disabled = !hasDoc;
+  refsRef.slingBtn.disabled = !(hasDoc && slingAvailable);
+  refsRef.slingBtn.title = slingAvailable
+    ? 'Sling to another rig or crew'
+    : 'Enable gas-town integration in Settings to sling to other rigs';
+  refsRef.freshBtn.disabled = !hasDoc;
 }
 
 // ─── Bundle assembly ──────────────────────────────────────────────────────
@@ -342,28 +331,13 @@ async function commitCtx(): Promise<void> {
   const bundle = buildBundle(prompt);
   refsRef.ctxSubmit.disabled = true;
   try {
-    if (isNewAgentPaneActive()) {
-      const sessionId = `worker-ctx-${Date.now()}`;
-      const agentPrompt = bundleToPrompt(bundle, 'create-context', mode);
-      await window.agentViewer?.spawnSession({
-        sessionId,
-        prompt: agentPrompt,
-        docSourceDir: ctxRef.docSourceDir(),
-      });
-      closeModal(refsRef.ctxModal);
-      return;
-    }
-    const docSourceDir = ctxRef.docSourceDir();
-    const res = await spawnWorker({
-      kind: 'create-context',
-      docSourceDir,
-      bundle,
-      mode,
+    const sessionId = `worker-ctx-${Date.now()}`;
+    const agentPrompt = bundleToPrompt(bundle, 'create-context', mode);
+    await window.agentViewer?.spawnSession({
+      sessionId,
+      prompt: agentPrompt,
+      docSourceDir: ctxRef.docSourceDir(),
     });
-    if (!res.ok) {
-      flashErr(refsRef.ctxModal, `Spawn failed: ${res.reason}${res.error ? ` — ${res.error}` : ''}`);
-      return;
-    }
     closeModal(refsRef.ctxModal);
   } finally {
     refsRef.ctxSubmit.disabled = false;
@@ -395,29 +369,13 @@ async function commitSling(): Promise<void> {
   const bundle = buildBundle(prompt);
   refsRef.slingSubmit.disabled = true;
   try {
-    if (isNewAgentPaneActive()) {
-      const sessionId = `worker-sling-${Date.now()}`;
-      const agentPrompt = bundleToPrompt(bundle, 'sling', undefined, destination);
-      await window.agentViewer?.spawnSession({
-        sessionId,
-        prompt: agentPrompt,
-        docSourceDir: ctxRef.docSourceDir(),
-      });
-      closeModal(refsRef.slingModal);
-      return;
-    }
-    const docSourceDir = ctxRef.docSourceDir();
-    const res = await spawnWorker({
-      kind: 'sling',
-      docSourceDir,
-      bundle,
-      destination,
+    const sessionId = `worker-sling-${Date.now()}`;
+    const agentPrompt = bundleToPrompt(bundle, 'sling', undefined, destination);
+    await window.agentViewer?.spawnSession({
+      sessionId,
+      prompt: agentPrompt,
+      docSourceDir: ctxRef.docSourceDir(),
     });
-    if (!res.ok) {
-      const detail = res.error ? ` — ${res.error}` : '';
-      flashErr(refsRef.slingModal, `Sling failed: ${res.reason}${detail}`);
-      return;
-    }
     closeModal(refsRef.slingModal);
   } finally {
     refsRef.slingSubmit.disabled = false;
@@ -438,26 +396,16 @@ async function commitFresh(): Promise<void> {
   const docSourceDir = ctxRef.docSourceDir();
   refsRef.freshSubmit.disabled = true;
   try {
-    // Project 4 / M-int-4b: route to the new agent pane's freshStart when
-    // it's the active surface. Same handoff text becomes the first user
-    // message of a brand-new agent session.
-    if (isNewAgentPaneActive()) {
-      if (!window.agentViewer) {
-        flashErr(refsRef.freshModal, 'Fresh start failed: agent bridge missing');
-        return;
-      }
-      await window.agentViewer.freshStart({
-        handoffText: handoffNotes || '(no handoff notes)',
-        docSourceDir,
-      });
-      closeModal(refsRef.freshModal);
+    // X8 stage 4 (rev-enext.3): route to the agent pane's freshStart. The
+    // handoff text becomes the first user message of a brand-new agent session.
+    if (!window.agentViewer) {
+      flashErr(refsRef.freshModal, 'Fresh start failed: agent bridge missing');
       return;
     }
-    const res = await freshStart({ handoffNotes, docSourceDir });
-    if (!res.ok) {
-      flashErr(refsRef.freshModal, `Fresh start failed: ${res.reason ?? 'unknown'}`);
-      return;
-    }
+    await window.agentViewer.freshStart({
+      handoffText: handoffNotes || '(no handoff notes)',
+      docSourceDir,
+    });
     closeModal(refsRef.freshModal);
   } finally {
     refsRef.freshSubmit.disabled = false;
