@@ -108,7 +108,9 @@ export type PathExistsResult =
 // ─── M-md-3 file write + watch ───────────────────────────────────────────
 
 export type WriteFileTextResult =
-  | { ok: true; filePath: string }
+  // sha256 of the bytes just written — lets the renderer refresh docState.sha256
+  // without a follow-up readFileBytes round-trip (the content is already in main).
+  | { ok: true; filePath: string; sha256: string }
   | { ok: false; reason: 'mkdir_failed' | 'write_failed'; filePath: string; error: string };
 
 export interface FileChangeEvent {
