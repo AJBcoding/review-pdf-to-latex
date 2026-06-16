@@ -20,6 +20,7 @@ import type {
   ToolbarContextBundle,
   WorkerStartParams,
 } from './pty';
+import { basename as basenameOf } from './paths';
 
 /** The skill-activation slash-command. Claude Code 2.1.146 has no `--skill`
  *  flag (rev-a1u spike), so the slash-command written as the first line is the
@@ -82,11 +83,6 @@ export function buildFreshStartPriming(handoff: string): string {
 }
 
 // ─── Doc-switch line (§9.2.4) ──────────────────────────────────────────────
-
-function basenameOf(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
 
 /**
  * Build the `[Now reviewing/editing: …]` doc-context line sent on a doc switch.

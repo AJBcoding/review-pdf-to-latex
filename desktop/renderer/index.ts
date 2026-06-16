@@ -21,6 +21,7 @@ import { DocxViewer } from './docx-viewer';
 import { IframeDocViewer } from './iframe-doc-viewer';
 import { createMdAnchor } from '@shared/md/anchors';
 import { classifyPath, docFormatForPath } from '@shared/file-kinds';
+import { basename, dirnameOf } from '@shared/paths';
 import type { FileViewer, ViewerSelection } from '@shared/file-viewer';
 import { FileTree } from './tree';
 import { QuickOpenPalette } from './palette';
@@ -41,13 +42,6 @@ import {
   canResume as submitCanResume,
   type SubmitContext,
 } from './submit';
-
-/** Cross-platform path basename — avoids dragging in a node path polyfill
- * just for the title-bar label. Handles both POSIX and Windows separators. */
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
 
 // Renderer entry. Milestone #2 (project-open flow):
 //
@@ -241,7 +235,7 @@ const draftsCache = new Map<string, DraftsFile>();
  *  makes every cache hit version-exact; a sha change just falls through to a
  *  fresh disk read (which is itself path-keyed). */
 function draftsCacheKey(path: string, sha256: string): string {
-  return `${sha256} ${path}`;
+  return `${sha256}\u0000${path}`;
 }
 
 function scheduleDraftsWrite(): void {
@@ -500,13 +494,6 @@ function bootToolbar(): void {
       comments: () => docState.comments,
     },
   });
-}
-
-/** Cross-platform dirname — see basename(). We avoid pulling in the node
- *  path polyfill just for this. */
-function dirnameOf(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i > 0 ? p.slice(0, i) : '/';
 }
 
 // ─── §3 left drawer + §3.5 palette ────────────────────────────────────────
