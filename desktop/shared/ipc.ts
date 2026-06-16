@@ -29,6 +29,11 @@ import type {
   DocxCommentEditRequest,
   DocxCommentDeleteRequest,
   DocxCommentWriteResult,
+  PdfCommentsReadResult,
+  PdfCommentCreateRequest,
+  PdfCommentEditRequest,
+  PdfCommentDeleteRequest,
+  PdfCommentWriteResult,
 } from './comments';
 import type {
   OpenFolderDialogResult,
@@ -169,6 +174,19 @@ export interface ElectronAPI {
   createDocxComment(request: DocxCommentCreateRequest): Promise<DocxCommentWriteResult>;
   editDocxComment(request: DocxCommentEditRequest): Promise<DocxCommentWriteResult>;
   deleteDocxComment(request: DocxCommentDeleteRequest): Promise<DocxCommentWriteResult>;
+
+  // ─── §5.1 / L4 native PDF comments ──────────────────────────────────────
+  // The L4 pdf-comments adapter (main) reads/writes a PDF's markup annotations;
+  // the renderer reaches it through these channels. Native-pdf comments are a
+  // read-projection of the source PDF (surfaced as cards on open, re-derived
+  // every time, never persisted to the drafts sidecar). Reading routes through
+  // the same adapter as edit/delete so the card's `(page_index, annot_index)`
+  // handle stays valid for a later write. Create/edit/delete mutate the PDF
+  // atomically; the renderer re-opens the doc to refresh after a write.
+  readPdfComments(docPath: string, docVersion: string): Promise<PdfCommentsReadResult>;
+  createPdfComment(request: PdfCommentCreateRequest): Promise<PdfCommentWriteResult>;
+  editPdfComment(request: PdfCommentEditRequest): Promise<PdfCommentWriteResult>;
+  deletePdfComment(request: PdfCommentDeleteRequest): Promise<PdfCommentWriteResult>;
 }
 
 declare global {
@@ -219,6 +237,10 @@ export const IPC_INVOKE = {
   createDocxComment: 'docx:createComment',
   editDocxComment: 'docx:editComment',
   deleteDocxComment: 'docx:deleteComment',
+  readPdfComments: 'pdf:readComments',
+  createPdfComment: 'pdf:createComment',
+  editPdfComment: 'pdf:editComment',
+  deletePdfComment: 'pdf:deleteComment',
 } as const satisfies Partial<Record<keyof ElectronAPI, string>>;
 
 /** Invoke-style `ElectronAPI` method names — the keys of {@link IPC_INVOKE}. */

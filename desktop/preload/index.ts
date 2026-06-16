@@ -10,6 +10,9 @@ import type {
   DocxCommentCreateRequest,
   DocxCommentEditRequest,
   DocxCommentDeleteRequest,
+  PdfCommentCreateRequest,
+  PdfCommentEditRequest,
+  PdfCommentDeleteRequest,
 } from '@shared/comments';
 import type {
   AppStateFile,
@@ -95,6 +98,16 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke(IPC_INVOKE.editDocxComment, request),
   deleteDocxComment: (request: DocxCommentDeleteRequest) =>
     ipcRenderer.invoke(IPC_INVOKE.deleteDocxComment, request),
+
+  // ─── §5.1 / L4 native PDF comments ─────────────────────────────────────
+  readPdfComments: (docPath: string, docVersion: string) =>
+    ipcRenderer.invoke(IPC_INVOKE.readPdfComments, docPath, docVersion),
+  createPdfComment: (request: PdfCommentCreateRequest) =>
+    ipcRenderer.invoke(IPC_INVOKE.createPdfComment, request),
+  editPdfComment: (request: PdfCommentEditRequest) =>
+    ipcRenderer.invoke(IPC_INVOKE.editPdfComment, request),
+  deletePdfComment: (request: PdfCommentDeleteRequest) =>
+    ipcRenderer.invoke(IPC_INVOKE.deletePdfComment, request),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
