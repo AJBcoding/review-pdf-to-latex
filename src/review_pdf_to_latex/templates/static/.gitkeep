@@ -1,2 +1,0 @@
-# This directory exists so optional front-end assets (e.g., diff2html.min.js)
-# can be dropped in without creating the dir at install time.

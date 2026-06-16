@@ -1,6 +1,6 @@
-"""CLI entry point — argparse router for the 14 ``review-pdf`` subcommands.
+"""CLI entry point — argparse router for the ``review-pdf`` subcommands.
 
-All 14 subcommands are wired to real handlers (see ``_HANDLERS_TABLE``
+All subcommands are wired to real handlers (see ``_HANDLERS_TABLE``
 below). Adding a new subcommand requires: (1) an ``argparse`` subparser
 in ``_build_parser``, (2) a ``_handle_<name>`` function, and (3) an entry
 in ``_HANDLERS_TABLE``.
@@ -141,17 +141,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Suppress non-error stderr (e.g., the post-run summary line).",
     )
     _add_global_args(p_extract, on_subparser=True)
-
-    # 2. serve
-    p_serve = sub.add_parser("serve", help="Start the local HTTP viewer.")
-    p_serve.add_argument("--port", type=int, default=0)
-    p_serve.add_argument(
-        "--order",
-        choices=["mechanical-first", "surface-first"],
-        default="mechanical-first",
-    )
-    p_serve.add_argument("--mapping-mode", action="store_true")
-    _add_global_args(p_serve, on_subparser=True)
 
     # 3. apply
     p_apply = sub.add_parser("apply", help="Apply an edit to a .tex file.")
@@ -326,18 +315,6 @@ def _handle_build(args: argparse.Namespace) -> int:
         engine=args.engine,
         quiet=args.quiet,
         benchmark=getattr(args, "benchmark", False),
-    )
-
-
-def _handle_serve(args: argparse.Namespace) -> int:
-    """Start the local HTTP viewer (spec §8 serve row)."""
-    from review_pdf_to_latex.server import handle_serve
-
-    return handle_serve(
-        project_dir=Path(args.project_dir),
-        port=args.port,
-        order=args.order,
-        mapping_mode=args.mapping_mode,
     )
 
 
@@ -776,7 +753,6 @@ def _handle_migrate_state(args: argparse.Namespace) -> int:
 _HANDLERS_TABLE: dict[str, "callable"] = {
     "extract": _handle_extract,
     "build": _handle_build,
-    "serve": _handle_serve,
     "wait-event": _handle_wait_event,
     "status": _handle_status,
     "migrate-state": _handle_migrate_state,

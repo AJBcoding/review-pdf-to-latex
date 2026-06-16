@@ -8,12 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Viewer embeds a Claude Code (or any configurable subprocess) terminal pane via xterm.js + a stdlib-only WebSocket/pty bridge at `/ws/terminal`. Toggleable bottom drawer in `frame.html`; configurable via `.review-config.toml` (`terminal_command`, `terminal_enabled`). Lets the reviewer hold a SURFACE-intent conversation without alt-tabbing out of the viewer (rev-dyn).
-- Engine scaffolding (`src/review_pdf_to_latex/`) with the 14-subcommand `review-pdf` CLI.
+- Engine scaffolding (`src/review_pdf_to_latex/`) with the 13-subcommand `review-pdf` CLI.
 - `extract` subcommand: pdfannots + rapidfuzz fuzzy mapping + pdftoppm page rendering.
 - `apply` / `revert` / `set-status` / `append-chat` / `record-proposal` / `override-mapping` mutators with atomic `state.json` writes.
 - `build` subcommand: pdflatex/xelatex orchestration + pagination diff.
-- `serve` subcommand: local HTTP viewer (Phase 2a) + `--mapping-mode` UI (Phase 0 cleanup).
 - `preview` subcommand: speculative compile with in-memory snapshot/restore.
 - `wait-event` subcommand: inotify/kqueue + stat-poll fallback on `state-events.jsonl`.
 - `commit-phase` subcommand: sole mutator of `state.json.phase`; structured commit messages per spec §13.2.
@@ -28,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wait_for_events` is now genuinely side-effect-free for a missing events file: the kqueue watcher watches the parent directory rather than `touch()`-ing the events file into existence to obtain a watch fd (rev-l7).
 
 ### Changed
-- Extracted the format-agnostic event bus (`_validate_event`, `_append_event_line`, `wait_for_events`, `handle_wait_event` and helpers) out of `server.py` into a new viewer-free `events.py`. The viewer imports the event bus; the edge is one-way. Wait-event symbols remain importable from `server` for backward compatibility (rev-l7).
+- Extracted the format-agnostic event bus (`_validate_event`, `_append_event_line`, `wait_for_events`, `handle_wait_event` and helpers) out of `server.py` into a new viewer-free `events.py` (rev-l7).
+
+### Removed
+- Legacy HTTP viewer and its terminal bridge, per owner decision OD-2 (rev-l8): deleted `server.py` (the `ReviewHandler` viewer half — frame/page/build/static serving), `terminal.py` (RFC-6455 + pty WebSocket bridge), the `templates/` package (`frame.html`, `annotation.html`, vendored xterm.js/css), and their tests. Removed the `serve` subcommand and its `--mapping-mode` UI. The flock-disciplined event bus survives in `events.py` (the headless/scripted-driver + embedding path); the reviewer-facing UI is now the `review-pdf` Electron app under `desktop/`. Rationale: the viewer's auto-reload contract was never implemented (broken in every install, unnoticed), and the Electron pivot (2026-05-17) retired this architecture by design.
 
 ## [0.1.0] - YYYY-MM-DD
 
