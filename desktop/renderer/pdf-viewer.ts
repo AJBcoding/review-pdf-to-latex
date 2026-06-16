@@ -30,9 +30,13 @@ import type {
   ViewerLoadContext,
   ViewerSelection,
 } from '@shared/file-viewer';
-import type { Anchor, AnchorKind, CommentPayload } from '@shared/types';
-import { normalizePdfAnnotations } from './pdf-annotations';
-import type { NativePdfAnnotation, RawPdfAnnotation } from './pdf-annotations';
+import type { Anchor, AnchorKind, CommentPayload, PdfQuadAnchor } from '@shared/types';
+import {
+  normalizePdfAnnotations,
+  quadToRect,
+  reconstructHighlightedText,
+} from './pdf-annotations';
+import type { NativePdfAnnotation, PdfTextBox, RawPdfAnnotation } from './pdf-annotations';
 export type { NativePdfAnnotation, RawPdfAnnotation } from './pdf-annotations';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
@@ -122,6 +126,11 @@ export class PdfViewer implements FileViewer {
   // Aborted before each new render so the prior builder's listeners go away.
   private renderAbortController: AbortController | null = null;
 
+  // rev-894c — per-page text-run boxes (PDF space), memoized so enriching
+  // several native annotations on the same page only extracts its text once.
+  // Keyed by 1-indexed page; cleared on every doc load.
+  private textBoxCache = new Map<number, PdfTextBox[]>();
+
   constructor(opts: PdfViewerOptions) {
     this.opts = {
       container: opts.container,
@@ -171,6 +180,9 @@ export class PdfViewer implements FileViewer {
       try { await this.doc.destroy(); } catch { /* ignore */ }
       this.doc = null;
     }
+
+    // A new document invalidates the prior doc's cached text-run boxes.
+    this.textBoxCache.clear();
 
     // PDF.js mutates the input buffer; pass a copy so the caller's bytes
     // stay valid for any retry / cache use.
@@ -352,6 +364,41 @@ export class PdfViewer implements FileViewer {
     const first = this.highlightLayerEl.firstElementChild;
     if (first && first instanceof HTMLElement) {
       first.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  /** Reconstruct the page text a native markup annotation covers (rev-894c).
+   *  Native annotations carry only geometry — `getAnnotations()` / the pdf-lib
+   *  walk never expose the glyphs under the highlight — so a native-pdf card
+   *  lands with an empty quote. We pull the annotation's page text via
+   *  `getTextContent()` and hit-test the per-line quads (or the bbox region when
+   *  a markup has no quads) against the text-run boxes, all in PDF user space.
+   *  Independent of the rendered page (works for any annotated page on open) and
+   *  zoom-independent (the quads are PDF points). Best effort: returns '' on any
+   *  failure so enrichment never breaks the card stream. */
+  async extractHighlightText(anchor: PdfQuadAnchor): Promise<string> {
+    if (!this.doc) return '';
+    if (anchor.page < 1 || anchor.page > this.doc.numPages) return '';
+    try {
+      let items = this.textBoxCache.get(anchor.page);
+      if (!items) {
+        const page = await this.doc.getPage(anchor.page);
+        const content = await page.getTextContent();
+        items = [];
+        for (const it of content.items) {
+          // Skip TextMarkedContent entries (no `transform` / `str` geometry).
+          if (!('transform' in it)) continue;
+          items.push({ str: it.str, x: it.transform[4], y: it.transform[5], w: it.width, h: it.height });
+        }
+        this.textBoxCache.set(anchor.page, items);
+      }
+      const rects = anchor.quads && anchor.quads.length > 0
+        ? anchor.quads.map(quadToRect)
+        : [anchor.region];
+      return reconstructHighlightedText(items, rects);
+    } catch (err) {
+      console.warn('[pdf-viewer] extractHighlightText failed', { page: anchor.page, err });
+      return '';
     }
   }
 

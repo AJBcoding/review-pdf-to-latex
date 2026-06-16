@@ -53,6 +53,105 @@ const READABLE_ANNOT_SUBTYPES = new Set<NonNullable<NativeAnnotationRef['subtype
   'Highlight', 'StrikeOut', 'Underline', 'Squiggly', 'Text',
 ]);
 
+// ─── highlighted-text reconstruction (rev-894c) ────────────────────────────
+//
+// Native markup annotations carry geometry (/Rect + /QuadPoints) but NOT the
+// page glyphs the highlight covers — so a native-pdf card lands with an empty
+// quote. We reconstruct the covered text by hit-testing the annotation quads
+// against the page's text runs (PDF.js `getTextContent`). All math is in PDF
+// user space (origin bottom-left, Y up) — the same space the quads already
+// live in — so it's zoom-independent and doesn't need a rendered text layer.
+
+/** A PDF-space axis-aligned rect (origin bottom-left, Y up). */
+export interface PdfRect {
+  /** Left edge. */ x: number;
+  /** Bottom edge. */ y: number;
+  /** Width. */ w: number;
+  /** Height. */ h: number;
+}
+
+/** One text run from PDF.js `getTextContent`, reduced to its PDF-space box.
+ *  `x`/`y` are the run origin (baseline-left, per PDF.js `TextItem.transform`
+ *  [4]/[5]); `w`/`h` are the run's advance width and font height. */
+export interface PdfTextBox {
+  str: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Collapse a markup quad (Acrobat UL/UR/LL/LR corners) to its bounding rect.
+ *  Robust to corner-order quirks by min/max-ing all four points. */
+export function quadToRect(q: Quad): PdfRect {
+  const xs = [q.x1, q.x2, q.x3, q.x4];
+  const ys = [q.y1, q.y2, q.y3, q.y4];
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+/** Length of the overlap of two 1-D intervals `[a0,a1]` and `[b0,b1]` (≥ 0). */
+function overlap1d(a0: number, a1: number, b0: number, b1: number): number {
+  return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+}
+
+/** True when a text run is "covered" by a highlight line-rect. The run baseline
+ *  (`box.y`) must sit within the rect's vertical band (expanded by a tolerance,
+ *  since the baseline rides near the rect's lower third), AND the run must
+ *  overlap the rect horizontally by at least 30% of its own width — so a glyph
+ *  mostly under the highlight counts while a neighbour barely clipped at the
+ *  edge does not. */
+function runCoveredBy(box: PdfTextBox, rect: PdfRect): boolean {
+  const tol = rect.h * 0.5;
+  const baselineInBand = box.y >= rect.y - tol && box.y <= rect.y + rect.h + tol;
+  if (!baselineInBand) return false;
+  if (box.w <= 0) {
+    // Zero-width run (e.g. a lone combining mark): fall back to a point test.
+    return box.x >= rect.x && box.x <= rect.x + rect.w;
+  }
+  const xOverlap = overlap1d(box.x, box.x + box.w, rect.x, rect.x + rect.w);
+  return xOverlap >= box.w * 0.3;
+}
+
+/** Reconstruct the text a set of highlight line-rects covers, in reading order.
+ *  Rects are processed top-to-bottom (descending PDF Y); within each line the
+ *  covered runs are ordered left-to-right and concatenated, inserting a single
+ *  space across a visible horizontal gap so adjacent words don't fuse. Lines
+ *  join with a space. Whitespace is collapsed and trimmed. Each run is assigned
+ *  to at most one line (its best vertical match) so overlapping bands never
+ *  duplicate a word. */
+export function reconstructHighlightedText(items: PdfTextBox[], rects: PdfRect[]): string {
+  if (rects.length === 0 || items.length === 0) return '';
+  // Top-to-bottom by line center (PDF Y is up, so larger center is higher).
+  const lines = [...rects].sort((a, b) => (b.y + b.h / 2) - (a.y + a.h / 2));
+
+  const lineTexts: string[] = [];
+  const used = new Set<PdfTextBox>();
+  for (const rect of lines) {
+    const covered = items
+      .filter((it) => !used.has(it) && runCoveredBy(it, rect))
+      .sort((a, b) => a.x - b.x);
+    if (covered.length === 0) continue;
+
+    let line = '';
+    let prevRight: number | null = null;
+    for (const run of covered) {
+      used.add(run);
+      if (prevRight !== null) {
+        const gap = run.x - prevRight;
+        const endsWs = /\s$/.test(line);
+        const startsWs = /^\s/.test(run.str);
+        if (gap > rect.h * 0.25 && !endsWs && !startsWs) line += ' ';
+      }
+      line += run.str;
+      prevRight = run.x + run.w;
+    }
+    lineTexts.push(line);
+  }
+  return lineTexts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 /** Format a PDF.js color (RGB 0–255) as `#rrggbb`. Null/short arrays yield
  *  undefined so the provenance block omits the field rather than lying. */
 export function formatAnnotColor(

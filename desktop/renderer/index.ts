@@ -1386,6 +1386,14 @@ async function runOpen(path: string, token: number): Promise<void> {
     // re-highlight, pdf no-ops). Replaces the per-format highlight helpers.
     viewer.applyAnchors(docState.comments);
     loaded = true;
+    // rev-894c — native-pdf cards fold in (above) with an empty quote because
+    // the read adapter only has annotation geometry, not the covered glyphs.
+    // Now the doc is rendered, hit-test each card's quads against the page text
+    // to fill `highlighted_text`. Best effort; runs once per open.
+    if (viewer instanceof PdfViewer) {
+      await enrichNativePdfHighlights(viewer);
+      if (openSuperseded(token)) return;
+    }
   } catch (err) {
     h.title.textContent = basename(path);
     showLoadError(h, null, err);
@@ -1998,6 +2006,28 @@ async function foldInNativePdfComments(path: string, sha256: string): Promise<vo
     added += 1;
   }
   if (added > 0) renderAllCards();
+}
+
+/** rev-894c — enrich folded-in native-pdf cards with their `highlighted_text`.
+ *  The L4 read adapter (pdf-comments.ts) builds native-pdf cards from pdf-lib
+ *  annotation geometry alone, so they carry an empty quote. Once the PDF is
+ *  rendered, hit-test each card's quads against the page glyphs (PDF.js
+ *  `getTextContent`, all in PDF space) to reconstruct the covered text. Only
+ *  touches native-pdf cards that still lack a quote and own a pdf-quad anchor;
+ *  re-renders the stream once if any were filled. Best effort — a failed
+ *  extraction leaves the card's empty quote untouched, never throws. */
+async function enrichNativePdfHighlights(viewer: PdfViewer): Promise<void> {
+  let changed = false;
+  for (const c of docState.comments) {
+    if (c.origin !== 'native-pdf' || c.highlighted_text) continue;
+    if (c.anchor.kind !== 'pdf-quad') continue;
+    const text = await viewer.extractHighlightText(c.anchor);
+    if (text) {
+      c.highlighted_text = text;
+      changed = true;
+    }
+  }
+  if (changed) renderAllCards();
 }
 
 /** §5.3 / L5 round-trip READ half for DOCX: read native comments off the source
