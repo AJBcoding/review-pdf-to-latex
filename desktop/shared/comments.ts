@@ -729,3 +729,55 @@ export interface SubmitAbandonRequest {
 export type SubmitAbandonResult =
   | { ok: true; renamedTo: string }
   | { ok: false; reason: 'not_found' | 'rename_failed'; error: string };
+
+// ─── §5.3 / L5 native DOCX comments IPC ────────────────────────────────────
+//
+// The renderer can't read a .docx's comments.xml itself (sandboxed, no fs), so
+// the L5 `docx-comments.ts` adapter runs in main behind these channels. Like
+// native-pdf annotations, native-docx comments are a READ PROJECTION of the
+// source file — re-derived on every open, never frozen into the drafts sidecar.
+// Create/edit/delete mutate the .docx in place (atomic write); the renderer
+// re-opens the doc to pick up the new bytes (and the fresh `w:id`s).
+
+/** Read result for `docx:readComments`. The comments are mapped straight to
+ *  unified CommentPayloads with `origin: 'native-docx'`. An empty array is the
+ *  normal no-comments case, not an error; `read_failed` is a true I/O / zip
+ *  failure (missing file, corrupt zip). */
+export type DocxCommentsReadResult =
+  | { ok: true; comments: CommentPayload[] }
+  | { ok: false; reason: 'read_failed'; error: string };
+
+/** Create a native comment over a resolved text-quote span in the .docx. */
+export interface DocxCommentCreateRequest {
+  docPath: string;
+  /** The text-quote anchor captured over the iframe's linear text. The adapter
+   *  re-resolves it against the document's run text before inserting markers. */
+  anchor: TextQuoteAnchor;
+  commentText: string;
+  author: string;
+}
+
+/** Edit a native comment's body text. `commentId` is the OOXML `w:id` (carried
+ *  on the payload as `native.comment_id`). */
+export interface DocxCommentEditRequest {
+  docPath: string;
+  commentId: string;
+  newText: string;
+}
+
+/** Delete a native comment (and its document markers). */
+export interface DocxCommentDeleteRequest {
+  docPath: string;
+  commentId: string;
+}
+
+/** Write result shared by create/edit/delete. `commentId` echoes the affected
+ *  `w:id` (the freshly-minted one for create). The reasons mirror the adapter's
+ *  own failure modes plus the I/O-layer `write_failed`. */
+export type DocxCommentWriteResult =
+  | { ok: true; commentId: string }
+  | {
+      ok: false;
+      reason: 'anchor_unresolved' | 'no_text' | 'no_document' | 'not_found' | 'write_failed';
+      error: string;
+    };
