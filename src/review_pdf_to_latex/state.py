@@ -633,12 +633,36 @@ class LegacyStateError(Exception):
     """
 
 
+# Process-lifetime cache of source-PDF digests, keyed by identity coordinates
+# (resolved path, mtime_ns, size). The source-PDF guard runs at the top of every
+# mutator (apply / revert / set-status / append-chat / record-proposal /
+# override-mapping / preview / commit-phase); a batch of N edits would otherwise
+# re-hash the full PDF N times. Caching per (path, mtime, size) collapses that to
+# a single hash as long as the file is untouched. A same-size, same-mtime swap
+# (nanosecond-resolution mtime makes this practically unreachable) is the only
+# way to defeat the key — an acceptable trade per L12's explicit cache contract.
+_MD5_CACHE: dict[tuple[str, int, int], str] = {}
+
+
 def _file_md5(path: Path) -> str:
+    key: tuple[str, int, int] | None
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None:
+        cached = _MD5_CACHE.get(key)
+        if cached is not None:
+            return cached
     h = hashlib.md5()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(65536), b""):
             h.update(chunk)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    if key is not None:
+        _MD5_CACHE[key] = digest
+    return digest
 
 
 def assert_source_pdf_unchanged(state_dir: "StateDir") -> None:

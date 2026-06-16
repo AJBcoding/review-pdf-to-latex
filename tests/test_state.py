@@ -493,3 +493,42 @@ def test_assert_source_pdf_unchanged_legacy_state_raises(tmp_path: Path) -> None
     _write_annotations_doc(sd.dir, pdf, md5=None)  # No source_pdf_md5 field
     with pytest.raises(state.LegacyStateError, match="extract --force"):
         state.assert_source_pdf_unchanged(sd)
+
+
+def test_file_md5_caches_by_path_mtime_size(tmp_path: Path, monkeypatch) -> None:
+    """rev-l12: a second hash of an unchanged file is served from cache."""
+    p = tmp_path / "src.pdf"
+    p.write_bytes(b"%PDF-1.4 cache me")
+    state._MD5_CACHE.clear()
+
+    first = state._file_md5(p)
+    assert hashlib.md5(p.read_bytes()).hexdigest() == first
+
+    # On the second call the file must not be re-opened (cache hit).
+    real_open = Path.open
+    opens = {"n": 0}
+
+    def counting_open(self, *args, **kwargs):
+        if self == p:
+            opens["n"] += 1
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    second = state._file_md5(p)
+
+    assert second == first
+    assert opens["n"] == 0
+
+
+def test_file_md5_recomputes_when_size_changes(tmp_path: Path) -> None:
+    """A changed file (new size) invalidates the cache key and re-hashes."""
+    p = tmp_path / "src.pdf"
+    p.write_bytes(b"%PDF-1.4 short")
+    state._MD5_CACHE.clear()
+
+    first = state._file_md5(p)
+    p.write_bytes(b"%PDF-1.4 a longer different body")
+    second = state._file_md5(p)
+
+    assert second != first
+    assert second == hashlib.md5(p.read_bytes()).hexdigest()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -541,12 +542,70 @@ def _enumerate_tex_files(
     return out
 
 
-def fuzzy_map(
-    annotation: Annotation,
+@dataclass(frozen=True)
+class WindowIndex:
+    """Cached `.tex` tree contents for fuzzy mapping (rev-l12).
+
+    `fuzzy_map` previously re-enumerated and re-read the entire .tex tree on
+    every annotation. The scan (rglob + per-file read/decode) is independent of
+    the annotation being mapped, so it is hoisted into this index, built once
+    via :func:`build_window_index` and reused by :func:`resolve` for every
+    annotation. The per-annotation windowing/scoring still happens in `resolve`
+    because the window character budget depends on the target length.
+
+    Fields:
+        latex_root: The root the index was built against (resolved Path).
+        files: ``(rel_posix_path, lines)`` for every readable, non-empty .tex
+            file, in the same order `_enumerate_tex_files` returns them.
+    """
+
+    latex_root: Path
+    files: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+def build_window_index(
     latex_root: Path,
     exclude: list[str] | None = None,
+) -> WindowIndex:
+    """Read every `.tex` file under `latex_root` once for reuse across mappings.
+
+    This is the annotation-independent half of fuzzy mapping (rev-l12): it
+    performs the directory scan and file reads so that mapping a whole batch of
+    annotations costs one tree read instead of one read per annotation. Pass the
+    result to :func:`resolve`.
+
+    Args:
+        latex_root: Project root to search for .tex files.
+        exclude: Path prefixes (relative to latex_root) to skip. Defaults to
+            ["build/", ".review-state/"].
+
+    Returns:
+        A :class:`WindowIndex` capturing each readable, non-empty .tex file's
+        lines. Files that fail to read/decode or are empty are skipped, matching
+        the prior `fuzzy_map` behavior.
+    """
+    if exclude is None:
+        exclude = ["build/", ".review-state/"]
+    latex_root = Path(latex_root)
+
+    files: list[tuple[str, tuple[str, ...]]] = []
+    for path in _enumerate_tex_files(latex_root, exclude):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not lines:
+            continue
+        rel = path.relative_to(latex_root).as_posix()
+        files.append((rel, tuple(lines)))
+    return WindowIndex(latex_root=latex_root, files=tuple(files))
+
+
+def resolve(
+    annotation: Annotation,
+    index: WindowIndex,
 ) -> Mapping:
-    """Map an annotation's highlighted_text to a (file, line_range) in latex_root.
+    """Map one annotation against a prebuilt :class:`WindowIndex` (rev-l12).
 
     Implements spec §12.1: sliding window of consecutive lines whose total
     character count is at most 2x the length of normalized highlighted_text;
@@ -559,17 +618,11 @@ def fuzzy_map(
 
     Args:
         annotation: The Annotation to map.
-        latex_root: Project root to search for .tex files.
-        exclude: Path prefixes (relative to latex_root) to skip. Defaults to
-            ["build/", ".review-state/"].
+        index: A :class:`WindowIndex` from :func:`build_window_index`.
 
     Returns:
         A Mapping. `needs_review` is True for any score < 0.5.
     """
-    if exclude is None:
-        exclude = ["build/", ".review-state/"]
-    latex_root = Path(latex_root)
-
     target_raw = annotation.highlighted_text or ""
     target = _normalize(target_raw)
     target_len = len(target)
@@ -589,15 +642,7 @@ def fuzzy_map(
     # Each entry: (score, rel_path, (start, end))
     all_windows: list[tuple[float, str, tuple[int, int]]] = []
 
-    for path in _enumerate_tex_files(latex_root, exclude):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if not lines:
-            continue
-
-        rel = path.relative_to(latex_root).as_posix()
+    for rel, lines in index.files:
         n = len(lines)
 
         # Sliding window: grow line-by-line up to max_window_chars; slide start
@@ -680,6 +725,22 @@ def fuzzy_map(
         needs_review=True,
         candidates=candidates,
     )
+
+
+def fuzzy_map(
+    annotation: Annotation,
+    latex_root: Path,
+    exclude: list[str] | None = None,
+) -> Mapping:
+    """Map a single annotation to a (file, line_range) in `latex_root`.
+
+    Thin wrapper that builds a one-shot :class:`WindowIndex` and resolves
+    against it; preserved for callers mapping a single annotation. To map many
+    annotations against the same tree, call :func:`build_window_index` once and
+    :func:`resolve` per annotation to avoid re-reading the tree (rev-l12).
+    """
+    index = build_window_index(latex_root, exclude)
+    return resolve(annotation, index)
 
 
 def bootstrap_state(
@@ -916,10 +977,12 @@ def run_extract(
         print(f"error: page rendering failed: {exc}", file=sys.stderr)
         return EXIT_PDFANNOTS_FAILED
 
-    # 3. Fuzzy-map every annotation.
+    # 3. Fuzzy-map every annotation. Build the window index once (one read of
+    #    the .tex tree) and resolve each annotation against it (rev-l12).
+    window_index = build_window_index(project_dir)
     mappings: dict[str, Mapping] = {}
     for ann in annotations:
-        mappings[ann.id] = fuzzy_map(ann, project_dir)
+        mappings[ann.id] = resolve(ann, window_index)
 
     # 4. Bootstrap state.
     state = bootstrap_state(annotations, mappings)

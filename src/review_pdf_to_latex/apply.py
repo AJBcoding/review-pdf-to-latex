@@ -231,6 +231,7 @@ def apply_edit(
     annotation_id: str,
     new_text: str,
     dry_run: bool = False,
+    _guard: bool = True,
 ) -> AppliedEdit:
     """Apply a single edit to a .tex file. Spec §8 `apply` row + §9.2 / §12.4.
 
@@ -257,9 +258,15 @@ def apply_edit(
 
     Raises SourcePdfChangedApplyError (exit 21) / LegacyStateApplyError (exit 22)
     via the source-PDF guard before any state read (spec §14 risk 9).
+
+    ``_guard`` is an internal escape hatch: apply_batch runs the source-PDF
+    guard once for the whole batch and passes ``_guard=False`` so each edit
+    does not re-run it (rev-l12). Callers outside this module should leave it
+    at its default.
     """
     state_dir = Path(state_dir)
-    _guard_source_pdf(state_dir)
+    if _guard:
+        _guard_source_pdf(state_dir)
     project_root = _project_root_from_state_dir(state_dir)
     state_path, state, mapping_path, mapping = _load_state_and_mapping(state_dir)
 
@@ -385,8 +392,13 @@ def apply_batch(
 
     Returns the AppliedEdit objects in the order they were applied (reverse
     line order).
+
+    The source-PDF guard (spec §14 risk 9) runs once here for the whole batch
+    rather than once per edit: the PDF cannot change mid-process between edits,
+    so each apply_edit is invoked with ``_guard=False`` (rev-l12).
     """
     state_dir = Path(state_dir)
+    _guard_source_pdf(state_dir)
     _, _, mapping_path, mapping = _load_state_and_mapping(state_dir)
 
     # Build a key: (latex_file, line_range[0]) for each edit. Edits whose
@@ -405,7 +417,12 @@ def apply_batch(
 
     results: list[AppliedEdit] = []
     for ann_id, new_text, _file, _line in annotated:
-        result = apply_edit(state_dir=state_dir, annotation_id=ann_id, new_text=new_text)
+        result = apply_edit(
+            state_dir=state_dir,
+            annotation_id=ann_id,
+            new_text=new_text,
+            _guard=False,
+        )
         results.append(result)
     return results
 
