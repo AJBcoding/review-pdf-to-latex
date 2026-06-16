@@ -25,9 +25,24 @@ export interface HtmlAnchor {
   char_length: number;
 }
 
+/** A migrated `html-selector-hint` anchor that resolved in the iframe this paint,
+ *  reported back so the host can promote it to a true `text-quote` and persist
+ *  the stronger model (§5.5 lazy upgrade). `from`/`to` are char offsets over the
+ *  iframe's extracted linear text — the same coordinate space `getContent()`
+ *  returns and the resolver re-derives positions against. */
+export interface AnchorUpgrade {
+  commentId: string;
+  from: number;
+  to: number;
+}
+
 export interface IframeDocViewerOptions {
   container: HTMLElement;
   onSelection?: (sel: ViewerSelection | null) => void;
+  /** §5.5 lazy upgrade: fired after a paint in which one or more migrated
+   *  `html-selector-hint` anchors resolved, carrying their re-captured
+   *  text-quote offsets for the host to persist (mirrors the MD write-back). */
+  onAnchorsUpgraded?: (upgrades: AnchorUpgrade[]) => void;
 }
 
 /** Project the live comment set down to the iframe-viewer `HtmlAnchor` shape:
@@ -257,6 +272,7 @@ export abstract class IframeDocViewer implements FileViewer {
     });
 
     const linear = buildLinearIndex(doc.body).text;
+    const upgrades: AnchorUpgrade[] = [];
 
     for (const c of this.comments) {
       const a = c.anchor;
@@ -267,9 +283,24 @@ export abstract class IframeDocViewer implements FileViewer {
         // change the text, so `match` offsets stay valid against a fresh walk.
         paintCharRange(doc, buildLinearIndex(doc.body), match.from, match.to);
       } else if (a.kind === 'html-selector-hint') {
-        paintSelectorHint(doc, a);
+        // Legacy locality hint: resolve to linear offsets text-first within the
+        // selector scope, then paint over the live DOM (a single-node match, so
+        // one span — identical to the pre-union paint). A successful resolution
+        // is the §5.5 upgrade trigger: the same offsets become the text-quote
+        // the host persists.
+        const off = selectorHintOffsets(doc.body, a);
+        if (off && paintCharRange(doc, buildLinearIndex(doc.body), off.from, off.to)) {
+          upgrades.push({ commentId: c.id, from: off.from, to: off.to });
+        }
       }
     }
+
+    // §5.5 lazy upgrade: migrated html-selector-hint anchors that resolved this
+    // paint now have a true text-quote position. Surface them so the host
+    // re-captures them into the comment and persists the stronger model — the
+    // HTML/DOCX twin of `syncMdAnchorsToComments`. Display already painted above;
+    // this is purely the persistence promotion across the viewer/host boundary.
+    if (upgrades.length > 0) this.opts.onAnchorsUpgraded?.(upgrades);
   }
 }
 
@@ -346,28 +377,32 @@ export function paintCharRange(doc: Document, idx: LinearIndex, from: number, to
   return true;
 }
 
-/** Legacy `html-selector-hint` paint: text-first within the selector's
- *  locality, the selector demoted to a search scope (whole body on miss). Single
- *  text node, matching the pre-union behavior — migrated v1 rows resolve here
- *  until they are re-captured as `text-quote`. */
-function paintSelectorHint(doc: Document, a: HtmlSelectorHint): void {
+/** Resolve a legacy `html-selector-hint` to its linear-text offsets `[from, to)`
+ *  under `root`, or null when it doesn't resolve. Resolution is the pre-union
+ *  behavior — the first text node under the selector's scope (whole body on a
+ *  missing/bad selector) that contains the quoted text — projected onto the
+ *  body's linear text. The match is always within one text node, so the caller
+ *  paints exactly one span (equivalent to the old `surroundContents`) and the
+ *  same offsets are the §5.5 text-quote the host persists. ONE not-found
+ *  behavior: null → skip. Exported for unit tests. */
+export function selectorHintOffsets(
+  root: HTMLElement,
+  a: HtmlSelectorHint,
+): { from: number; to: number } | null {
   try {
-    const scope = querySelectorSafe(doc, a.selector) ?? doc.body;
-    if (!scope) return;
+    const scope = querySelectorSafe(root.ownerDocument, a.selector) ?? root;
     const textNode = findTextNode(scope, a.quoted_text);
-    if (!textNode) return; // not found → skip (the one behavior)
-    const nodeText = textNode.textContent ?? '';
-    const start = nodeText.indexOf(a.quoted_text);
-    if (start < 0) return;
-    const end = Math.min(nodeText.length, start + a.quoted_text.length);
-    const range = doc.createRange();
-    range.setStart(textNode, start);
-    range.setEnd(textNode, end);
-    const mark = doc.createElement('span');
-    mark.className = 'review-highlight';
-    range.surroundContents(mark);
+    if (!textNode) return null; // not found → skip (the one behavior)
+    const start = (textNode.textContent ?? '').indexOf(a.quoted_text);
+    if (start < 0) return null;
+    const idx = buildLinearIndex(root);
+    const nodeIndex = idx.nodes.indexOf(textNode);
+    if (nodeIndex < 0) return null;
+    const from = idx.starts[nodeIndex] + start;
+    return { from, to: from + a.quoted_text.length };
   } catch {
-    // Anchor resolution failed — skip silently (orphaned).
+    // Resolution failed (e.g. detached node) — skip silently (orphaned).
+    return null;
   }
 }
 
