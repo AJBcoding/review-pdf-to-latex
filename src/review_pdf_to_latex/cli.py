@@ -347,7 +347,7 @@ def _handle_serve(args: argparse.Namespace) -> int:
 
 def _handle_wait_event(args: argparse.Namespace) -> int:
     """Block until state-events.jsonl grows (spec §8 wait-event row)."""
-    from review_pdf_to_latex.server import handle_wait_event
+    from review_pdf_to_latex.events import handle_wait_event
 
     return handle_wait_event(
         project_dir=Path(args.project_dir),
