@@ -50,6 +50,11 @@ interface CachedDir {
 }
 
 export class FileTree {
+  /** Debounce window for the filter walk. Short relative to the save
+   *  debounces (250–500ms) — this is interactive typing feedback, so it
+   *  fires soon after input settles while still coalescing fast keystrokes. */
+  private static readonly FILTER_WALK_DEBOUNCE_MS = 150;
+
   private opts: FileTreeOptions;
   private root: string | null = null;
   private showHidden = false;
@@ -61,6 +66,14 @@ export class FileTree {
   /** Current case-insensitive substring filter applied after render.
    *  Empty string = no filter. */
   private filterQuery = '';
+  /** Debounce timer for the filter walk. Each keystroke would otherwise
+   *  trigger a full recursive `loadAllForFilter()` + `render()`; coalescing
+   *  rapid input into one deferred walk keeps typing responsive on large
+   *  trees. Deliberately hand-rolled rather than `DebouncedSave`: that class
+   *  auto-registers into the quit-time drain registry, and a pending filter
+   *  walk must never be flushed at teardown (it would run a tree walk +
+   *  re-render while the window is closing) nor counted as a pending save. */
+  private filterWalkTimer: number | null = null;
 
   constructor(opts: FileTreeOptions) {
     this.opts = opts;
@@ -262,16 +275,46 @@ export class FileTree {
   }
 
   /** Case-insensitive substring filter. When active, recursively loads all
-   *  folders so matches inside collapsed dirs are surfaced. */
+   *  folders so matches inside collapsed dirs are surfaced. The recursive
+   *  walk + render is debounced so rapid typing fires it once, after input
+   *  settles; clearing the filter is cheap and applied immediately. */
   setFilter(query: string): void {
     this.filterQuery = query.trim();
     if (this.filterQuery && this.root) {
-      void this.loadAllForFilter().then(() => {
-        this.render();
-      });
+      this.scheduleFilterWalk();
     } else {
+      // Clearing back to the unfiltered view is a cheap DOM toggle — cancel
+      // any in-flight walk and reflect it now, without a debounce delay.
+      this.cancelFilterWalk();
       this.applyFilterToDom();
     }
+  }
+
+  /** (Re)arm the debounced filter walk. A prior pending walk is cancelled so
+   *  only the last keystroke within the window triggers the load + render. */
+  private scheduleFilterWalk(): void {
+    if (this.filterWalkTimer !== null) clearTimeout(this.filterWalkTimer);
+    this.filterWalkTimer = setTimeout(() => {
+      this.filterWalkTimer = null;
+      this.runFilterWalk();
+    }, FileTree.FILTER_WALK_DEBOUNCE_MS) as unknown as number;
+  }
+
+  /** Cancel a pending filter walk without running it. */
+  private cancelFilterWalk(): void {
+    if (this.filterWalkTimer !== null) {
+      clearTimeout(this.filterWalkTimer);
+      this.filterWalkTimer = null;
+    }
+  }
+
+  private runFilterWalk(): void {
+    if (!this.filterQuery || !this.root) return;
+    void this.loadAllForFilter().then(() => {
+      // The filter may have been cleared while the async walk was in flight;
+      // skip the re-render so we don't clobber the just-cleared view.
+      if (this.filterQuery) this.render();
+    });
   }
 
   private async loadAllForFilter(): Promise<void> {
