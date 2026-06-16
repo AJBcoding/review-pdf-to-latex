@@ -8,7 +8,7 @@ import { engineVersion, pdfHealth } from './engine.js';
 import { startWatch as startResultsWatch, stopWatch as stopResultsWatch } from './results-watcher.js';
 import { writeBundle as writeBundleImpl } from './bundle.js';
 import { registerAgentPaneIpc, rebindMainWindow, shutdownAgentPane } from './agent-pane-ipc.js';
-import { runSidecarMigration, findSidecarByFingerprint, buildFingerprint } from './sidecar-migration.js';
+import { findSidecarByFingerprint, buildFingerprint } from './doc-identity.js';
 import { migrateDraftsToV2 } from './drafts-migration.js';
 import { atomicWrite, atomicWriteJson } from './atomic-write.js';
 import {
@@ -56,12 +56,6 @@ function draftsPathFor(docPath: string): string {
  *  inferring from comment shapes. */
 function draftFormatForPath(docPath: string): DocFormat {
   return docFormatForPath(resolve(docPath));
-}
-
-/** Legacy sha256-based sidecar path — used only during migration to find
- *  old sidecars keyed by content hash. */
-export function legacyDraftsPathFor(docPath: string, sha256: string): string {
-  return join(dirname(resolve(docPath)), '.review-state', 'drafts', `${sha256}.json`);
 }
 
 // ─── §3.2 hidden ignore list ───────────────────────────────────────────────
@@ -349,9 +343,6 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 void app.whenReady().then(async () => {
-  // M-md-0: migrate sha256-keyed sidecars to path-based before any doc opens.
-  await runSidecarMigration(app.getPath('userData'));
-
   // Smoke-test IPC retained from the empty-shell milestone.
   typedHandle('ping', (_event, message) => {
     return `pong: ${message}`;

@@ -3,7 +3,7 @@
 // in `.review-state/submit-<id>.json`; abandonRound owns the §10.1 step-6 soft
 // tombstone rename. Both touch disk, so we exercise them against a temp dir.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -168,6 +168,39 @@ describe('promoteDraft — status flip semantics', () => {
     expect(res.ok).toBe(true);
     const entries = await readdir(reviewStateDir);
     expect(entries.some((e) => e.endsWith('.tmp'))).toBe(false);
+  });
+
+  it('uniquifies the submit_id so same-second promotes never overwrite (rev-l15)', async () => {
+    // Freeze wall-clock so all three promotes mint the same base
+    // `YYYYMMDD-HHmmss` stamp — the exact collision the frozen-round
+    // overwrite bug fell into (path derived solely from submit_id).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-15T19:39:00.000Z'));
+    try {
+      const res1 = await promoteDraft(promoteReq([makeComment({ id: 'r1' })]));
+      const res2 = await promoteDraft(promoteReq([makeComment({ id: 'r2' })]));
+      const res3 = await promoteDraft(promoteReq([makeComment({ id: 'r3' })]));
+      expect(res1.ok && res2.ok && res3.ok).toBe(true);
+      if (!res1.ok || !res2.ok || !res3.ok) return;
+
+      // Base stamp on the first; suffixed thereafter.
+      expect(res1.submitId).toBe('20260615-193900');
+      expect(res2.submitId).toBe('20260615-193900-2');
+      expect(res3.submitId).toBe('20260615-193900-3');
+
+      // All three frozen rounds coexist on disk — none clobbered.
+      for (const id of [res1.submitId, res2.submitId, res3.submitId]) {
+        expect(existsSync(join(reviewStateDir, `submit-${id}.json`))).toBe(true);
+      }
+      // The id written into each file matches its filename (results pairing
+      // is keyed on submit_id alone).
+      const onDisk: SubmitFile = JSON.parse(
+        await readFile(join(reviewStateDir, `submit-${res2.submitId}.json`), 'utf8'),
+      );
+      expect(onDisk.submit_id).toBe(res2.submitId);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

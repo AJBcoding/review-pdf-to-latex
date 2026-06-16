@@ -56,16 +56,24 @@ export function buildBundleFilename(opts: {
   return `${datePrefix} ${baseNoExt} (AJB edits).${ext}`;
 }
 
-/** Bundle ID: `YYYYMMDD-HHmmss` in UTC. Stable, sortable, dense.
- *  Used as the bundle's logical identifier in the JSON sidecar and in
- *  the gt-mail subject (§10.1). Distinct from `submit_id` which is
- *  minted at Submit time by rev-1md.4. */
-export function mintBundleId(date: Date): string {
+/** Canonical timestamp id: `YYYYMMDD-HHmmss` in UTC. Stable, sortable, dense.
+ *  The single minting fn behind both `bundle_id` and `submit_id` (rev-l15) —
+ *  previously each had its own byte-identical copy. Second-resolution, so two
+ *  mints in the same UTC second collide; callers that key a file path on the
+ *  result must uniquify (see submit.ts promoteDraft). */
+export function mintTimestampId(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return (
     `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}` +
     `-${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`
   );
+}
+
+/** Bundle ID: the bundle's logical identifier in the JSON sidecar and in
+ *  the gt-mail subject (§10.1). Distinct in semantics from `submit_id` which
+ *  is minted at Submit time by rev-1md.4; both share the canonical shape. */
+export function mintBundleId(date: Date): string {
+  return mintTimestampId(date);
 }
 
 /** Engagement-level palette (bd rev-pya).
