@@ -261,10 +261,13 @@ async function flushDraftsWrite(): Promise<void> {
     schema_version: 2,
     doc_version: docState.sha256,
     format: docFormatForPath(docState.path),
-    // L3: native PDF annotations are a read-projection of the source — they're
-    // re-derived on every open, so we never freeze them into the working-state
-    // sidecar (they'd just be deduped away on the next render anyway).
-    comments: docState.comments.filter((c) => c.origin !== 'native-pdf'),
+    // L3 / L5: native annotations are a read-projection of the source —
+    // re-derived on every open (PDF.js getAnnotations for PDF, the docx-comments
+    // adapter for DOCX), so we never freeze them into the working-state sidecar
+    // (they'd just be deduped away on the next render anyway).
+    comments: docState.comments.filter(
+      (c) => c.origin !== 'native-pdf' && c.origin !== 'native-docx',
+    ),
   };
   draftsCache.set(draftsCacheKey(docState.path, docState.sha256), file);
   const res = await window.electronAPI.writeDrafts(docState.path, file);
@@ -1321,6 +1324,14 @@ async function runOpen(path: string, token: number): Promise<void> {
   await loadDraftsForCurrentDoc();
   if (openSuperseded(token)) return;
 
+  // §5.3 / L5 — fold native DOCX comments (read off the source via the main
+  // adapter) into the live stream before anchors are projected, so they paint
+  // alongside the app drafts. The docx twin of handleNativeAnnotations.
+  if (viewerKind === 'docx') {
+    await foldInNativeDocxComments(path, bytesResult.sha256);
+    if (openSuperseded(token)) return;
+  }
+
   // Results watching is PDF-only (results come from the PDF-only Submit
   // pipeline). Failures aren't fatal — just surface them.
   if (isPdf) {
@@ -1797,6 +1808,25 @@ async function handleSubmit(): Promise<void> {
   // since they started editing — the anchor was captured at create time.
   if (editingCommentId) {
     const c = docState.comments.find((x) => x.id === editingCommentId);
+    // §5.3 / L5 — editing a native-docx card writes the new body back into the
+    // .docx comments.xml via the adapter, then re-opens to refresh. The body is
+    // not kept in the drafts sidecar, so an in-memory mutation alone would be
+    // lost on the next open.
+    if (c && c.origin === 'native-docx') {
+      const nid = c.native?.comment_id;
+      editingCommentId = null;
+      clearInput();
+      updateAnchorMeta();
+      if (!nid) { flashAnchorMeta('Native comment is missing its id; cannot edit.'); return; }
+      const res = await window.electronAPI.editDocxComment({
+        docPath: docState.path,
+        commentId: nid,
+        newText: buf,
+      });
+      if (!res.ok) { flashAnchorMeta(`Edit failed (${res.reason}): ${res.error}`); return; }
+      await openDocument(docState.path);
+      return;
+    }
     if (c) {
       if (c.engagement_level === 'redraft') c.redraft = buf;
       else c.comment = buf;
@@ -1926,6 +1956,39 @@ function handleNativeAnnotations(annots: NativePdfAnnotation[]): void {
   // filters `native-pdf` out too, so an app-authored write won't carry them.
   // They DO ride along in an explicit bundle/submit (the frozen deliverable).
   activeViewer?.applyAnchors(docState.comments);
+}
+
+/** §5.3 / L5 round-trip READ half for DOCX: read native comments off the source
+ *  .docx via the main adapter and fold them into the live stream as native-docx
+ *  cards. The docx twin of {@link handleNativeAnnotations} — a read-projection of
+ *  the file, surfaced as cards but NOT persisted to the drafts sidecar
+ *  (`flushDraftsWrite` filters `native-docx` out, same as `native-pdf`), so it's
+ *  re-derived on every open and the .docx stays the single source of truth.
+ *  Deduped by `native.comment_id` so a re-entrant open never double-adds. Called
+ *  before anchors are projected so the cards highlight on first paint. */
+async function foldInNativeDocxComments(path: string, sha256: string): Promise<void> {
+  const res = await window.electronAPI.readDocxComments(path, sha256);
+  // Bail if the doc switched (or re-seeded to a new sha) under the await.
+  if (docState.path !== path || docState.sha256 !== sha256) return;
+  if (!res.ok) {
+    flashAnchorMeta(`Native DOCX comments failed to load (${res.reason}): ${res.error}`);
+    return;
+  }
+  if (res.comments.length === 0) return;
+  const seen = new Set(
+    docState.comments
+      .map((c) => c.native?.comment_id)
+      .filter((id): id is string => !!id),
+  );
+  let added = 0;
+  for (const c of res.comments) {
+    const nid = c.native?.comment_id;
+    if (nid && seen.has(nid)) continue;
+    if (nid) seen.add(nid);
+    docState.comments.push(c);
+    added += 1;
+  }
+  if (added > 0) renderAllCards();
 }
 
 /** Build a v2 `native-pdf` comment from a normalized native annotation (L3).
@@ -2270,6 +2333,17 @@ async function deleteComment(id: string): Promise<void> {
   const snippet = preview ? `\n\n"${truncate(preview, 80)}"` : '';
   const ok = window.confirm(`Delete this ${labelFor(c.engagement_level)}?${snippet}`);
   if (!ok) return;
+  // §5.3 / L5 — a native-docx card lives in the .docx, not the drafts sidecar.
+  // Route the delete to the adapter (removes the comment + its markers), then
+  // re-open so the freshly-written bytes re-derive the card stream.
+  if (c.origin === 'native-docx') {
+    const nid = c.native?.comment_id;
+    if (!nid) { flashAnchorMeta('Native comment is missing its id; cannot delete.'); return; }
+    const res = await window.electronAPI.deleteDocxComment({ docPath: docState.path, commentId: nid });
+    if (!res.ok) { flashAnchorMeta(`Delete failed (${res.reason}): ${res.error}`); return; }
+    await openDocument(docState.path);
+    return;
+  }
   docState.comments = docState.comments.filter((x) => x.id !== id);
   if (focusedCommentId === id) focusedCommentId = null;
   if (editingCommentId === id) cancelEdit();

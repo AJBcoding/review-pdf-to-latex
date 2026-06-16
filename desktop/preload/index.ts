@@ -7,6 +7,9 @@ import type {
   SubmitAbandonRequest,
   SubmitPromoteRequest,
   SubmitSlingRequest,
+  DocxCommentCreateRequest,
+  DocxCommentEditRequest,
+  DocxCommentDeleteRequest,
 } from '@shared/comments';
 import type {
   AppStateFile,
@@ -82,6 +85,16 @@ const electronAPI: ElectronAPI = {
   // surface. Backs Sling gating (gt presence + identity) on the SDK route;
   // the handler now lives in agent-pane-ipc.ts.
   probeReviewer: () => ipcRenderer.invoke(IPC_INVOKE.probeReviewer),
+
+  // ─── §5.3 / L5 native DOCX comments ────────────────────────────────────
+  readDocxComments: (docPath: string, docVersion: string) =>
+    ipcRenderer.invoke(IPC_INVOKE.readDocxComments, docPath, docVersion),
+  createDocxComment: (request: DocxCommentCreateRequest) =>
+    ipcRenderer.invoke(IPC_INVOKE.createDocxComment, request),
+  editDocxComment: (request: DocxCommentEditRequest) =>
+    ipcRenderer.invoke(IPC_INVOKE.editDocxComment, request),
+  deleteDocxComment: (request: DocxCommentDeleteRequest) =>
+    ipcRenderer.invoke(IPC_INVOKE.deleteDocxComment, request),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

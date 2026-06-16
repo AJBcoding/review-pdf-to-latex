@@ -13,6 +13,7 @@ import {
 import { typedHandle } from './typed-ipc.js';
 import { assertObjectArg, assertPathArg, assertStringArg } from './ipc-validators.js';
 import { registerFsIpc } from './fs-ipc.js';
+import { registerDocxIpc } from './docx-ipc.js';
 import {
   clearPrimaryWindow,
   registerExternalOpenReady,
@@ -92,6 +93,11 @@ if (setupSingleInstance()) {
     // §3.x filesystem + document surface (dialogs, bytes, drafts, app state,
     // dir listing, recursive index, text write, file watch).
     registerFsIpc();
+
+    // §5.3 / L5 — native DOCX comments surface (read on open; create/edit/delete
+    // route to the comments.xml adapter). Renderer folds the reads in as
+    // native-docx cards alongside app drafts.
+    registerDocxIpc();
 
     // §10.1 step 6 + §10.3 — results-file watcher lifecycle. Renderer calls
     // start right after loadPdf resolves a sha256; stop fires on doc switch

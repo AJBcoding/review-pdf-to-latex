@@ -24,6 +24,11 @@ import type {
   SubmitSlingResult,
   SubmitAbandonRequest,
   SubmitAbandonResult,
+  DocxCommentsReadResult,
+  DocxCommentCreateRequest,
+  DocxCommentEditRequest,
+  DocxCommentDeleteRequest,
+  DocxCommentWriteResult,
 } from './comments';
 import type {
   OpenFolderDialogResult,
@@ -152,6 +157,18 @@ export interface ElectronAPI {
   // worker ptys were retired in X8 stage 4 (rev-enext.3) in favor of the SDK
   // agent pane (window.agentViewer); the handler lives in agent-pane-ipc.ts.
   probeReviewer(): Promise<ReviewerProbe>;
+
+  // ─── §5.3 / L5 native DOCX comments ─────────────────────────────────────
+  // The L5 docx-comments adapter (main) reads/writes a .docx's comments.xml +
+  // document.xml range markers; the renderer reaches it through these channels.
+  // Native-docx comments are a read-projection of the source file (like
+  // native-pdf annotations) — surfaced as cards on open, re-derived every time,
+  // never persisted to the drafts sidecar. Create/edit/delete mutate the .docx
+  // atomically; the renderer re-opens the doc to refresh after a write.
+  readDocxComments(docPath: string, docVersion: string): Promise<DocxCommentsReadResult>;
+  createDocxComment(request: DocxCommentCreateRequest): Promise<DocxCommentWriteResult>;
+  editDocxComment(request: DocxCommentEditRequest): Promise<DocxCommentWriteResult>;
+  deleteDocxComment(request: DocxCommentDeleteRequest): Promise<DocxCommentWriteResult>;
 }
 
 declare global {
@@ -198,6 +215,10 @@ export const IPC_INVOKE = {
   submitSling: 'submit:sling',
   submitAbandonRound: 'submit:abandonRound',
   probeReviewer: 'pty:probeReviewer',
+  readDocxComments: 'docx:readComments',
+  createDocxComment: 'docx:createComment',
+  editDocxComment: 'docx:editComment',
+  deleteDocxComment: 'docx:deleteComment',
 } as const satisfies Partial<Record<keyof ElectronAPI, string>>;
 
 /** Invoke-style `ElectronAPI` method names — the keys of {@link IPC_INVOKE}. */
