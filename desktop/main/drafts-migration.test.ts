@@ -9,6 +9,7 @@ import {
   downConvertSubmitFileToV1,
   normalizeAnchor,
   normalizeResultsFile,
+  normalizeSubmitFile,
   type CommentPayload,
   type SubmitFile,
 } from '@shared/comments';
@@ -239,6 +240,63 @@ describe('down-converter — §4.4 step 1 (acceptance criterion 6)', () => {
     // No union/origin/native fields leak into the v1 shape.
     expect((c as unknown as { origin?: unknown }).origin).toBeUndefined();
     expect((c as unknown as { native?: unknown }).native).toBeUndefined();
+  });
+});
+
+describe('normalizeSubmitFile / down-convert — §4.2 bundle generalization', () => {
+  function v1OnDisk(): SubmitFile {
+    // A v1 submit file read back off disk: PDF aliases only, no `format`.
+    return {
+      schema_version: 1,
+      submit_id: 's1',
+      doc_id: '/proj/doc',
+      doc_version: 'sha',
+      source_file_version: '1.0',
+      submitted_at: '2026-06-14T00:00:00.000Z',
+      origin_rig: null,
+      bundle_pdf: '/proj/.review-state/bundle.pdf',
+      bundle_json: '/proj/.review-state/bundle.json',
+      comments: [],
+    };
+  }
+
+  it('back-fills format=pdf and generalized paths from the v1 aliases', () => {
+    const sf = normalizeSubmitFile(v1OnDisk());
+    expect(sf.format).toBe('pdf');
+    expect(sf.native_artifact_path).toBe('/proj/.review-state/bundle.pdf');
+    expect(sf.sidecar_json_path).toBe('/proj/.review-state/bundle.json');
+  });
+
+  it('is idempotent and preserves an explicit non-PDF format', () => {
+    const v2: SubmitFile = {
+      ...v1OnDisk(),
+      schema_version: 2,
+      format: 'docx',
+      native_artifact_path: '/proj/.review-state/bundle.docx',
+      sidecar_json_path: '/proj/.review-state/comments.json',
+      bundle_pdf: undefined,
+      bundle_json: undefined,
+    };
+    const once = normalizeSubmitFile(v2);
+    const twice = normalizeSubmitFile(once);
+    expect(twice.format).toBe('docx');
+    expect(twice.native_artifact_path).toBe('/proj/.review-state/bundle.docx');
+    expect(twice.sidecar_json_path).toBe('/proj/.review-state/comments.json');
+  });
+
+  it('down-converts a v2 file that populated only the generalized PDF paths', () => {
+    const v2: SubmitFile = {
+      ...v1OnDisk(),
+      schema_version: 2,
+      format: 'pdf',
+      native_artifact_path: '/proj/.review-state/bundle.pdf',
+      sidecar_json_path: '/proj/.review-state/bundle.json',
+      bundle_pdf: undefined,
+      bundle_json: undefined,
+    };
+    const v1 = downConvertSubmitFileToV1(v2);
+    expect(v1.bundle_pdf).toBe('/proj/.review-state/bundle.pdf');
+    expect(v1.bundle_json).toBe('/proj/.review-state/bundle.json');
   });
 });
 

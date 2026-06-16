@@ -302,10 +302,19 @@ export interface SubmitFile {
   source_file_version: string;
   submitted_at: string;
   origin_rig: string | null;
-  /** Deprecated PDF-round aliases, kept populated through the transition
-   *  window (D11), dropped at v3. v2 generalizes these to
-   *  `native_artifact_path` / `sidecar_json_path` + `format` for non-PDF
-   *  rounds (§4.2) — added when step 4 lands; not written yet. */
+  /** v2 bundle generalization (§4.2): the round's native artifact + sidecar
+   *  paths and the document format, replacing the PDF-shaped `bundle_pdf` /
+   *  `bundle_json` pair. For PDF rounds `native_artifact_path` equals
+   *  `bundle_pdf` and `sidecar_json_path` equals `bundle_json`; non-PDF rounds
+   *  (md/docx/html) populate only the generalized fields. `format` is absent on
+   *  v1 files read off disk — `normalizeSubmitFile` defaults it to `'pdf'` and
+   *  back-fills the generalized paths from the deprecated aliases. */
+  native_artifact_path?: string;
+  sidecar_json_path?: string;
+  format?: DocFormat;
+  /** Deprecated PDF-round aliases (§4.2, OWNER-CONFIRMED D11), kept populated
+   *  for PDF rounds through the transition window, dropped at v3. Superseded by
+   *  `native_artifact_path` / `sidecar_json_path` + `format`. */
   bundle_pdf?: string;
   bundle_json?: string;
   comments: CommentPayload[];
@@ -365,8 +374,12 @@ export function downConvertSubmitFileToV1(sf: SubmitFile): SubmitFileV1 {
     source_file_version: sf.source_file_version,
     submitted_at: sf.submitted_at,
     origin_rig: sf.origin_rig,
-    bundle_pdf: sf.bundle_pdf,
-    bundle_json: sf.bundle_json,
+    // Only PDF rounds promote during the transition window, so the v1 shape
+    // carries the PDF aliases. Fall back to the generalized paths when a v2
+    // submit file populated only those (§4.2): the format is PDF (or absent,
+    // which the v1 reader treats as PDF).
+    bundle_pdf: sf.bundle_pdf ?? (sf.format === undefined || sf.format === 'pdf' ? sf.native_artifact_path : undefined),
+    bundle_json: sf.bundle_json ?? (sf.format === undefined || sf.format === 'pdf' ? sf.sidecar_json_path : undefined),
     comments: sf.comments.map(downConvertCommentToV1),
   };
 }
@@ -440,6 +453,13 @@ export function normalizeResultsFile(rf: ResultsFile): ResultsFile {
 export function normalizeSubmitFile(sf: SubmitFile): SubmitFile {
   return {
     ...sf,
+    // v2 bundle generalization (§4.2): a v1 file read off disk carries only the
+    // PDF aliases and no `format`. Present the generalized shape so downstream
+    // only ever sees `native_artifact_path`/`sidecar_json_path` + `format`
+    // (mirrors the v1-default `'pdf-glyph-rect'` sidecar convention). Idempotent.
+    format: sf.format ?? 'pdf',
+    native_artifact_path: sf.native_artifact_path ?? sf.bundle_pdf,
+    sidecar_json_path: sf.sidecar_json_path ?? sf.bundle_json,
     comments: sf.comments.map((c) => {
       const anchor = normalizeAnchor(c.anchor);
       const newAnchor = c.new_anchor == null ? c.new_anchor : normalizeAnchor(c.new_anchor);
@@ -586,9 +606,17 @@ export interface SubmitPromoteRequest {
    *  for filenames that don't conform. */
   sourceFileVersion: string | null;
   /** Bundle metadata to embed in the submit file. The bundle should already
-   *  be on disk by the time promote is called (writeBundle ran first). */
+   *  be on disk by the time promote is called (writeBundle ran first). These
+   *  carry the round's native artifact and sidecar paths — for PDF rounds the
+   *  fields keep their legacy names but feed both the generalized
+   *  `native_artifact_path`/`sidecar_json_path` and the deprecated
+   *  `bundle_pdf`/`bundle_json` aliases (§4.2). */
   bundlePdfPath: string;
   bundleJsonPath: string;
+  /** Document format for this round (§4.2). Defaults to `'pdf'` — the only
+   *  format that promotes during the transition window — when omitted. Drives
+   *  whether the deprecated `bundle_pdf`/`bundle_json` aliases are populated. */
+  format?: DocFormat;
   /** Origin rig recorded at launch via `--from`. Null for standalone. */
   originRig: string | null;
   /** The current in-memory drafts. Entries with status:'open' (or missing)

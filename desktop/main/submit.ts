@@ -118,6 +118,12 @@ export async function promoteDraft(
   // pdf_annotation_id. The submit-WRITER flip to v2 is gated on an OBSERVED
   // rig-written schema_version:2 results file (§4.4 step 3) and is NOT done
   // here — sufficient because only PDF rounds promote during the window.
+  // §4.2 bundle generalization: the submit file carries the round's native
+  // artifact + sidecar paths and its format. The deprecated `bundle_pdf` /
+  // `bundle_json` aliases stay populated for PDF rounds through the transition
+  // window (OWNER-CONFIRMED D11); non-PDF rounds populate only the generalized
+  // fields. Today's only caller is PDF, so `format` defaults to `'pdf'`.
+  const format = req.format ?? 'pdf';
   const submitFile: SubmitFile = {
     schema_version: 2,
     submit_id: submitId,
@@ -126,8 +132,11 @@ export async function promoteDraft(
     source_file_version: req.sourceFileVersion ?? '',
     submitted_at: submittedAt,
     origin_rig: req.originRig,
-    bundle_pdf: req.bundlePdfPath,
-    bundle_json: req.bundleJsonPath,
+    format,
+    native_artifact_path: req.bundlePdfPath,
+    sidecar_json_path: req.bundleJsonPath,
+    bundle_pdf: format === 'pdf' ? req.bundlePdfPath : undefined,
+    bundle_json: format === 'pdf' ? req.bundleJsonPath : undefined,
     comments: frozenComments,
   };
 
