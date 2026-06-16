@@ -5,7 +5,7 @@
 // read-before-write idempotency guard (N2) can be tested rig-free: the live
 // renderer only injects `window.electronAPI` + crypto + the clock here.
 
-import type { ReadPdfBytesResult } from '@shared/engine';
+import type { ReadFileBytesResult } from '@shared/engine';
 import type {
   CommentPayload,
   DocFormat,
@@ -29,9 +29,9 @@ function formatForPath(p: string): DocFormat {
 /** I/O + entropy the seed needs, injected so tests can supply in-memory fakes.
  *  Method shapes match the corresponding `window.electronAPI` methods. */
 export interface SeedDraftIO {
-  readPdfBytes(pdfPath: string): Promise<ReadPdfBytesResult>;
-  readDrafts(pdfPath: string, sha256: string): Promise<DraftsReadResult>;
-  writeDrafts(pdfPath: string, sha256: string, file: DraftsFile): Promise<DraftsWriteResult>;
+  readFileBytes(docPath: string): Promise<ReadFileBytesResult>;
+  readDrafts(docPath: string): Promise<DraftsReadResult>;
+  writeDrafts(docPath: string, file: DraftsFile): Promise<DraftsWriteResult>;
   randomUUID(): string;
   nowIso(): string;
 }
@@ -72,7 +72,7 @@ export async function seedNextVersionDraft(
   if (!results.new_source_path) return { kind: 'noop', reason: 'no_new_source' };
 
   // Read the new file's bytes to compute its sha256 = new doc_version.
-  const bytes = await io.readPdfBytes(results.new_source_path);
+  const bytes = await io.readFileBytes(results.new_source_path);
   if (!bytes.ok) {
     return {
       kind: 'error',
@@ -83,7 +83,7 @@ export async function seedNextVersionDraft(
   const newDocId = bytes.resolvedPath;
 
   // Read-before-write guard (N2): never clobber an existing v1.1 sidecar.
-  const existing = await io.readDrafts(newDocId, newSha);
+  const existing = await io.readDrafts(newDocId);
   if (existing.ok && existing.file !== null) {
     return { kind: 'skipped-existing', docId: newDocId, sha256: newSha };
   }
@@ -122,7 +122,7 @@ export async function seedNextVersionDraft(
     format: formatForPath(newDocId),
     comments: reraised,
   };
-  const res = await io.writeDrafts(newDocId, newSha, file);
+  const res = await io.writeDrafts(newDocId, file);
   if (!res.ok) {
     return {
       kind: 'error',

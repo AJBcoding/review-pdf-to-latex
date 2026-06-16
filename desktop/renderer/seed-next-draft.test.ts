@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { seedNextVersionDraft, type SeedDraftIO } from './seed-next-draft';
-import type { ReadPdfBytesResult } from '@shared/engine';
+import type { ReadFileBytesResult } from '@shared/engine';
 import type {
   Anchor,
   CommentPayload,
@@ -54,7 +54,7 @@ class FakeDisk {
 
   io(): SeedDraftIO {
     return {
-      readPdfBytes: async (p): Promise<ReadPdfBytesResult> => {
+      readFileBytes: async (p): Promise<ReadFileBytesResult> => {
         if (this.bytesFails) {
           return { ok: false, reason: 'not_found', resolvedPath: p };
         }
@@ -65,7 +65,7 @@ class FakeDisk {
         if (!file) return { ok: true, file: null, filePath: p, reason: 'not_found' };
         return { ok: true, file, filePath: p };
       },
-      writeDrafts: async (p, _sha, file) => {
+      writeDrafts: async (p, file) => {
         if (this.writeFails) {
           return { ok: false, reason: 'write_failed', filePath: p, error: 'disk full' };
         }

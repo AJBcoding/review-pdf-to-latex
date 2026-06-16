@@ -81,15 +81,16 @@ export type PdfHealthResult =
   | { ok: false; reason: 'engine_failed'; engine: EngineResult };
 
 /**
- * Result of reading a PDF file from disk into renderer memory.
+ * Result of reading a document file from disk into renderer memory.
  * The renderer is sandboxed and can't access the filesystem directly;
- * main reads the bytes and ships them across the IPC boundary.
+ * main reads the bytes and ships them across the IPC boundary. Format-agnostic:
+ * the same loader serves pdf/md/html/docx.
  *
  * `sha256` is the hex digest of the bytes — used as `doc_version` for
- * drafts persistence (§10.3) and as the drafts filename. Computed in main
- * because we already have the buffer there.
+ * drafts persistence (§10.3). Computed in main because we already have the
+ * buffer there.
  */
-export type ReadPdfBytesResult =
+export type ReadFileBytesResult =
   | { ok: true; bytes: Uint8Array; resolvedPath: string; sha256: string }
   | { ok: false; reason: 'not_found' | 'not_a_file' | 'read_failed'; resolvedPath: string; error?: string };
 
