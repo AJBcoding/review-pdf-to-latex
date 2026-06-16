@@ -329,16 +329,22 @@ async function commitCtx(): Promise<void> {
     mode = { kind: 'ralph-loop', iterations: n };
   }
   const bundle = buildBundle(prompt);
+  if (!window.agentViewer) {
+    flashErr(refsRef.ctxModal, 'Create Context failed: agent bridge missing');
+    return;
+  }
   refsRef.ctxSubmit.disabled = true;
   try {
     const sessionId = `worker-ctx-${Date.now()}`;
     const agentPrompt = bundleToPrompt(bundle, 'create-context', mode);
-    await window.agentViewer?.spawnSession({
+    await window.agentViewer.spawnSession({
       sessionId,
       prompt: agentPrompt,
       docSourceDir: ctxRef.docSourceDir(),
     });
     closeModal(refsRef.ctxModal);
+  } catch (err) {
+    flashErr(refsRef.ctxModal, `Create Context failed: ${errMsg(err)}`);
   } finally {
     refsRef.ctxSubmit.disabled = false;
   }
@@ -367,16 +373,22 @@ async function commitSling(): Promise<void> {
     return;
   }
   const bundle = buildBundle(prompt);
+  if (!window.agentViewer) {
+    flashErr(refsRef.slingModal, 'Sling failed: agent bridge missing');
+    return;
+  }
   refsRef.slingSubmit.disabled = true;
   try {
     const sessionId = `worker-sling-${Date.now()}`;
     const agentPrompt = bundleToPrompt(bundle, 'sling', undefined, destination);
-    await window.agentViewer?.spawnSession({
+    await window.agentViewer.spawnSession({
       sessionId,
       prompt: agentPrompt,
       docSourceDir: ctxRef.docSourceDir(),
     });
     closeModal(refsRef.slingModal);
+  } catch (err) {
+    flashErr(refsRef.slingModal, `Sling failed: ${errMsg(err)}`);
   } finally {
     refsRef.slingSubmit.disabled = false;
   }
@@ -407,12 +419,18 @@ async function commitFresh(): Promise<void> {
       docSourceDir,
     });
     closeModal(refsRef.freshModal);
+  } catch (err) {
+    flashErr(refsRef.freshModal, `Fresh start failed: ${errMsg(err)}`);
   } finally {
     refsRef.freshSubmit.disabled = false;
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 function flashErr(modal: HTMLElement, message: string): void {
   // Inline error: prepend a banner inside the modal body. Removed after 5s.

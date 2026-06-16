@@ -113,6 +113,14 @@ body {
   border-color: var(--accent);
 }
 
+.statusbar__btn[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.statusbar__btn[aria-pressed="false"] {
+  color: var(--fg-muted);
+}
+
 .statusbar__btn--danger {
   color: var(--error-fg);
   border-color: rgba(224, 108, 117, 0.3);

@@ -11,6 +11,18 @@ function readCostPref(): boolean {
   catch { return true; }
 }
 
+// Single writer for the cost-display pref: persist to localStorage, then
+// broadcast the same event StatusFooter (and any future listener) consumes,
+// so the toggle stays the one source of truth. Replaces the deleted
+// bootClaudeSettings() DOM toggle (rev-3fr §1).
+function writeCostPref(show: boolean): void {
+  try { localStorage.setItem("pdf-latex-show-cost", show ? "1" : "0"); }
+  catch { /* localStorage unavailable — event still syncs in-session */ }
+  window.dispatchEvent(
+    new CustomEvent("settings:cost-display-changed", { detail: { show } }),
+  );
+}
+
 export function StatusFooter() {
   const session = useStore((s) => s.session);
   const busy = useStore((s) => s.busy);
@@ -46,6 +58,16 @@ export function StatusFooter() {
           <span className="statusbar__field">last {fmtCost(lastTurn.totalCostUsd)}</span>
         </>
       )}
+      <span className="statusbar__spacer" />
+      <button
+        type="button"
+        className="statusbar__btn"
+        aria-pressed={showCost}
+        title={showCost ? "Hide per-turn cost" : "Show per-turn cost"}
+        onClick={() => writeCostPref(!showCost)}
+      >
+        {showCost ? "$ on" : "$ off"}
+      </button>
     </div>
   );
 }
