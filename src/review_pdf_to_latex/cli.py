@@ -785,7 +785,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         raise SystemExit(2)
     handler = _HANDLERS_TABLE[args.subcommand]
-    return handler(args)
+    # Top-level schema-version backstop (rev-l1 / C3). Mutators wrap the guard
+    # per-handler into Apply/CommitError subclasses; readers that go straight
+    # through state.read_json (status / build / preview / migrate-state) let the
+    # error propagate here, where it maps to the single spec-§8 code (rides X10).
+    from . import state as _state
+
+    try:
+        return handler(args)
+    except _state.MigrationRequiredError as exc:
+        return _emit_error(
+            args, f"migration required: {exc}", EXIT_MIGRATION_REQUIRED
+        )
+    except _state.SchemaVersionError as exc:
+        return _emit_error(
+            args, f"schema version unsupported: {exc}", EXIT_SCHEMA_UNSUPPORTED
+        )
 
 
 def _emit_error(args: argparse.Namespace, message: str, exit_code: int) -> int:
@@ -841,6 +856,7 @@ from .exit_codes import (  # noqa: E402,F401  (re-export for the contract surfac
     EXIT_LEGACY_STATE,
     EXIT_MAIN_FILE_NOT_FOUND,
     EXIT_MAPPING_UNRESOLVED,
+    EXIT_MIGRATION_REQUIRED,
     EXIT_MISSING_PDF,
     EXIT_NO_PRIOR_APPLY,
     EXIT_OK,
@@ -849,6 +865,7 @@ from .exit_codes import (  # noqa: E402,F401  (re-export for the contract surfac
     EXIT_PORT_UNAVAILABLE,
     EXIT_RESTORE_FAILED,
     EXIT_REVIEWER_RIG_REFUSED,
+    EXIT_SCHEMA_UNSUPPORTED,
     EXIT_SOURCE_PDF_CHANGED,
     EXIT_STATE_MISSING,
     EXIT_UNSUPPORTED_MIGRATION,
