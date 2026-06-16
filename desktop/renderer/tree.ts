@@ -19,6 +19,7 @@
 // separation as PdfViewer / loadPdf.
 
 import type { DirEntry } from '@shared/files';
+import { basename } from '@shared/paths';
 
 export interface FileTreeOptions {
   /** Element the tree paints into. The tree replaces its children on every
@@ -438,9 +439,4 @@ function iconFor(kind: DirEntry['kind']): string {
     case 'docx':return '📃';
     default:    return '·';
   }
-}
-
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(i + 1) : p;
 }
