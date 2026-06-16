@@ -341,6 +341,76 @@ def test_fuzzy_map_failed_match_below_threshold(sample_project: Path) -> None:
         assert result.method == "fuzzy_text"
 
 
+from review_pdf_to_latex.extract import build_window_index, resolve
+
+
+def test_build_window_index_reads_tree_once_excludes_build(
+    sample_project: Path,
+) -> None:
+    """build_window_index captures non-empty .tex files and skips build/."""
+    index = build_window_index(sample_project)
+    rels = [rel for rel, _lines in index.files]
+
+    assert "chapters/intro.tex" in rels
+    assert "chapters/methods.tex" in rels
+    assert "main.tex" in rels
+    # build/ is excluded by default, mirroring fuzzy_map.
+    assert not any(rel.startswith("build/") for rel in rels)
+    # Lines are captured as tuples (frozen index).
+    for _rel, lines in index.files:
+        assert isinstance(lines, tuple)
+
+
+def test_resolve_matches_fuzzy_map_high_confidence(sample_project: Path) -> None:
+    """resolve(ann, index) returns the same Mapping fuzzy_map would (rev-l12)."""
+    ann = _ann(
+        "The College of the Arts experienced a substantial increase in "
+        "enrollment between 2019 and 2024, growing from 1,200 to 1,680 "
+        "undergraduate students across all majors."
+    )
+    index = build_window_index(sample_project)
+
+    via_resolve = resolve(ann, index)
+    via_fuzzy = fuzzy_map(ann, sample_project)
+
+    assert via_resolve == via_fuzzy
+    assert via_resolve.latex_file == "chapters/intro.tex"
+    assert via_resolve.confidence >= 0.5
+
+
+def test_resolve_reuses_one_index_across_annotations(sample_project: Path) -> None:
+    """One index resolves many annotations identically to per-call fuzzy_map."""
+    anns = [
+        _ann(
+            "The College of the Arts experienced a substantial increase in "
+            "enrollment between 2019 and 2024, growing from 1,200 to 1,680 "
+            "undergraduate students across all majors.",
+            "ann-001",
+        ),
+        _ann(
+            "We surveyed 412 students using a stratified random sample drawn "
+            "from each declared major. Response rate was 67 percent.",
+            "ann-002",
+        ),
+    ]
+    index = build_window_index(sample_project)
+
+    for ann in anns:
+        assert resolve(ann, index) == fuzzy_map(ann, sample_project)
+
+
+def test_resolve_empty_target_fails_without_reading_index(
+    sample_project: Path,
+) -> None:
+    """An empty highlighted_text short-circuits to a failed Mapping."""
+    index = build_window_index(sample_project)
+    result = resolve(_ann(""), index)
+
+    assert result.method == "failed"
+    assert result.latex_file is None
+    assert result.needs_review is True
+
+
 from review_pdf_to_latex.extract import bootstrap_state
 from review_pdf_to_latex.state import StateFile
 

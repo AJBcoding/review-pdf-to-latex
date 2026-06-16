@@ -339,6 +339,40 @@ def test_apply_batch_reverse_order_keeps_earlier_lines_valid(tmp_path: Path) -> 
         assert state["annotations"][ann_id]["status"] == "applied"
 
 
+def test_apply_batch_guards_source_pdf_once(tmp_path: Path, monkeypatch) -> None:
+    """rev-l12: the source-PDF guard runs once per batch, not once per edit."""
+    import review_pdf_to_latex.apply as apply_mod
+
+    proj = _make_project_three_in_one_file(tmp_path)
+
+    calls = {"n": 0}
+    real_guard = apply_mod._guard_source_pdf
+
+    def counting_guard(state_dir: Path) -> None:
+        calls["n"] += 1
+        real_guard(state_dir)
+
+    monkeypatch.setattr(apply_mod, "_guard_source_pdf", counting_guard)
+
+    apply_batch(
+        state_dir=proj.state_dir,
+        edits=[("ann-A", "x\n"), ("ann-B", "y\n"), ("ann-C", "z\n")],
+    )
+
+    assert calls["n"] == 1
+
+
+def test_apply_batch_still_refuses_when_source_pdf_changed(tmp_path: Path) -> None:
+    """The single batch guard still rejects a drifted source PDF (rev-l12)."""
+    from review_pdf_to_latex.apply import SourcePdfChangedApplyError
+
+    proj = _make_project_three_in_one_file(tmp_path)
+    (proj.project / "source.pdf").write_bytes(b"%PDF-1.4 different fixture\n")
+
+    with pytest.raises(SourcePdfChangedApplyError, match="source PDF changed"):
+        apply_batch(state_dir=proj.state_dir, edits=[("ann-A", "x\n")])
+
+
 from review_pdf_to_latex.apply import (
     NoPriorApplyError,
     revert_edit,
