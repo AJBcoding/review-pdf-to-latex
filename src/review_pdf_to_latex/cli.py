@@ -378,6 +378,24 @@ def _git_working_tree_state(project_dir: Path) -> str:
     return f"dirty ({n} file{'s' if n != 1 else ''})"
 
 
+# Presentation order for the `status` human summary's count line: headline
+# statuses (the ones a reviewer acts on) first, terminal ones last. This is a
+# display ordering, NOT the spec §7.3 order — its membership is pinned to
+# state.ALL_STATUSES by test_status_consumer_orderings_cover_all_statuses
+# (rev-l13), so it can never silently drop a status.
+_STATUS_HEADLINE_ORDER: tuple[str, ...] = (
+    "applied",
+    "pending",
+    "needs_review",
+    "surfaced_pending",
+    "accepted",
+    "rejected",
+    "redrafted",
+    "deferred",
+    "surfaced_resolved",
+)
+
+
 def _format_status_human(
     report: "_status.StatusReport", project_dir: Path
 ) -> str:
@@ -403,20 +421,9 @@ def _format_status_human(
     # the canonical order so users see headline numbers (applied, pending,
     # needs_review, surfaced_pending) before terminal ones. This is a
     # presentation ordering (not the spec §7.3 order); its membership is
-    # pinned to state.ALL_STATUSES by test_status_orderings_cover_all_statuses.
-    headline_order = (
-        "applied",
-        "pending",
-        "needs_review",
-        "surfaced_pending",
-        "accepted",
-        "rejected",
-        "redrafted",
-        "deferred",
-        "surfaced_resolved",
-    )
+    # pinned to state.ALL_STATUSES by test_status_consumer_orderings_cover_all_statuses.
     parts = [f"{report.total} total"]
-    for name in headline_order:
+    for name in _STATUS_HEADLINE_ORDER:
         n = report.counts.get(name, 0)
         if n > 0:
             parts.append(f"{n} {name}")
@@ -552,8 +559,9 @@ def _handle_append_chat(args: argparse.Namespace) -> int:
     try:
         text = Path(args.text_file).read_text(encoding="utf-8")
     except OSError as exc:
-        print(f"cannot read --text-file: {exc}", file=sys.stderr)
-        return EXIT_FILE_MUTATION_FAILED
+        return _emit_error(
+            args, f"cannot read --text-file: {exc}", EXIT_FILE_MUTATION_FAILED
+        )
     try:
         append_chat_turn(
             state_dir=state_dir,
@@ -565,8 +573,7 @@ def _handle_append_chat(args: argparse.Namespace) -> int:
         return _emit_error(args, f"error: {exc}", exc.exit_code)
     except ValueError as exc:
         # Invalid role (already restricted by argparse, but defend in depth).
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_ILLEGAL_STATUS_TRANSITION
+        return _emit_error(args, f"error: {exc}", EXIT_ILLEGAL_STATUS_TRANSITION)
     return EXIT_OK
 
 
@@ -578,8 +585,9 @@ def _handle_record_proposal(args: argparse.Namespace) -> int:
     try:
         text = Path(args.text_file).read_text(encoding="utf-8")
     except OSError as exc:
-        print(f"cannot read --text-file: {exc}", file=sys.stderr)
-        return EXIT_FILE_MUTATION_FAILED
+        return _emit_error(
+            args, f"cannot read --text-file: {exc}", EXIT_FILE_MUTATION_FAILED
+        )
     try:
         record_proposal(
             state_dir=state_dir,
@@ -601,11 +609,11 @@ def _handle_override_mapping(args: argparse.Namespace) -> int:
         start_s, end_s = args.lines.split(":", 1)
         lines = (int(start_s), int(end_s))
     except (ValueError, AttributeError):
-        print(
+        return _emit_error(
+            args,
             f"error: --lines must be START:END (got {args.lines!r})",
-            file=sys.stderr,
+            EXIT_INVALID_LINE_RANGE,
         )
-        return EXIT_INVALID_LINE_RANGE
     try:
         override_mapping(
             state_dir=state_dir,
@@ -649,8 +657,7 @@ def _handle_commit_phase(args: argparse.Namespace) -> int:
             granularity=args.granularity,
         )
     except CommitError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     print(sha)
     return EXIT_OK
 
@@ -664,32 +671,40 @@ def _handle_preview(args: argparse.Namespace) -> int:
     try:
         new_text = Path(args.new_text_file).read_text(encoding="utf-8")
     except OSError as exc:
-        print(f"cannot read --new-text-file: {exc}", file=sys.stderr)
-        return EXIT_FILE_MUTATION_FAILED
+        return _emit_error(
+            args, f"cannot read --new-text-file: {exc}", EXIT_FILE_MUTATION_FAILED
+        )
     try:
         build_id = _preview.preview(state_dir, args.annotation_id, new_text)
     except _state.SourcePdfChangedError as exc:
-        print(f"source PDF changed since extract: {exc}", file=sys.stderr)
-        return EXIT_SOURCE_PDF_CHANGED
+        return _emit_error(
+            args, f"source PDF changed since extract: {exc}", EXIT_SOURCE_PDF_CHANGED
+        )
     except _state.LegacyStateError as exc:
-        print(f"legacy state (no source_pdf_md5): {exc}", file=sys.stderr)
-        return EXIT_LEGACY_STATE
+        return _emit_error(
+            args, f"legacy state (no source_pdf_md5): {exc}", EXIT_LEGACY_STATE
+        )
     except _preview.InPlaceRestoreError as exc:
         # Special-cased only for the extra recovery-file instructions (spec §8
-        # exit 17); the code itself still comes from exc.exit_code.
-        print(f"in-place restore failed: {exc}", file=sys.stderr)
-        print(
+        # exit 17); the code itself still comes from exc.exit_code. The JSON
+        # envelope folds the recovery hint into the message so machine callers
+        # get it too (stdout stays a single JSON object).
+        recovery = (
             "  recovery: copy the contents of the recovery file back over "
-            "the original .tex location.",
-            file=sys.stderr,
+            "the original .tex location."
         )
+        if getattr(args, "json_output", False):
+            return _emit_error(
+                args, f"in-place restore failed: {exc}\n{recovery}", exc.exit_code
+            )
+        print(f"in-place restore failed: {exc}", file=sys.stderr)
+        print(recovery, file=sys.stderr)
         return exc.exit_code
     except _preview.PreviewError as exc:
         # AnnotationNotFoundError (7) / MappingUnresolvedError (8) — folded into
         # the EngineError hierarchy (rev-x10), so this collapses like every
         # other mutator handler.
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     print(build_id)
     return EXIT_OK
 
@@ -749,8 +764,9 @@ def _handle_migrate_state(args: argparse.Namespace) -> int:
             to_version=args.to_version,
         )
     except _migrate.UnsupportedMigrationError as e:
-        print(f"unsupported migration: {e}", file=sys.stderr)
-        return EXIT_UNSUPPORTED_MIGRATION
+        return _emit_error(
+            args, f"unsupported migration: {e}", EXIT_UNSUPPORTED_MIGRATION
+        )
     return EXIT_OK
 
 
