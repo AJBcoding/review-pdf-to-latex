@@ -21,7 +21,9 @@ from typing import Sequence
 PROG = "review-pdf"
 
 
-def _reviewer_rig_guard(subcommand: str) -> int | None:
+def _reviewer_rig_guard(
+    subcommand: str, args: argparse.Namespace | None = None
+) -> int | None:
     """Belt-and-braces refusal for source-mutating atomics under a Reviewer rig.
 
     Per UX spec §10.5.2 / §10.5.3 (decision rev-1s5 option 3 + thin engine
@@ -48,13 +50,15 @@ def _reviewer_rig_guard(subcommand: str) -> int | None:
     """
     gt_rig = os.environ.get("GT_RIG", "")
     if gt_rig.startswith("reviewer/"):
-        print(
+        message = (
             f"{subcommand} refused: invoked under Reviewer rig identity "
             f"$GT_RIG={gt_rig!r}; this rig has no source-mutation "
             "capability per spec §10.5.2 (capability matrix). Route the "
-            "submit through an originating rig to apply L1/L2 edits.",
-            file=sys.stderr,
+            "submit through an originating rig to apply L1/L2 edits."
         )
+        if args is not None:
+            return _emit_error(args, message, EXIT_REVIEWER_RIG_REFUSED)
+        print(message, file=sys.stderr)
         return EXIT_REVIEWER_RIG_REFUSED
     return None
 
@@ -97,6 +101,7 @@ def _add_global_args(
 
 def _build_parser() -> argparse.ArgumentParser:
     from . import __version__
+    from . import state as _state
 
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -209,17 +214,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ss.add_argument(
         "--status",
         required=True,
-        choices=[
-            "pending",
-            "applied",
-            "accepted",
-            "rejected",
-            "redrafted",
-            "deferred",
-            "surfaced_pending",
-            "surfaced_resolved",
-            "needs_review",
-        ],
+        # Single-sourced from state.STATUSES (rev-l13) — do not re-list here.
+        choices=list(_state.STATUSES),
     )
     p_ss.add_argument("--reason", default=None)
     _add_global_args(p_ss, on_subparser=True)
@@ -320,7 +316,7 @@ def _handle_extract(args: argparse.Namespace) -> int:
 
 def _handle_build(args: argparse.Namespace) -> int:
     """Compile LaTeX; append a build record (spec §8 build row)."""
-    if (refused := _reviewer_rig_guard("build")) is not None:
+    if (refused := _reviewer_rig_guard("build", args)) is not None:
         return refused
     from review_pdf_to_latex.build import run_build_command
 
@@ -405,7 +401,9 @@ def _format_status_human(
 
     # Line 2: compact counts. Show total plus every nonzero status, in
     # the canonical order so users see headline numbers (applied, pending,
-    # needs_review, surfaced_pending) before terminal ones.
+    # needs_review, surfaced_pending) before terminal ones. This is a
+    # presentation ordering (not the spec §7.3 order); its membership is
+    # pinned to state.ALL_STATUSES by test_status_orderings_cover_all_statuses.
     headline_order = (
         "applied",
         "pending",
@@ -450,8 +448,7 @@ def _handle_status(args: argparse.Namespace) -> int:
     try:
         report = _status.compute_status_report(state_dir)
     except _status.StateMissingError as e:
-        print(f"state missing: {e}", file=sys.stderr)
-        return EXIT_STATE_MISSING
+        return _emit_error(args, f"state missing: {e}", EXIT_STATE_MISSING)
 
     if args.json_output:
         print_json(report.to_dict())
@@ -462,7 +459,7 @@ def _handle_status(args: argparse.Namespace) -> int:
 
 def _handle_apply(args: argparse.Namespace) -> int:
     """``apply`` subcommand handler (spec §8 exit codes 0, 7, 8, 9, 13, 16, 18, 21, 22, 23)."""
-    if (refused := _reviewer_rig_guard("apply")) is not None:
+    if (refused := _reviewer_rig_guard("apply", args)) is not None:
         return refused
     from review_pdf_to_latex.apply import ApplyError, apply_edit
 
@@ -470,8 +467,9 @@ def _handle_apply(args: argparse.Namespace) -> int:
     try:
         new_text = Path(args.new_text_file).read_text(encoding="utf-8")
     except OSError as exc:
-        print(f"cannot read --new-text-file: {exc}", file=sys.stderr)
-        return EXIT_FILE_MUTATION_FAILED
+        return _emit_error(
+            args, f"cannot read --new-text-file: {exc}", EXIT_FILE_MUTATION_FAILED
+        )
     try:
         result = apply_edit(
             state_dir=state_dir,
@@ -480,8 +478,7 @@ def _handle_apply(args: argparse.Namespace) -> int:
             dry_run=bool(args.dry_run),
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     if args.dry_run:
         print(f"--- {result.latex_file} (current)")
         print(f"+++ {result.latex_file} (proposed)")
@@ -494,7 +491,7 @@ def _handle_apply(args: argparse.Namespace) -> int:
 
 def _handle_revert(args: argparse.Namespace) -> int:
     """``revert`` subcommand handler (spec §8 exit codes 0, 7, 9, 10, 18, 21, 22, 23)."""
-    if (refused := _reviewer_rig_guard("revert")) is not None:
+    if (refused := _reviewer_rig_guard("revert", args)) is not None:
         return refused
     from review_pdf_to_latex.apply import ApplyError, revert_edit
 
@@ -508,12 +505,10 @@ def _handle_revert(args: argparse.Namespace) -> int:
             failure_log=failure_log,
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     except ValueError as exc:
         # revert_edit raises ValueError for bad --status / failure-log combos.
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_ILLEGAL_STATUS_TRANSITION
+        return _emit_error(args, f"error: {exc}", EXIT_ILLEGAL_STATUS_TRANSITION)
     return EXIT_OK
 
 
@@ -530,8 +525,7 @@ def _handle_set_status(args: argparse.Namespace) -> int:
             reason=args.reason,
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     return EXIT_OK
 
 
@@ -546,8 +540,7 @@ def _handle_set_current(args: argparse.Namespace) -> int:
             annotation_id=args.annotation_id,
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     return EXIT_OK
 
 
@@ -569,8 +562,7 @@ def _handle_append_chat(args: argparse.Namespace) -> int:
             text=text,
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     except ValueError as exc:
         # Invalid role (already restricted by argparse, but defend in depth).
         print(f"error: {exc}", file=sys.stderr)
@@ -595,8 +587,7 @@ def _handle_record_proposal(args: argparse.Namespace) -> int:
             proposed_text=text,
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     return EXIT_OK
 
 
@@ -623,8 +614,7 @@ def _handle_override_mapping(args: argparse.Namespace) -> int:
             lines=lines,
         )
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
     return EXIT_OK
 
 
@@ -717,8 +707,7 @@ def _handle_bulk_surface(args: argparse.Namespace) -> int:
     try:
         promoted = bulk_surface_pending(state_dir=state_dir)
     except ApplyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
+        return _emit_error(args, f"error: {exc}", exc.exit_code)
 
     if getattr(args, "json_output", False):
         print_json({"promoted": list(promoted)})
@@ -805,6 +794,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(2)
     handler = _HANDLERS_TABLE[args.subcommand]
     return handler(args)
+
+
+def _emit_error(args: argparse.Namespace, message: str, exit_code: int) -> int:
+    """Emit a CLI error and return its exit code (rev-l13 uniform envelope).
+
+    Two output modes, selected by the global ``--json`` flag:
+
+    - ``--json`` set: write a single ``{"error": <message>, "exit_code":
+      <code>}`` object to **stdout** via :func:`print_json`. This makes the
+      machine contract uniform — with ``--json``, stdout is exactly one JSON
+      object whether the command succeeds or fails — so consumers parse one
+      place regardless of outcome.
+    - human mode (default): write ``message`` to stderr, preserving the
+      pre-existing human output verbatim.
+
+    The returned int is the process exit code and remains the authoritative
+    failure signal in both modes (the ``exit_code`` field merely mirrors it
+    for callers that capture stdout but not the wait status).
+    """
+    if getattr(args, "json_output", False):
+        print_json({"error": message, "exit_code": exit_code})
+    else:
+        print(message, file=sys.stderr)
+    return exit_code
 
 
 def print_json(data: object) -> None:
