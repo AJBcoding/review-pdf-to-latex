@@ -256,7 +256,7 @@ def preview(
             f"annotation {annotation_id!r} not present in mapping.json"
         )
     m = mappings[annotation_id]
-    latex_file_rel = m.get("latex_file")
+    latex_file_rel = m.get("file")
     line_range = m.get("line_range")
     if latex_file_rel is None or line_range is None:
         raise MappingUnresolvedError(

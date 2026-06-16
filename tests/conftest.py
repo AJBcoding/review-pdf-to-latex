@@ -63,7 +63,7 @@ def minimal_project(tmp_path: Path) -> Path:
     (pages / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (build_dir / "page-1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": "2a-ratify",
         "order": "mechanical-first",
         "current_annotation_id": "ann-001",
@@ -96,7 +96,7 @@ def minimal_project(tmp_path: Path) -> Path:
     (state_dir / "annotations.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "source_pdf": "/dev/null/source.pdf",
                 "source_pdf_md5": "d41d8cd98f00b204e9800998ecf8427e",
                 "extracted_at": "2026-05-16T20:40:00Z",
@@ -121,10 +121,10 @@ def minimal_project(tmp_path: Path) -> Path:
     (state_dir / "mapping.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "mappings": {
                     "ann-001": {
-                        "latex_file": "main.tex",
+                        "file": "main.tex",
                         "line_range": [1, 4],
                         "method": "fuzzy",
                         "confidence": 0.91,

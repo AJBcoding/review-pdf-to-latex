@@ -54,7 +54,7 @@ def test_extract_happy_path(tmp_path: Path) -> None:
 
     # Top-level shapes.
     annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
-    assert annotations["schema_version"] == 1
+    assert annotations["schema_version"] == 2
     assert "annotations" in annotations and isinstance(annotations["annotations"], list)
     assert annotations["source_pdf"] == str(FIXTURE_PDF.resolve())
     assert annotations["source_pdf_md5"] == hashlib.md5(
@@ -63,11 +63,11 @@ def test_extract_happy_path(tmp_path: Path) -> None:
     assert annotations["extractor"].startswith("pdfannots-")
 
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-    assert mapping["schema_version"] == 1
+    assert mapping["schema_version"] == 2
     assert "mappings" in mapping and isinstance(mapping["mappings"], dict)
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["schema_version"] == 1
+    assert state["schema_version"] == 2
     assert state["phase"] == "0-setup"
     assert state["order"] == "mechanical-first"
     assert state["current_annotation_id"] is None
@@ -77,6 +77,13 @@ def test_extract_happy_path(tmp_path: Path) -> None:
     assert set(state["annotations"].keys()) == {
         a["id"] for a in annotations["annotations"]
     }
+    # schema-v2 round-trip fields are present on every persisted annotation
+    # (rev-l2, spec D7 §7); subtype carries real data for a real Highlight PDF.
+    for a in annotations["annotations"]:
+        assert "subtype" in a and "native_id" in a and "in_reply_to" in a
+    assert any(a["subtype"] for a in annotations["annotations"]), (
+        "expected at least one annotation to carry a non-empty subtype"
+    )
 
 
 def test_extract_patches_gitignore(tmp_path: Path) -> None:

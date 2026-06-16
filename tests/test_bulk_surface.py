@@ -63,7 +63,7 @@ def _make_bulk_surface_project(
         }
 
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": "1-batch",
         "order": "surface-first",
         "current_annotation_id": None,
@@ -88,7 +88,7 @@ def _make_bulk_surface_project(
         }
 
     annotations = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_pdf": str(pdf.resolve()),
         "source_pdf_md5": md5,
         "extracted_at": "2026-05-16T20:30:00Z",
@@ -107,7 +107,7 @@ def _make_bulk_surface_project(
     # mapping.json is not consulted by bulk-surface, but keep the directory
     # shaped like a real project so unrelated readers don't choke.
     (state_dir / "mapping.json").write_text(
-        json.dumps({"schema_version": 1, "mappings": {}}), encoding="utf-8"
+        json.dumps({"schema_version": 2, "mappings": {}}), encoding="utf-8"
     )
     return project
 

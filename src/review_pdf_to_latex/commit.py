@@ -283,8 +283,8 @@ def _files_touched_by_state(state: dict, project_root: Path) -> list[Path]:
             "rejected",  # rejected means we reverted, which is also a write
             "surfaced_resolved",
         ):
-            if map_entry.get("latex_file"):
-                touched.add(map_entry["latex_file"])
+            if map_entry.get("file"):
+                touched.add(map_entry["file"])
     return [project_root / f for f in sorted(touched)]
 
 

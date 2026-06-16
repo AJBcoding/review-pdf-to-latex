@@ -154,7 +154,7 @@ def _seed_minimal_project(tmp_project: Path) -> None:
     state_mod.atomic_write_json(
         sd.annotations_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_pdf": str(source_pdf),
             "source_pdf_md5": pdf_md5,
             "annotations": [],
@@ -163,10 +163,10 @@ def _seed_minimal_project(tmp_project: Path) -> None:
     state_mod.atomic_write_json(
         sd.mapping_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "mappings": {
                 "ann-001": {
-                    "latex_file": "templates/intro.tex",
+                    "file": "templates/intro.tex",
                     "line_range": [2, 3],
                     "confidence": 0.9,
                     "method": "fuzzy_text",
@@ -179,7 +179,7 @@ def _seed_minimal_project(tmp_project: Path) -> None:
     state_mod.atomic_write_json(
         sd.state_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "phase": "2a-ratify",
             "order": "mechanical-first",
             "current_annotation_id": "ann-001",
@@ -265,10 +265,10 @@ def test_preview_raises_mapping_unresolved_when_mapping_is_null(tmp_project: Pat
     state_mod.atomic_write_json(
         sd.mapping_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "mappings": {
                 "ann-001": {
-                    "latex_file": None,
+                    "file": None,
                     "line_range": None,
                     "confidence": 0.0,
                     "method": "failed",

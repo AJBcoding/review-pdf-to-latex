@@ -296,7 +296,7 @@ hello
     state_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,
@@ -337,7 +337,7 @@ def test_run_build_command_exits_12_when_main_missing(tmp_path: Path) -> None:
     (state_dir / "state.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,
