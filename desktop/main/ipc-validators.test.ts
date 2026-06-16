@@ -29,7 +29,7 @@ describe('assertPathArg', () => {
   });
 
   it('prefixes the label so a rejection is traceable to its channel', () => {
-    expect(() => assertPathArg('fs:readPdfBytes', 7)).toThrow(/^fs:readPdfBytes:/);
+    expect(() => assertPathArg('fs:readFileBytes', 7)).toThrow(/^fs:readFileBytes:/);
   });
 });
 

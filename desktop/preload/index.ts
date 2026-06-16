@@ -19,12 +19,12 @@ const electronAPI: ElectronAPI = {
   ping: (message: string) => ipcRenderer.invoke(IPC_INVOKE.ping, message),
   engineVersion: () => ipcRenderer.invoke(IPC_INVOKE.engineVersion),
   pdfHealth: (pdfPath: string) => ipcRenderer.invoke(IPC_INVOKE.pdfHealth, pdfPath),
-  readPdfBytes: (pdfPath: string) => ipcRenderer.invoke(IPC_INVOKE.readPdfBytes, pdfPath),
+  readFileBytes: (docPath: string) => ipcRenderer.invoke(IPC_INVOKE.readFileBytes, docPath),
   openPdfDialog: () => ipcRenderer.invoke(IPC_INVOKE.openPdfDialog),
-  readDrafts: (pdfPath: string, sha256: string) =>
-    ipcRenderer.invoke(IPC_INVOKE.readDrafts, pdfPath, sha256),
-  writeDrafts: (pdfPath: string, sha256: string, file: DraftsFile) =>
-    ipcRenderer.invoke(IPC_INVOKE.writeDrafts, pdfPath, sha256, file),
+  readDrafts: (docPath: string) =>
+    ipcRenderer.invoke(IPC_INVOKE.readDrafts, docPath),
+  writeDrafts: (docPath: string, file: DraftsFile) =>
+    ipcRenderer.invoke(IPC_INVOKE.writeDrafts, docPath, file),
   onDraftsFlushRequest: (cb) => {
     const listener = (_e: IpcRendererEvent, id: string) => cb(id);
     ipcRenderer.on('drafts:flushRequest', listener);

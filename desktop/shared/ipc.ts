@@ -7,7 +7,7 @@
 import type {
   EngineResult,
   PdfHealthResult,
-  ReadPdfBytesResult,
+  ReadFileBytesResult,
   OpenPdfDialogResult,
 } from './engine';
 import type {
@@ -48,19 +48,21 @@ export interface ElectronAPI {
   // into a typed PdfHealthReport. The renderer calls this at PDF-load time
   // to drive the §5.2 load-time banner.
   pdfHealth(pdfPath: string): Promise<PdfHealthResult>;
-  // Reads a PDF file from disk and returns its bytes. The renderer feeds
-  // these to `pdfjsLib.getDocument({data})`. Paths are resolved relative
-  // to the main process's cwd (the desktop/ dir during dev).
-  readPdfBytes(pdfPath: string): Promise<ReadPdfBytesResult>;
+  // Reads a document file from disk and returns its bytes. Format-agnostic —
+  // PDF bytes feed `pdfjsLib.getDocument({data})`, md/html/docx decode in the
+  // renderer. Paths are resolved relative to the main process's cwd (the
+  // desktop/ dir during dev).
+  readFileBytes(docPath: string): Promise<ReadFileBytesResult>;
   // Shows the native open-file dialog filtered to PDFs. Returns the picked
   // path, or null if the user canceled.
   openPdfDialog(): Promise<OpenPdfDialogResult>;
-  // Reads `<dir-of-pdfPath>/.review-state/drafts/<sha256>.json`. A missing
-  // file is the normal first-open case, not an error.
-  readDrafts(pdfPath: string, sha256: string): Promise<DraftsReadResult>;
+  // Reads `<dir-of-docPath>/.review-state/drafts/<basename>.json`. Sidecars
+  // are path-keyed (not content-keyed), so no sha256 is needed to locate one.
+  // A missing file is the normal first-open case, not an error.
+  readDrafts(docPath: string): Promise<DraftsReadResult>;
   // Writes the snapshot atomically (temp file + rename). Mkdir -p the
   // drafts dir first. Renderer debounces calls 250ms per spec §10.3.
-  writeDrafts(pdfPath: string, sha256: string, file: DraftsFile): Promise<DraftsWriteResult>;
+  writeDrafts(docPath: string, file: DraftsFile): Promise<DraftsWriteResult>;
   // Flush handshake: main asks the renderer to drain its pending drafts
   // debounce before window close / app quit; renderer flushes, then acks
   // with the same id. Without this, a Cmd+Q within 250ms of a submit
@@ -176,7 +178,7 @@ export const IPC_INVOKE = {
   ping: 'ping',
   engineVersion: 'engine:version',
   pdfHealth: 'engine:pdfHealth',
-  readPdfBytes: 'fs:readPdfBytes',
+  readFileBytes: 'fs:readFileBytes',
   openPdfDialog: 'dialog:openPdf',
   readDrafts: 'drafts:read',
   writeDrafts: 'drafts:write',

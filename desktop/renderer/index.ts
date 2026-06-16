@@ -7,7 +7,7 @@ import type {
   EngagementLevel,
   EngineResult,
   PdfHealthResult,
-  ReadPdfBytesResult,
+  ReadFileBytesResult,
   ResultEntry,
   ResultsEvent,
   ResultsFile,
@@ -55,7 +55,7 @@ function basename(p: string): string {
 //      in the top-right strip so AJB can confirm the engine is wired up
 //      without having to open a PDF.
 //   2. Empty state in the document pane until the user picks a file.
-//   3. Open… button → native picker → pdfHealth() + readPdfBytes() run in
+//   3. Open… button → native picker → pdfHealth() + readFileBytes() run in
 //      parallel → render the page + surface the §5.2 banner if the report
 //      flags problems.
 //
@@ -225,7 +225,7 @@ async function flushMdSave(): Promise<void> {
 
 async function rehashCurrentDoc(): Promise<string | null> {
   if (!docState.path) return null;
-  const res = await window.electronAPI.readPdfBytes(docState.path);
+  const res = await window.electronAPI.readFileBytes(docState.path);
   return res.ok ? res.sha256 : null;
 }
 
@@ -263,7 +263,7 @@ async function flushDraftsWrite(): Promise<void> {
     comments: docState.comments,
   };
   draftsCache.set(draftsCacheKey(docState.path, docState.sha256), file);
-  const res = await window.electronAPI.writeDrafts(docState.path, docState.sha256, file);
+  const res = await window.electronAPI.writeDrafts(docState.path, file);
   if (!res.ok) {
     // Surface persistence failures so the user knows their work isn't
     // saved. Non-blocking — the in-memory state is still authoritative
@@ -1338,7 +1338,7 @@ async function runOpen(path: string, token: number): Promise<void> {
 
   // ── read bytes (+ health, PDF only — run concurrently to hide latency) ──
   const [bytesResult, healthResult] = await Promise.all([
-    window.electronAPI.readPdfBytes(path),
+    window.electronAPI.readFileBytes(path),
     isPdf ? window.electronAPI.pdfHealth(path) : Promise.resolve(null),
   ]);
   if (openSuperseded(token)) return;
@@ -1514,7 +1514,7 @@ async function loadDraftsForCurrentDoc(): Promise<void> {
     renderAllCards();
     return;
   }
-  const res = await window.electronAPI.readDrafts(path, sha256);
+  const res = await window.electronAPI.readDrafts(path);
   if (docState.path !== path || docState.sha256 !== sha256) return;
   if (!res.ok) {
     flashAnchorMeta(`Drafts load failed (${res.reason}): ${res.error}`);
@@ -1538,7 +1538,7 @@ function showViewer(h: ViewerHandles): void {
   h.mount.hidden = false;
 }
 
-function showLoadError(h: ViewerHandles, r: ReadPdfBytesResult | null, err?: unknown): void {
+function showLoadError(h: ViewerHandles, r: ReadFileBytesResult | null, err?: unknown): void {
   h.empty.replaceChildren();
   const t = document.createElement('div');
   t.className = 'pdf-empty-title';
@@ -2609,9 +2609,9 @@ function formatRelativeTimestamp(iso: string): string {
  *  side effects the outcome calls for. */
 async function seedNextVersionDraft(event: ResultsEvent): Promise<void> {
   const outcome = await seedNextVersionDraftPure(event, {
-    readPdfBytes: (p) => window.electronAPI.readPdfBytes(p),
-    readDrafts: (p, sha) => window.electronAPI.readDrafts(p, sha),
-    writeDrafts: (p, sha, file) => window.electronAPI.writeDrafts(p, sha, file),
+    readFileBytes: (p) => window.electronAPI.readFileBytes(p),
+    readDrafts: (p) => window.electronAPI.readDrafts(p),
+    writeDrafts: (p, file) => window.electronAPI.writeDrafts(p, file),
     randomUUID: () => crypto.randomUUID(),
     nowIso: () => new Date().toISOString(),
   });
