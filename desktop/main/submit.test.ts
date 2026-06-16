@@ -204,6 +204,46 @@ describe('promoteDraft — status flip semantics', () => {
   });
 });
 
+describe('promoteDraft — §4.2 bundle generalization', () => {
+  it('carries native_artifact_path/sidecar_json_path/format in the v2 submit file', async () => {
+    const res = await promoteDraft(promoteReq([makeComment()]));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    const sf = res.submitFile;
+    expect(sf.format).toBe('pdf');
+    expect(sf.native_artifact_path).toBe(join(projectRoot, 'bundle.pdf'));
+    expect(sf.sidecar_json_path).toBe(join(projectRoot, 'bundle.json'));
+    // Deprecated PDF aliases stay populated for PDF rounds (D11).
+    expect(sf.bundle_pdf).toBe(join(projectRoot, 'bundle.pdf'));
+    expect(sf.bundle_json).toBe(join(projectRoot, 'bundle.json'));
+  });
+
+  it('defaults format to pdf when the request omits it', async () => {
+    const req = promoteReq([makeComment()]);
+    expect((req as { format?: string }).format).toBeUndefined();
+    const res = await promoteDraft(req);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.submitFile.format).toBe('pdf');
+  });
+
+  it('honors an explicit non-PDF format and gates the deprecated aliases off', async () => {
+    const res = await promoteDraft({ ...promoteReq([makeComment()]), format: 'docx' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    const sf = res.submitFile;
+    expect(sf.format).toBe('docx');
+    // Generalized fields always populated…
+    expect(sf.native_artifact_path).toBe(join(projectRoot, 'bundle.pdf'));
+    expect(sf.sidecar_json_path).toBe(join(projectRoot, 'bundle.json'));
+    // …but the PDF-only aliases are left off for non-PDF rounds.
+    expect(sf.bundle_pdf).toBeUndefined();
+    expect(sf.bundle_json).toBeUndefined();
+  });
+});
+
 describe('abandonRound — soft tombstone (§10.1 step 6)', () => {
   it('renames results-<ts>.json → results-<ts>.abandoned.json', async () => {
     await mkdir(reviewStateDir, { recursive: true });
