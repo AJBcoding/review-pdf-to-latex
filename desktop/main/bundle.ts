@@ -205,9 +205,18 @@ export async function writeBundle(req: BundleWriteRequest): Promise<BundleWriteR
     // warning — happens when a draft references a deleted page. Don't
     // fail the whole write for one stale anchor.
     // Every comment is pdf-quad by the C5 guard above; narrow once here.
+    // §3.2 provenance: only `app-draft` comments are emitted as NEW /Highlight
+    // annotations. `native-pdf` rows already exist physically in the source copy
+    // we're annotating, so re-emitting them would double-stamp every native
+    // highlight on each bundle write (the L3 read-half duplication this guard
+    // prevents). Other non-app origins (native-docx / engine-extract) likewise
+    // round-trip through the JSON sidecar, not as freshly-drawn PDF annots. All
+    // origins still land in the sidecar `comments` below — only the PDF-drawing
+    // loop is filtered.
     const pdfComments: { comment: CommentPayload; anchor: PdfQuadAnchor }[] = [];
     for (const c of req.comments) {
       if (c.anchor.kind !== 'pdf-quad') continue; // unreachable post-guard; satisfies TS
+      if (c.origin !== 'app-draft') continue;     // §3.2 — don't re-emit native rows
       pdfComments.push({ comment: c, anchor: c.anchor });
     }
     const byPage = new Map<number, { comment: CommentPayload; anchor: PdfQuadAnchor }[]>();

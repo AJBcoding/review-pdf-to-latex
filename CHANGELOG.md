@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- PDF round-trip READ half (rev-l3): the desktop viewer now displays a PDF's native markup annotations (Highlight/StrikeOut/Underline/Squiggly/Text). `page.getAnnotations()` is consumed inside the existing `renderPage`, normalized into the discriminated anchor union + `native-pdf` provenance, and rendered through the existing comment-card stream + reveal — not a second pdf.js annotation DOM. Annotations are a read-projection of the source (re-derived per open, deduped by `comment_id`, never written to the working-state drafts sidecar). The bundle writer skips `native-pdf` origins so native rows round-trip through the JSON sidecar instead of being re-stamped as duplicate annotations on the next bundle write (§3.2 provenance).
 - HTML/DOCX comments now anchor on the unified `text-quote` model over the iframe's extracted linear text (the truth), resolved by the same `fuzzyMatchAnchor` core the Markdown viewer uses. Selections are captured as `text-quote`, highlights paint across the multiple text nodes a range spans, and reveal scrolls the resolved range into view. The legacy `html-selector-hint` kind is kept as a locality hint so migrated v1 comments keep displaying (spec §5.5, rev-l6).
 - Engine scaffolding (`src/review_pdf_to_latex/`) with the 13-subcommand `review-pdf` CLI.
 - `extract` subcommand: pdfannots + rapidfuzz fuzzy mapping + pdftoppm page rendering.
