@@ -18,7 +18,7 @@ def _seed_state(tmp_project: Path, payload: dict) -> state_mod.StateDir:
 
 def _minimal_state(phase: str = "0-setup") -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": phase,
         "order": "mechanical-first",
         "current_annotation_id": None,

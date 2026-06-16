@@ -64,7 +64,7 @@ def test_assert_clean_git_tolerates_dirty_after_phase_0(tmp_path: Path) -> None:
 
 def _state(annotations: dict[str, dict]) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": "1-batch",
         "order": "mechanical-first",
         "current_annotation_id": None,
@@ -161,7 +161,7 @@ def _init_project_repo(tmp_path: Path) -> tuple[Path, Path]:
     state_dir = project / ".review-state"
     state_dir.mkdir()
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": "1-batch",
         "order": "mechanical-first",
         "current_annotation_id": None,
@@ -181,10 +181,10 @@ def _init_project_repo(tmp_path: Path) -> tuple[Path, Path]:
         "builds": [],
     }
     mapping = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mappings": {
             "ann-001": {
-                "latex_file": "templates/section.tex",
+                "file": "templates/section.tex",
                 "line_range": [1, 1],
                 "confidence": 0.95,
                 "method": "fuzzy_text",
@@ -199,7 +199,7 @@ def _init_project_repo(tmp_path: Path) -> tuple[Path, Path]:
     source_pdf.write_bytes(b"%PDF-1.4 fake test pdf bytes\n")
     pdf_md5 = hashlib.md5(source_pdf.read_bytes()).hexdigest()
     annotations = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_pdf": str(source_pdf.resolve()),
         "source_pdf_md5": pdf_md5,
         "annotations": [],

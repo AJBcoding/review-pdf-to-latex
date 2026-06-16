@@ -269,8 +269,8 @@ def test_fuzzy_map_high_confidence_match(sample_project: Path) -> None:
     result = fuzzy_map(ann, sample_project)
 
     assert isinstance(result, Mapping)
-    assert result.latex_file == "chapters/intro.tex", (
-        f"expected chapters/intro.tex, got {result.latex_file!r}"
+    assert result.file == "chapters/intro.tex", (
+        f"expected chapters/intro.tex, got {result.file!r}"
     )
     assert result.confidence >= 0.5
     assert result.method == "fuzzy_text"
@@ -291,9 +291,9 @@ def test_fuzzy_map_excludes_build_directory(sample_project: Path) -> None:
 
     result = fuzzy_map(ann, sample_project)
 
-    assert result.latex_file != "build/cached.tex"
-    assert result.latex_file is not None
-    assert not result.latex_file.startswith("build/")
+    assert result.file != "build/cached.tex"
+    assert result.file is not None
+    assert not result.file.startswith("build/")
 
 
 def test_fuzzy_map_ambiguous_low_confidence_records_candidates(
@@ -321,7 +321,7 @@ def test_fuzzy_map_ambiguous_low_confidence_records_candidates(
 
 
 def test_fuzzy_map_failed_match_below_threshold(sample_project: Path) -> None:
-    """Text not present at all yields method=failed, latex_file=None."""
+    """Text not present at all yields method=failed, file=None."""
     ann = _ann(
         "zzz quantum chromodynamics non sequitur lorem ipsum dolor sit amet "
         "consectetur xyzzy bogus foobar nothing-here-at-all"
@@ -332,7 +332,7 @@ def test_fuzzy_map_failed_match_below_threshold(sample_project: Path) -> None:
     assert result.needs_review is True
     # Score is too low to land anywhere meaningful.
     if result.method == "failed":
-        assert result.latex_file is None
+        assert result.file is None
         assert result.line_range is None
         assert result.candidates == []
     else:
@@ -374,7 +374,7 @@ def test_resolve_matches_fuzzy_map_high_confidence(sample_project: Path) -> None
     via_fuzzy = fuzzy_map(ann, sample_project)
 
     assert via_resolve == via_fuzzy
-    assert via_resolve.latex_file == "chapters/intro.tex"
+    assert via_resolve.file == "chapters/intro.tex"
     assert via_resolve.confidence >= 0.5
 
 
@@ -407,7 +407,7 @@ def test_resolve_empty_target_fails_without_reading_index(
     result = resolve(_ann(""), index)
 
     assert result.method == "failed"
-    assert result.latex_file is None
+    assert result.file is None
     assert result.needs_review is True
 
 
@@ -423,7 +423,7 @@ def test_bootstrap_state_phase_and_defaults() -> None:
     ]
     mappings = {
         "ann-001": Mapping(
-            latex_file="a.tex",
+            file="a.tex",
             line_range=(1, 3),
             confidence=0.9,
             method="fuzzy_text",
@@ -431,7 +431,7 @@ def test_bootstrap_state_phase_and_defaults() -> None:
             candidates=[],
         ),
         "ann-002": Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=0.1,
             method="failed",
@@ -443,7 +443,7 @@ def test_bootstrap_state_phase_and_defaults() -> None:
     state = bootstrap_state(anns, mappings)
 
     assert isinstance(state, StateFile)
-    assert state.schema_version == 1
+    assert state.schema_version == 2
     assert state.phase == "0-setup"
     assert state.order == "mechanical-first"
     assert state.current_annotation_id is None
@@ -501,7 +501,7 @@ def test_bootstrap_state_empty_highlighted_text_routes_to_surfaced_pending() -> 
     anns = [_empty_highlight_ann("ann-001")]
     mappings = {
         "ann-001": Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=0.0,
             method="failed",
@@ -527,7 +527,7 @@ def test_bootstrap_state_empty_highlighted_text_with_trigger_match_stays_pending
     anns = [_empty_highlight_ann("ann-001", trigger_match=True)]
     mappings = {
         "ann-001": Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=0.0,
             method="failed",
@@ -555,7 +555,7 @@ def test_bootstrap_state_whitespace_only_highlighted_text_routes_to_surfaced_pen
     )
     mappings = {
         "ann-001": Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=0.0,
             method="failed",

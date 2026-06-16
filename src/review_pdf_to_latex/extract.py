@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import pdfannots
 from rapidfuzz import fuzz
@@ -23,6 +24,7 @@ from review_pdf_to_latex.exit_codes import (
     EXIT_PDFANNOTS_FAILED,
 )
 from review_pdf_to_latex.state import (
+    SUPPORTED_SCHEMA,
     Annotation,
     AnnotationState,
     Mapping,
@@ -359,6 +361,13 @@ def read_annotations(
 
                     ann_id = f"ann-{counter:03d}"
                     subtypes_by_id[ann_id] = subtype_name
+                    # schema-v2 round-trip fields (rev-l2). All best-effort:
+                    # `name` is the native /NM id; `in_reply_to` (resolved by
+                    # pdfannots.postprocess) carries the parent annotation, whose
+                    # /NM id we record in the same namespace as native_id.
+                    native_id = getattr(raw, "name", None) or None
+                    reply_parent = getattr(raw, "in_reply_to", None)
+                    in_reply_to = getattr(reply_parent, "name", None) or None
                     annotations.append(
                         Annotation(
                             id=ann_id,
@@ -369,6 +378,9 @@ def read_annotations(
                             comment=comment,
                             created=_format_created(getattr(raw, "created", None)),
                             trigger_match=is_trigger(comment, trigger_phrase),
+                            subtype=subtype_name or None,
+                            native_id=native_id,
+                            in_reply_to=in_reply_to,
                         )
                     )
     finally:
@@ -523,18 +535,51 @@ def _strip_latex(text: str) -> str:
     return _LATEX_CMD_RE.sub(" ", text)
 
 
-def _enumerate_tex_files(
+def _strip_noop(text: str) -> str:
+    """Identity strip — for formats with no markup to remove (rev-l2)."""
+    return text
+
+
+@dataclass(frozen=True)
+class FormatProfile:
+    """Per-source-format knobs for fuzzy mapping (rev-l2, spec D7 §7).
+
+    The fuzzy resolver is format-agnostic except for exactly two points
+    (REVIEW.md reusability note): which files to scan (``glob``) and how to
+    strip markup before scoring (``strip``). Parameterizing them here lets the
+    same engine map annotations into ``.tex``, ``.md``, ``.html``, … trees as
+    the multi-format direction lands, without touching the windowing/scoring
+    core. The LaTeX behavior is the default everywhere (:data:`LATEX_PROFILE`),
+    so existing callers are unchanged.
+
+    Fields:
+        glob: ``rglob`` pattern selecting candidate source files (e.g.
+            ``"*.tex"``, ``"*.md"``).
+        strip: Callable applied to each window before fuzzy scoring, to remove
+            format markup that would otherwise dilute the match.
+    """
+
+    glob: str
+    strip: Callable[[str], str]
+
+
+LATEX_PROFILE = FormatProfile(glob="*.tex", strip=_strip_latex)
+"""Default mapping profile: scan ``*.tex`` and strip LaTeX command tokens."""
+
+
+def _enumerate_files(
     root: Path,
     exclude: list[str],
+    glob: str = LATEX_PROFILE.glob,
 ) -> list[Path]:
-    """Return all `.tex` files under root, skipping any path component in exclude.
+    """Return all files matching ``glob`` under root, skipping excluded prefixes.
 
     `exclude` entries are matched as path *prefixes* relative to `root`
     (e.g., "build/" excludes everything under `<root>/build/`).
     """
     norm_exclude = [e.rstrip("/") for e in exclude]
     out: list[Path] = []
-    for path in sorted(root.rglob("*.tex")):
+    for path in sorted(root.rglob(glob)):
         rel = path.relative_to(root).as_posix()
         if any(rel == e or rel.startswith(e + "/") for e in norm_exclude):
             continue
@@ -555,19 +600,24 @@ class WindowIndex:
 
     Fields:
         latex_root: The root the index was built against (resolved Path).
-        files: ``(rel_posix_path, lines)`` for every readable, non-empty .tex
-            file, in the same order `_enumerate_tex_files` returns them.
+        files: ``(rel_posix_path, lines)`` for every readable, non-empty source
+            file, in the same order `_enumerate_files` returns them.
+        strip: The markup-strip callable for the format this index was built
+            for (rev-l2). Carried on the index so :func:`resolve` strips the
+            same way the files were globbed. Defaults to LaTeX stripping.
     """
 
     latex_root: Path
     files: tuple[tuple[str, tuple[str, ...]], ...]
+    strip: Callable[[str], str] = LATEX_PROFILE.strip
 
 
 def build_window_index(
     latex_root: Path,
     exclude: list[str] | None = None,
+    profile: FormatProfile = LATEX_PROFILE,
 ) -> WindowIndex:
-    """Read every `.tex` file under `latex_root` once for reuse across mappings.
+    """Read every source file under `latex_root` once for reuse across mappings.
 
     This is the annotation-independent half of fuzzy mapping (rev-l12): it
     performs the directory scan and file reads so that mapping a whole batch of
@@ -575,12 +625,15 @@ def build_window_index(
     result to :func:`resolve`.
 
     Args:
-        latex_root: Project root to search for .tex files.
+        latex_root: Project root to search for source files.
         exclude: Path prefixes (relative to latex_root) to skip. Defaults to
             ["build/", ".review-state/"].
+        profile: Per-format mapping knobs (rev-l2). Selects the file ``glob``
+            and the markup ``strip`` recorded on the returned index. Defaults
+            to :data:`LATEX_PROFILE` (``*.tex`` + LaTeX stripping).
 
     Returns:
-        A :class:`WindowIndex` capturing each readable, non-empty .tex file's
+        A :class:`WindowIndex` capturing each readable, non-empty source file's
         lines. Files that fail to read/decode or are empty are skipped, matching
         the prior `fuzzy_map` behavior.
     """
@@ -589,7 +642,7 @@ def build_window_index(
     latex_root = Path(latex_root)
 
     files: list[tuple[str, tuple[str, ...]]] = []
-    for path in _enumerate_tex_files(latex_root, exclude):
+    for path in _enumerate_files(latex_root, exclude, profile.glob):
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
@@ -598,7 +651,7 @@ def build_window_index(
             continue
         rel = path.relative_to(latex_root).as_posix()
         files.append((rel, tuple(lines)))
-    return WindowIndex(latex_root=latex_root, files=tuple(files))
+    return WindowIndex(latex_root=latex_root, files=tuple(files), strip=profile.strip)
 
 
 def resolve(
@@ -614,7 +667,7 @@ def resolve(
     Thresholds:
       score >= 0.5  -> fuzzy_text, needs_review=False
       0.2 <= score  -> fuzzy_text, needs_review=True, candidates populated
-      score < 0.2   -> failed, latex_file=None, line_range=None, candidates=[]
+      score < 0.2   -> failed, file=None, line_range=None, candidates=[]
 
     Args:
         annotation: The Annotation to map.
@@ -628,7 +681,7 @@ def resolve(
     target_len = len(target)
     if target_len == 0:
         return Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=0.0,
             method="failed",
@@ -659,7 +712,7 @@ def resolve(
                 cum_text.append(line)
                 cum_chars += addition_len
                 window_raw = " ".join(cum_text)
-                window_norm = _normalize(_strip_latex(window_raw))
+                window_norm = _normalize(index.strip(window_raw))
                 if not window_norm:
                     continue
                 score = fuzz.partial_ratio(target, window_norm) / 100.0
@@ -669,7 +722,7 @@ def resolve(
 
     if not all_windows:
         return Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=0.0,
             method="failed",
@@ -683,7 +736,7 @@ def resolve(
 
     if best_score >= 0.5:
         return Mapping(
-            latex_file=best_file,
+            file=best_file,
             line_range=best_range,
             confidence=float(best_score),
             method="fuzzy_text",
@@ -708,7 +761,7 @@ def resolve(
 
     if best_score < 0.2:
         return Mapping(
-            latex_file=None,
+            file=None,
             line_range=None,
             confidence=float(best_score),
             method="failed",
@@ -718,7 +771,7 @@ def resolve(
 
     # 0.2 <= best_score < 0.5
     return Mapping(
-        latex_file=best_file,
+        file=best_file,
         line_range=best_range,
         confidence=float(best_score),
         method="fuzzy_text",
@@ -731,6 +784,7 @@ def fuzzy_map(
     annotation: Annotation,
     latex_root: Path,
     exclude: list[str] | None = None,
+    profile: FormatProfile = LATEX_PROFILE,
 ) -> Mapping:
     """Map a single annotation to a (file, line_range) in `latex_root`.
 
@@ -738,8 +792,11 @@ def fuzzy_map(
     against it; preserved for callers mapping a single annotation. To map many
     annotations against the same tree, call :func:`build_window_index` once and
     :func:`resolve` per annotation to avoid re-reading the tree (rev-l12).
+
+    ``profile`` selects the per-format glob + strip (rev-l2); defaults to
+    :data:`LATEX_PROFILE`.
     """
-    index = build_window_index(latex_root, exclude)
+    index = build_window_index(latex_root, exclude, profile)
     return resolve(annotation, index)
 
 
@@ -798,7 +855,7 @@ def bootstrap_state(
         )
 
     return StateFile(
-        schema_version=1,
+        schema_version=SUPPORTED_SCHEMA,
         phase="0-setup",
         order="mechanical-first",
         current_annotation_id=None,
@@ -989,7 +1046,7 @@ def run_extract(
 
     # 5. Write annotations.json (immutable; spec §7.1).
     annotations_doc = {
-        "schema_version": 1,
+        "schema_version": SUPPORTED_SCHEMA,
         "source_pdf": str(pdf_path.resolve()),
         "source_pdf_md5": _compute_md5(pdf_path),
         "extracted_at": datetime.now(timezone.utc)
@@ -1002,7 +1059,7 @@ def run_extract(
 
     # 6. Write mapping.json (spec §7.2).
     mapping_doc = {
-        "schema_version": 1,
+        "schema_version": SUPPORTED_SCHEMA,
         "mappings": {ann_id: m.to_dict() for ann_id, m in mappings.items()},
     }
     atomic_write_json(mapping_path, mapping_doc)

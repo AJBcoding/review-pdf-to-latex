@@ -11,6 +11,23 @@ The state directory layout is fixed by spec §7. This module centralizes:
 All callers MUST go through ``atomic_write_json`` for writes to
 ``annotations.json``, ``mapping.json``, and ``state.json``. The viewer is
 the only writer of ``state-events.jsonl`` and uses ``O_APPEND`` directly.
+
+Dataclass-vs-dict direction (decided at schema-v2, rev-l2)
+----------------------------------------------------------
+The persisted **JSON dict keys are the normative schema**; the dataclasses
+below (``Annotation``, ``Mapping``, ``AnnotationState``, …) are
+**bootstrap/validation builders**, not the runtime carriers. Only the
+``extract`` bootstrap path constructs them; every mutator in ``apply.py``
+reads and writes raw dicts. This direction was chosen over "route all
+mutators through the dataclasses" because the latter is a large, high-risk
+rewrite of the least-typed boundary in the repo (spec D7 §7 pt 2: the
+dataclasses are "write-only"). The contract that keeps this safe: each
+``from_dict``/``to_dict`` MUST mirror the dict schema exactly — every key a
+mutator writes is a declared field — so the dataclasses stay an accurate
+description of what is on disk. The three pre-v2 drifts (REVIEW.md
+"Half-adopted typed layer") are closed under this rule: ``last_status_reason``
+is now a declared ``AnnotationState`` field, ``Mapping.from_dict`` tolerates a
+``candidates: null``, and ``Annotation.created`` is typed ``str | None``.
 """
 
 from __future__ import annotations
@@ -104,13 +121,18 @@ def atomic_write_json(path: Path, data: Any) -> None:
         raise
 
 
-SUPPORTED_SCHEMA = 1
+SUPPORTED_SCHEMA = 2
 """The schema_version this build of the engine reads and writes.
 
 Bumped only on breaking changes per spec §7. A backwards-compatible
 field addition does NOT bump this constant. The ``review-pdf
 migrate-state`` subcommand handles upgrades when the major version
 changes.
+
+v2 (rev-l2, spec D7 §7) is the first real bump: ``annotations.json`` gains
+``subtype``/``native_id``/``in_reply_to`` (PDF round-trip fields), and
+``mapping.json`` renames ``latex_file`` → ``file``. The ``(1, 2)`` migration
+is registered in :mod:`review_pdf_to_latex.migrate`.
 """
 
 
@@ -205,7 +227,26 @@ Role = Literal["user", "claude"]
 
 @dataclass
 class Annotation:
-    """One entry in ``annotations.json.annotations[]`` (spec §7.1, immutable)."""
+    """One entry in ``annotations.json.annotations[]`` (spec §7.1, immutable).
+
+    schema-v2 round-trip fields (rev-l2, spec D7 §7) — all optional, all
+    bridged one-way into the unified ``CommentV2.native`` block at the
+    engine↔desktop seam:
+
+    - ``subtype``: PDF annotation subtype (``Highlight``/``StrikeOut``/
+      ``Underline``/``Squiggly``/``Text``/…). Before v2, extraction could not
+      even distinguish a Highlight from a StrikeOut (Pass-2 reusability note).
+    - ``native_id``: the native PDF annotation id (the ``/NM`` name), used by
+      the Acrobat round-trip to edit-in-place instead of re-minting. ``None``
+      when the source annotation carries no ``/NM``.
+    - ``in_reply_to``: the ``native_id`` of this annotation's reply parent, in
+      the same ``/NM`` namespace as ``native_id``. Optional and populated only
+      when the source PDF exposes a resolvable reply reference (spec §8 spike
+      S-1 read half); ``None`` otherwise.
+
+    ``created`` is ``str | None``: pdfannots annotations may carry no creation
+    timestamp (``_format_created`` returns ``None`` there).
+    """
 
     id: str
     page: int
@@ -213,8 +254,11 @@ class Annotation:
     highlighted_text: str
     author: str
     comment: str
-    created: str
+    created: str | None
     trigger_match: bool
+    subtype: str | None = None
+    native_id: str | None = None
+    in_reply_to: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Annotation":
@@ -226,8 +270,11 @@ class Annotation:
             highlighted_text=d["highlighted_text"],
             author=d["author"],
             comment=d["comment"],
-            created=d["created"],
+            created=d.get("created"),
             trigger_match=bool(d["trigger_match"]),
+            subtype=d.get("subtype"),
+            native_id=d.get("native_id"),
+            in_reply_to=d.get("in_reply_to"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -240,6 +287,9 @@ class Annotation:
             "comment": self.comment,
             "created": self.created,
             "trigger_match": self.trigger_match,
+            "subtype": self.subtype,
+            "native_id": self.native_id,
+            "in_reply_to": self.in_reply_to,
         }
 
 
@@ -269,9 +319,16 @@ class MappingCandidate:
 
 @dataclass
 class Mapping:
-    """One entry in ``mapping.json.mappings`` (spec §7.2)."""
+    """One entry in ``mapping.json.mappings`` (spec §7.2).
 
-    latex_file: str | None
+    schema-v2 (rev-l2): the source-location field is ``file`` (was
+    ``latex_file`` in v1). The rename de-LaTeXes the engine for the
+    multi-format direction — the mapping/apply machinery treats the target
+    purely as text lines, nothing about it is LaTeX-specific — and aligns the
+    field with :class:`MappingCandidate`, which already named it ``file``.
+    """
+
+    file: str | None
     line_range: tuple[int, int] | None
     confidence: float
     method: Method
@@ -284,18 +341,22 @@ class Mapping:
         line_range: tuple[int, int] | None = (
             (int(raw_lr[0]), int(raw_lr[1])) if raw_lr is not None else None
         )
+        # `or []` tolerates a `candidates: null` on disk — override_mapping
+        # historically wrote None there (closed drift (b), REVIEW.md).
         return cls(
-            latex_file=d.get("latex_file"),
+            file=d.get("file"),
             line_range=line_range,
             confidence=float(d["confidence"]),
             method=d["method"],
             needs_review=bool(d["needs_review"]),
-            candidates=[MappingCandidate.from_dict(c) for c in d.get("candidates", [])],
+            candidates=[
+                MappingCandidate.from_dict(c) for c in (d.get("candidates") or [])
+            ],
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "latex_file": self.latex_file,
+            "file": self.file,
             "line_range": (
                 [self.line_range[0], self.line_range[1]]
                 if self.line_range is not None
@@ -337,6 +398,10 @@ class AnnotationState:
     surface_chat_log: list[ChatTurn] | None = None
     failure_log_path: str | None = None
     failure_edit_text: str | None = None
+    # Free-form reason recorded by `set-status --reason` (closed drift (a),
+    # REVIEW.md: apply.set_annotation_status writes this key, so it is a
+    # declared field rather than a key to_dict silently drops).
+    last_status_reason: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AnnotationState":
@@ -356,6 +421,7 @@ class AnnotationState:
             surface_chat_log=chat,
             failure_log_path=d.get("failure_log_path"),
             failure_edit_text=d.get("failure_edit_text"),
+            last_status_reason=d.get("last_status_reason"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -374,6 +440,7 @@ class AnnotationState:
             "surface_chat_log": chat,
             "failure_log_path": self.failure_log_path,
             "failure_edit_text": self.failure_edit_text,
+            "last_status_reason": self.last_status_reason,
         }
 
 

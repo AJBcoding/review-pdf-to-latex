@@ -208,7 +208,7 @@ def _check_overlap(
     for other_id, other_map in mapping.get("mappings", {}).items():
         if other_id == annotation_id:
             continue
-        if other_map.get("latex_file") != target_file:
+        if other_map.get("file") != target_file:
             continue
         other_range = other_map.get("line_range")
         if not other_range:
@@ -240,7 +240,7 @@ def _recompute_subsequent_mappings(
     for other_id, other_map in mapping.get("mappings", {}).items():
         if other_id == skip_annotation_id:
             continue
-        if other_map.get("latex_file") != target_file:
+        if other_map.get("file") != target_file:
             continue
         line_range = other_map.get("line_range")
         if not line_range:
@@ -307,7 +307,7 @@ def apply_edit(
         raise AnnotationNotFoundError(
             f"annotation_id {annotation_id!r} not found in mapping.json"
         )
-    latex_file = map_entry.get("latex_file")
+    latex_file = map_entry.get("file")
     line_range = map_entry.get("line_range")
     if latex_file is None or line_range is None:
         raise MappingUnresolvedError(
@@ -434,7 +434,7 @@ def apply_batch(
     annotated: list[tuple[str, str, str | None, int]] = []
     for ann_id, new_text in edits:
         entry = mapping["mappings"].get(ann_id, {})
-        latex_file = entry.get("latex_file")
+        latex_file = entry.get("file")
         line_range = entry.get("line_range") or [0, 0]
         annotated.append((ann_id, new_text, latex_file, int(line_range[0])))
 
@@ -518,7 +518,7 @@ def revert_edit(
         )
 
     map_entry = mapping["mappings"][annotation_id]
-    latex_file = map_entry["latex_file"]
+    latex_file = map_entry["file"]
     line_range = map_entry["line_range"]
     if latex_file is None or line_range is None:
         raise MappingUnresolvedError(annotation_id)
@@ -893,11 +893,15 @@ def override_mapping(
         )
 
     entry = mapping["mappings"][annotation_id]
-    entry["latex_file"] = file
+    entry["file"] = file
     entry["line_range"] = [start, end]
     entry["confidence"] = 1.0
     entry["method"] = "manual"
     entry["needs_review"] = False
-    entry["candidates"] = None
+    # Closed drift (b), REVIEW.md: write the empty list, not null — `candidates`
+    # is a list in the schema (Mapping.candidates), and a manual override simply
+    # has no runner-up windows. (Mapping.from_dict still tolerates a legacy null
+    # already on disk.)
+    entry["candidates"] = []
 
     atomic_write_json(mapping_path, mapping)

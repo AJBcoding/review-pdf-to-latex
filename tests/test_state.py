@@ -100,7 +100,7 @@ def test_atomic_write_json_concurrent_writers_do_not_corrupt(tmp_project: Path):
 def test_read_json_round_trips_supported_schema(tmp_project: Path):
     """read_json returns the parsed dict for schema_version == SUPPORTED_SCHEMA."""
     sd = state.StateDir(tmp_project)
-    payload = {"schema_version": 1, "hello": "world"}
+    payload = {"schema_version": state.SUPPORTED_SCHEMA, "hello": "world"}
     state.atomic_write_json(sd.state_path, payload)
     loaded = state.read_json(sd.state_path)
     assert loaded == payload
@@ -132,9 +132,9 @@ def test_read_json_older_schema_raises_migration_required(tmp_project: Path):
         state.read_json(sd.state_path)
 
 
-def test_read_json_supported_schema_constant_is_one():
-    """SUPPORTED_SCHEMA is 1 in v1 (spec §7)."""
-    assert state.SUPPORTED_SCHEMA == 1
+def test_read_json_supported_schema_constant_is_two():
+    """SUPPORTED_SCHEMA is 2 after the schema-v2 bump (rev-l2, spec D7 §7)."""
+    assert state.SUPPORTED_SCHEMA == 2
 
 
 def test_annotation_dataclass_round_trip():
@@ -148,18 +148,24 @@ def test_annotation_dataclass_round_trip():
         "comment": "Tighten this — too academic",
         "created": "2026-05-15T14:22:11Z",
         "trigger_match": False,
+        "subtype": "Highlight",
+        "native_id": "NM-0001",
+        "in_reply_to": None,
     }
     obj = state.Annotation.from_dict(raw)
     assert obj.id == "ann-001"
     assert obj.bbox == (72.0, 510.5, 540.0, 542.5)
     assert obj.trigger_match is False
+    assert obj.subtype == "Highlight"
+    assert obj.native_id == "NM-0001"
+    assert obj.in_reply_to is None
     assert obj.to_dict() == raw
 
 
 def test_mapping_dataclass_round_trip_resolved():
     """Mapping with method=fuzzy_text round-trips per spec §7.2 example."""
     raw = {
-        "latex_file": "templates/enrollment_growth.tex",
+        "file": "templates/enrollment_growth.tex",
         "line_range": [47, 52],
         "confidence": 0.92,
         "method": "fuzzy_text",
@@ -167,7 +173,7 @@ def test_mapping_dataclass_round_trip_resolved():
         "candidates": [],
     }
     obj = state.Mapping.from_dict(raw)
-    assert obj.latex_file == "templates/enrollment_growth.tex"
+    assert obj.file == "templates/enrollment_growth.tex"
     assert obj.line_range == (47, 52)
     assert obj.confidence == 0.92
     assert obj.method == "fuzzy_text"
@@ -178,7 +184,7 @@ def test_mapping_dataclass_round_trip_resolved():
 def test_mapping_dataclass_round_trip_needs_review():
     """Mapping with method=failed round-trips with null line_range and candidates list."""
     raw = {
-        "latex_file": None,
+        "file": None,
         "line_range": None,
         "confidence": 0.0,
         "method": "failed",
@@ -189,7 +195,7 @@ def test_mapping_dataclass_round_trip_needs_review():
         ],
     }
     obj = state.Mapping.from_dict(raw)
-    assert obj.latex_file is None
+    assert obj.file is None
     assert obj.line_range is None
     assert obj.needs_review is True
     assert len(obj.candidates) == 2
@@ -208,6 +214,7 @@ def test_annotation_state_dataclass_round_trip_applied():
         "surface_chat_log": None,
         "failure_log_path": None,
         "failure_edit_text": None,
+        "last_status_reason": None,
     }
     obj = state.AnnotationState.from_dict(raw)
     assert obj.status == "applied"
@@ -227,6 +234,7 @@ def test_annotation_state_dataclass_round_trip_needs_review_with_failure():
         "failure_log_path": ".review-state/builds/build-011.log",
         "failure_edit_text": "Claude's proposal that failed to compile…",
         "surface_chat_log": None,
+        "last_status_reason": None,
     }
     obj = state.AnnotationState.from_dict(raw)
     assert obj.failure_log_path == ".review-state/builds/build-011.log"

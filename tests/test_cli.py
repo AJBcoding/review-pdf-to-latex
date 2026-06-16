@@ -261,7 +261,7 @@ def _bootstrap_minimal_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     state_dir = project / ".review-state"
     state_dir.mkdir()
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": "1-batch",
         "order": "mechanical-first",
         "current_annotation_id": None,
@@ -281,10 +281,10 @@ def _bootstrap_minimal_project(tmp_path: Path) -> tuple[Path, Path, Path]:
         "builds": [],
     }
     mapping = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mappings": {
             "ann-001": {
-                "latex_file": "templates/section.tex",
+                "file": "templates/section.tex",
                 "line_range": [2, 3],
                 "confidence": 0.9,
                 "method": "fuzzy_text",
@@ -293,7 +293,7 @@ def _bootstrap_minimal_project(tmp_path: Path) -> tuple[Path, Path, Path]:
         },
     }
     annotations = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_pdf": str(pdf.resolve()),
         "source_pdf_md5": pdf_md5,
         "extracted_at": "2026-05-16T20:30:00Z",
@@ -545,7 +545,7 @@ def test_cli_override_mapping_subcommand(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
     mapping = json.loads((state_dir / "mapping.json").read_text(encoding="utf-8"))
     entry = mapping["mappings"]["ann-001"]
-    assert entry["latex_file"] == "templates/other.tex"
+    assert entry["file"] == "templates/other.tex"
     assert entry["line_range"] == [1, 2]
     assert entry["method"] == "manual"
     assert entry["needs_review"] is False
@@ -596,7 +596,7 @@ def test_cli_commit_phase_subcommand(tmp_path: Path) -> None:
     (state_dir / "state.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,
@@ -621,10 +621,10 @@ def test_cli_commit_phase_subcommand(tmp_path: Path) -> None:
     (state_dir / "mapping.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "mappings": {
                     "ann-001": {
-                        "latex_file": "templates/section.tex",
+                        "file": "templates/section.tex",
                         "line_range": [1, 1],
                         "confidence": 0.95,
                         "method": "fuzzy_text",
@@ -643,7 +643,7 @@ def test_cli_commit_phase_subcommand(tmp_path: Path) -> None:
     (state_dir / "annotations.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "source_pdf": str(source_pdf.resolve()),
                 "source_pdf_md5": pdf_md5,
                 "annotations": [],
@@ -811,7 +811,7 @@ hi
     (state_dir / "state.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,
@@ -853,7 +853,7 @@ def _seed_state_for_cli(tmp_project: Path, phase: str = "0-setup") -> None:
     state_mod_path.write_text(
         _json_mod.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "phase": phase,
                 "order": "mechanical-first",
                 "current_annotation_id": None,
@@ -1016,26 +1016,61 @@ def test_cli_status_human_output_working_tree_clean_in_fresh_repo(
 # ---- Task 13.2: migrate-state subcommand -----------------------------------
 
 
-def test_cli_migrate_state_exits_14(
+def test_cli_migrate_state_unsupported_pair_exits_14(
     tmp_project: Path, capsys: pytest.CaptureFixture
 ):
-    """Any migrate-state call in v1 exits 14 with the spec message."""
+    """A migrate-state call with no registered path exits 14 with the spec message."""
     rc = cli.main(
         [
             "--project-dir",
             str(tmp_project),
             "migrate-state",
             "--from",
-            "1",
-            "--to",
             "2",
+            "--to",
+            "3",
         ]
     )
     assert rc == cli.EXIT_UNSUPPORTED_MIGRATION == 14
     err = capsys.readouterr().err
-    assert "from=1" in err
-    assert "to=2" in err
-    assert "no migrations" in err.lower()
+    assert "from=2" in err
+    assert "to=3" in err
+
+
+def test_cli_migrate_state_v1_to_v2_succeeds(
+    tmp_project: Path, capsys: pytest.CaptureFixture
+):
+    """migrate-state --from 1 --to 2 upgrades the state files and exits 0 (rev-l2)."""
+    import json as _json
+
+    state_dir = tmp_project / ".review-state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "mapping.json").write_text(
+        _json.dumps(
+            {
+                "schema_version": 1,  # v1 input — the migration upgrades it
+                "mappings": {
+                    "ann-001": {
+                        "latex_file": "main.tex",  # v1 key — renamed to `file`
+                        "line_range": [1, 2],
+                        "confidence": 0.9,
+                        "method": "fuzzy_text",
+                        "needs_review": False,
+                        "candidates": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        ["--project-dir", str(tmp_project), "migrate-state", "--from", "1", "--to", "2"]
+    )
+    assert rc == cli.EXIT_OK
+    mapping = _json.loads((state_dir / "mapping.json").read_text(encoding="utf-8"))
+    assert mapping["schema_version"] == 2
+    assert mapping["mappings"]["ann-001"]["file"] == "main.tex"
 
 
 def test_cli_migrate_state_same_from_to_also_exits_14(
@@ -1065,7 +1100,7 @@ def test_cli_main_backstop_maps_unsupported_schema_to_24(
     (state_dir / "state.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,  # newer than SUPPORTED_SCHEMA (1)
+                "schema_version": 3,  # newer than SUPPORTED_SCHEMA (2)
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,
@@ -1114,7 +1149,7 @@ def test_cli_main_backstop_json_mode_emits_error_envelope(
     (state_dir / "state.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,  # newer than SUPPORTED_SCHEMA (2)
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,
@@ -1149,7 +1184,7 @@ hi
     (state_dir / "state.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "phase": "1-batch",
                 "order": "mechanical-first",
                 "current_annotation_id": None,

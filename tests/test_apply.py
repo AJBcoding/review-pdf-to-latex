@@ -56,7 +56,7 @@ def _make_project(tmp_path: Path, lines: list[str] | None = None) -> _ProjectFix
     state_dir = project / ".review-state"
     state_dir.mkdir()
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "phase": "1-batch",
         "order": "mechanical-first",
         "current_annotation_id": None,
@@ -76,10 +76,10 @@ def _make_project(tmp_path: Path, lines: list[str] | None = None) -> _ProjectFix
         "builds": [],
     }
     mapping = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mappings": {
             "ann-001": {
-                "latex_file": "templates/section.tex",
+                "file": "templates/section.tex",
                 "line_range": [2, 3],
                 "confidence": 0.9,
                 "method": "fuzzy_text",
@@ -88,7 +88,7 @@ def _make_project(tmp_path: Path, lines: list[str] | None = None) -> _ProjectFix
         },
     }
     annotations = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_pdf": str(pdf.resolve()),
         "source_pdf_md5": pdf_md5,
         "extracted_at": "2026-05-16T20:30:00Z",
@@ -132,7 +132,7 @@ def test_apply_edit_rejects_unsupported_schema(tmp_path: Path) -> None:
 
     proj = _make_project(tmp_path)
     state = json.loads(proj.state_path.read_text(encoding="utf-8"))
-    state["schema_version"] = 2  # newer than SUPPORTED_SCHEMA (1)
+    state["schema_version"] = 3  # newer than SUPPORTED_SCHEMA (2)
     proj.state_path.write_text(json.dumps(state), encoding="utf-8")
 
     with pytest.raises(SchemaUnsupportedApplyError) as exc:
@@ -259,7 +259,7 @@ def test_apply_edit_recomputes_subsequent_mappings_in_same_file(tmp_path: Path) 
     proj.state_path.write_text(json.dumps(state), encoding="utf-8")
     mapping = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
     mapping["mappings"]["ann-002"] = {
-        "latex_file": "templates/section.tex",
+        "file": "templates/section.tex",
         "line_range": [5, 5],
         "confidence": 0.9,
         "method": "fuzzy_text",
@@ -331,24 +331,24 @@ def _make_project_three_in_one_file(tmp_path: Path) -> _ProjectFixture:
     }
     proj.state_path.write_text(json.dumps(state), encoding="utf-8")
     mapping = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mappings": {
             "ann-A": {
-                "latex_file": "templates/section.tex",
+                "file": "templates/section.tex",
                 "line_range": [10, 10],
                 "confidence": 0.9,
                 "method": "fuzzy_text",
                 "needs_review": False,
             },
             "ann-B": {
-                "latex_file": "templates/section.tex",
+                "file": "templates/section.tex",
                 "line_range": [50, 50],
                 "confidence": 0.9,
                 "method": "fuzzy_text",
                 "needs_review": False,
             },
             "ann-C": {
-                "latex_file": "templates/section.tex",
+                "file": "templates/section.tex",
                 "line_range": [100, 100],
                 "confidence": 0.9,
                 "method": "fuzzy_text",
@@ -533,7 +533,7 @@ def test_revert_edit_after_empty_apply_shifts_subsequent_mapping_back(
     proj.state_path.write_text(json.dumps(state), encoding="utf-8")
     mapping = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
     mapping["mappings"]["ann-002"] = {
-        "latex_file": "templates/section.tex",
+        "file": "templates/section.tex",
         "line_range": [5, 5],
         "confidence": 0.9,
         "method": "fuzzy_text",
@@ -760,12 +760,12 @@ def test_override_mapping_writes_manual_method(tmp_path: Path) -> None:
 
     mapping = json.loads(proj.mapping_path.read_text(encoding="utf-8"))
     entry = mapping["mappings"]["ann-001"]
-    assert entry["latex_file"] == "templates/other.tex"
+    assert entry["file"] == "templates/other.tex"
     assert entry["line_range"] == [2, 3]
     assert entry["confidence"] == 1.0
     assert entry["method"] == "manual"
     assert entry["needs_review"] is False
-    assert entry.get("candidates") is None
+    assert entry["candidates"] == []
 
 
 def test_override_mapping_out_of_bounds_raises(tmp_path: Path) -> None:
