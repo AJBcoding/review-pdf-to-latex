@@ -52,3 +52,12 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+storage.backend: dolt
+dolt.server: "127.0.0.1"
+dolt.port: 3307
+
+prefix: 
+issue-prefix: 
+dolt.idle-timeout: "0"
+export.auto: "false"
