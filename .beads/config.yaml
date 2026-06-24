@@ -1,3 +1,5 @@
+issue_prefix: rev
+issue-prefix: rev
 # Beads Configuration File
 # This file configures default behavior for all bd commands in this repository
 # All settings can also be set via environment variables (BD_* prefix)
@@ -52,9 +54,13 @@
 # - linear.api-key
 # - github.org
 # - github.repo
-
-prefix: 
-issue-prefix: 
+prefix:
 dolt.idle-timeout: "0"
-
 sync.remote: "git+https://github.com/AJBcoding/review-pdf-to-latex.git"
+dolt.auto-start: false
+dolt:
+  disable-event-flush: true
+export.auto: false
+backup.enabled: false
+gc.endpoint_origin: inherited_city
+gc.endpoint_status: verified
